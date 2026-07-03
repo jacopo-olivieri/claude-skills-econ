@@ -1,0 +1,9 @@
+{
+  "name": "claude-skills-econ",
+  "description": "Jacopo Olivieri's Claude Code skills for economics & research.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jacopo Olivieri"
+  },
+  "skills": []
+}

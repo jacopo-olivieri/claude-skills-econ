@@ -1,17 +1,2 @@
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Editor / tooling
-*.swp
-*~
-.vscode/
-.idea/
-
-# Node (if any skill adds tooling)
-node_modules/
-npm-debug.log*
-
-# Logs
-*.log
+__pycache__/
+*.pyc

@@ -1,0 +1,71 @@
+\documentclass[12pt]{article}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\title{Rainfall Shocks and Household Income:\\Evidence from a Synthetic Panel}
+\author{Fixture Author}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We estimate the effect of rainfall shocks on household income using a three-village
+panel. A one-standard-deviation rainfall shock reduces log household income by
+8.3 percent.
+\end{abstract}
+
+\section{Data}
+
+We use a household panel covering three villages over two survey waves. Income is measured
+in thousands of local currency units.
+The estimation sample excludes households observed in fewer than two survey waves, leaving
+a balanced panel of 4,832 household-year observations.
+% The raw file also contains enumerator scratch codes that we discard.
+
+Rainfall is recorded at the village level. The shock variable is the standardised deviation
+of wave rainfall from the village long-run mean.
+
+\section{Empirical strategy}
+
+We regress log household income on the rainfall shock and household controls. All
+regressions are weighted using the survey weights provided with the sampling frame, and
+standard errors are clustered at the village level.
+
+\section{Results}
+
+Table~\ref{tab:main} reports the main estimate. A one-standard-deviation rainfall shock
+reduces log household income by 0.083, statistically significant at the five percent
+level.
+
+\begin{table}[ht]
+\centering
+\caption{Rainfall shocks and log household income}
+\label{tab:main}
+\input{../artifacts/tab1.tex}
+\end{table}
+
+Figure~\ref{fig:trends} plots average household income by survey wave and shock status.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.8\textwidth]{../artifacts/fig1_income_trends.pdf}
+\caption{Average household income by wave}
+\label{fig:trends}
+\end{figure}
+
+As a robustness check, we re-estimate the main specification with bootstrap standard
+errors (200 replications); the confidence interval excludes zero.
+
+% Placebo figure removed at referee request:
+% \begin{figure}[ht]
+% \centering
+% \includegraphics[width=0.8\textwidth]{../artifacts/fig_placebo.pdf}
+% \caption{Placebo: future rainfall and current income}
+% \label{fig:placebo}
+% \end{figure}
+
+\section{Conclusion}
+
+Rainfall shocks reduce household income in this entirely synthetic setting.
+
+\end{document}

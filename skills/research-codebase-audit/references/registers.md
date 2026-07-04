@@ -42,6 +42,8 @@ Severity is anchored to **author-materiality** — what the finding could do to 
 
 Lineage and provenance-gap findings (an output whose producer cannot be traced) default to
 severity 1–2 unless there is concrete evidence the result itself is affected.
+`pii_or_disclosure_risk` findings default to severity 2–3: disclosure harm is orthogonal to
+result-materiality, so they are never severity-1 cosmetic.
 
 **Issue-flagging rule** (two register-specific, lintable forms):
 

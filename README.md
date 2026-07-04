@@ -31,7 +31,7 @@ ln -s "$(pwd)/claude-skills-econ/skills/<name>" ~/.claude/skills/<name>
 
 | Skill | What it does |
 |-------|--------------|
-| _(none yet — coming soon)_ | |
+| [`research-codebase-audit`](./skills/research-codebase-audit) | Static-first audit of a replication package: paper-code consistency, source-code errors, and package hygiene via parallel subagents writing to lint-gated registers, exported to an author-facing Excel workbook. User-invoked (`/research-codebase-audit`). |
 
 ## Developing / maintaining
 

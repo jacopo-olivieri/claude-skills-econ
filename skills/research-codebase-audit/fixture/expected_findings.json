@@ -1,0 +1,99 @@
+{
+  "fixture": "planted",
+  "audited_scope": "fixture/planted/ only — this answer key and fixture/README.md sit outside the repo root handed to the skill and must never be visible to any worker",
+  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; re-score after ANY skeleton edit",
+  "must_find": [
+    {
+      "id": "P-01",
+      "kind": "claim",
+      "expected_type": "transcription",
+      "where": "paper/paper.tex Results section vs artifacts/tab1.tex",
+      "mechanism": "Prose reports a coefficient of 0.083; the shipped table artifact shows -0.038. Digit-level mismatch at reported precision.",
+      "min_severity": 3
+    },
+    {
+      "id": "P-02",
+      "kind": "claim_or_code_error",
+      "expected_type": "inference_or_se_specification",
+      "where": "paper Sec. 2 ('clustered at the village level') vs do/analysis.do vce(cluster household_id)",
+      "mechanism": "Paper says village-level clustering; code clusters at the household level.",
+      "min_severity": 3
+    },
+    {
+      "id": "P-03",
+      "kind": "claim_or_code_error",
+      "expected_type": "weighting_error",
+      "where": "paper Sec. 2 ('weighted using the survey weights') vs do/analysis.do",
+      "mechanism": "svy_weight exists in the data and the paper claims weighted regressions, but the regressions run unweighted.",
+      "min_severity": 3
+    },
+    {
+      "id": "P-04",
+      "kind": "code_error",
+      "expected_type": "randomness_or_seed_error",
+      "where": "do/analysis.do bootstrap block",
+      "mechanism": "bootstrap with 200 replications and no `set seed` (and no stable sort) — results not reproducible.",
+      "min_severity": 2
+    },
+    {
+      "id": "P-05",
+      "kind": "claim_or_code_error",
+      "expected_type": "sample_filter_or_flag_error",
+      "where": "do/build_panel.do `keep if waves < 2` vs paper Sec. 1 exclusion rule",
+      "mechanism": "Paper excludes households with fewer than two waves; the filter keeps exactly those households (reversed condition).",
+      "min_severity": 4
+    },
+    {
+      "id": "P-06",
+      "kind": "code_error",
+      "expected_type": "stale_or_wrong_path",
+      "where": "py/make_figures.py reads output/panel_v2.csv",
+      "mechanism": "build_panel.do writes output/panel.csv; the figure script reads a nonexistent panel_v2.csv, so Figure 1 cannot be regenerated.",
+      "min_severity": 2
+    },
+    {
+      "id": "P-07",
+      "kind": "code_error",
+      "expected_type": "undefined_variable_or_global",
+      "where": "do/analysis.do `$controls` (definition commented out)",
+      "mechanism": "The controls global is only defined in a commented line, so regressions silently run without controls while the table claims 'Household controls: Yes'.",
+      "min_severity": 3
+    },
+    {
+      "id": "P-08",
+      "kind": "claim_or_code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "do/build_panel.do income conversion vs paper Sec. 1 ('thousands of local currency units')",
+      "mechanism": "Comment and paper say thousands; the code divides by 100, a factor-of-10 unit error in reported income levels.",
+      "min_severity": 3
+    },
+    {
+      "id": "P-09",
+      "kind": "code_error",
+      "expected_type": "readme_or_package_mismatch",
+      "where": "planted/README.md data table vs actual inputs consumed",
+      "mechanism": "README declares data/rainfall_stations.csv as an input; the file does not exist in the package and no script reads it.",
+      "min_severity": 1
+    },
+    {
+      "id": "P-10",
+      "kind": "code_error",
+      "expected_type": "pii_or_disclosure_risk",
+      "where": "data/households.csv columns head_name, gps_lat, gps_lon",
+      "mechanism": "Respondent names and household GPS coordinates ship in the public data file.",
+      "min_severity": 2
+    }
+  ],
+  "must_not_find": [
+    {
+      "id": "D-01",
+      "kind": "decoy",
+      "where": "paper/paper.tex commented-out placebo figure block",
+      "mechanism": "A fully commented-out figure references artifacts/fig_placebo.pdf, which no script produces. Comment-blanking removes it from the audited paper; any finding about the placebo figure or fig_placebo.pdf is a false positive."
+    }
+  ],
+  "expected_confirmed_examples": [
+    "N = 4,832 in prose matches the artifact table (transcription check that should pass)",
+    "The README's per-object script mapping is correct: no readme_or_package_mismatch finding about the Table 1 -> analysis.do or Figure 1 -> make_figures.py mapping rows (the P-06 stale-path finding on make_figures.py itself is expected and separate)"
+  ]
+}

@@ -40,6 +40,13 @@ Rules:
 - Link claims to outputs (`Output IDs` / `Claim IDs`) within your shard; both directions.
 - Think carefully about whether the code actually supports each claim before setting
   `Status` — identifying the right script is mapping, not confirmation.
+- **Complete cheap checks; do not park them at `mapped`** (see the cheap-check-completion rule in
+  `audit/audit_readme.md`). When a claim reduces to comparing an enumerable list, a single
+  constant, or a closed-form arithmetic implication against located code, settle it now and set
+  `confirmed` or `inconsistent`. In particular, recompute the arithmetic behind any
+  `interpretation`, `transcription`, or `rounding_or_precision` claim (e.g. a "30%" read off a
+  0.25 coefficient) rather than leaving it `mapped`. `mapped` is only for a check that genuinely
+  needs the full original script run or the exact restricted data — and then state which.
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
   unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and

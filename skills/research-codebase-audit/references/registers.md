@@ -148,12 +148,35 @@ get one row.
 | Status | Meaning |
 | --- | --- |
 | `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** |
-| `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. |
+| `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. |
 | `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. |
 | `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. |
 | `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
+
+### Cheap-check completion (mapped-closure discipline)
+
+`mapped` ("located but not verified") is for checks that genuinely cannot be run within the
+ladder — they need the full original script executed or the exact restricted data. It is not a
+resting place for a check that is simply cheap. When a check reduces to any of the following
+against already-located code, the worker **completes it during review** and records the result
+(`confirmed` or `inconsistent`), never `mapped`:
+
+- **Enumerable list** — a documented set vs a coded set (control variables, fixed effects, sample
+  filters, dropped observations): compare the two lists element by element.
+- **Single constant** — a documented threshold, coefficient, seed, or scale factor vs the value
+  in code.
+- **Closed-form arithmetic** — a reported quantity that the located inputs imply by a one-line
+  computation: recompute it. This applies squarely to `interpretation` claims (e.g. the paper
+  reads a coefficient of 0.25 as "a 30% increase" — recompute against the stated base and flag
+  the mismatch) and to any `transcription` / `rounding_or_precision` claim.
+
+These three are all **static**, so any worker completes them — no execution needed. A check that
+would instead be settled by a small unit test or a simulated run of error-prone code is completed
+where the ladder permits execution (the recheck's runtime probe), not left `mapped` and
+unremarked. When a row must stay `mapped`, state the specific reason it cannot be closed — which
+script must run, or which restricted input is missing.
 
 ## Output register — `audit/output_register.md`
 

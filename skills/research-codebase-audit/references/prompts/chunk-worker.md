@@ -74,6 +74,12 @@ Exclude:
   generated outputs. Do not run the pipeline or execute repository scripts.
 - Use IDs only from your assigned range; if it runs out, stop adding rows and put
   `BLOCKED: ID range exhausted` in your coordinator notes.
+- **Complete the cheap static checks** (see the cheap-check-completion rule in
+  `audit/audit_readme.md`): when a concern reduces to comparing an enumerable list, a single
+  constant, or a closed-form arithmetic implication against the code you have located, do the
+  comparison now and state the concrete result in `Error Description` — do not leave a vague
+  candidate. A check that would need the code actually run is not for you (static only); flag it
+  clearly so the recheck's runtime probe can settle it.
 - Leave `Related Claim IDs` blank; never consult the claim register to judge whether a
   finding matters.
 - Repo-relative paths everywhere.

@@ -83,6 +83,7 @@ def has_conflict_markers(text):
 SNAP_KEY = {
     "b3-claims": "claims_b3", "b6-claims": "claims_b6",
     "b3-code": "code_b3", "b6-code": "code_b6", "b7": "b7", "b8": "b8",
+    "b3b-claims": "claims_b3b", "b3b-code": "code_b3b",
 }
 
 
@@ -630,6 +631,108 @@ def stage_b3(lint, audit, stream):
                 lint.fail(f"{report_path}: '{reg}' must carry list-valued '{key}'")
 
 
+def stage_b3b(lint, audit, stream):
+    """Second-read recall sweep merge: new rows only, all unverified candidates, no b3 row
+    deleted or mutated. Compares staging against the pre-sweep (b3b) snapshot."""
+    snap = audit / "_run" / "snapshots" / SNAP_KEY[f"b3b-{stream}"]
+    staging = audit / "_staging"
+    if stream == "claims":
+        plan = audit / "plans" / "claims_second_read_plan.md"
+        alloc, _ = parse_plan(lint, plan, "Worker ID")
+        ranges = alloc_ranges(lint, plan, alloc or [], ["Claim ID Range", "Output ID Range"]) if alloc else []
+        files = [("claims_register.md", CLAIMS_COLS, "Claim ID"), ("output_register.md", OUTPUT_COLS, "Output ID")]
+        report_path = audit / "_run" / "merge_report_claims_b3b.json"
+        b1_plan = audit / "plans" / "claims_review_plan.md"
+        b1_alloc, b1_coord = parse_plan(lint, b1_plan, "Worker ID")
+        b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Claim ID Range", "Output ID Range"]) if b1_alloc else []
+    else:
+        plan = audit / "plans" / "code_error_second_read_plan.md"
+        alloc, _ = parse_plan(lint, plan, "Worker ID")
+        ranges = alloc_ranges(lint, plan, alloc or [], ["Error ID Range"]) if alloc else []
+        files = [("code_error_register.md", ERROR_COLS, "Error ID")]
+        report_path = audit / "_run" / "merge_report_code_b3b.json"
+        b1_plan = audit / "plans" / "code_error_review_plan.md"
+        b1_alloc, b1_coord = parse_plan(lint, b1_plan, "Chunk ID")
+        b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Error ID Range"]) if b1_alloc else []
+    # machinery (a): b3b ranges disjoint from b1 ranges, the merge-coordinator range, and each other
+    check_disjoint(lint, plan, ranges + b1_ranges + b1_coord)
+
+    total_new = 0
+    for f, cols, idc in files:
+        st = load_register(lint, staging / f, cols)
+        sn = load_register(lint, snap / f, cols)
+        if st is None or sn is None:
+            continue
+        _, st_rows = st
+        _, sn_rows = sn
+        if f == "claims_register.md":
+            check_claims_rows(lint, staging / f, st_rows)
+        elif f == "output_register.md":
+            check_output_rows(lint, staging / f, st_rows)
+        else:
+            check_error_rows(lint, staging / f, st_rows)
+        st_ids = col(st_rows, cols, idc)
+        check_unique(lint, staging / f, st_ids, idc)
+        st_by = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in st_rows}
+        sn_by = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in sn_rows}
+        st_set, sn_set = set(st_by), set(sn_by)
+        for i in sorted(sn_set - st_set):
+            lint.fail(f"{staging / f}: b3 row {i} deleted at second-read merge (rows are never deleted)")
+        for i in sorted(sn_set & st_set):
+            for c in cols:
+                if st_by[i][c] != sn_by[i][c]:
+                    lint.fail(f"{staging / f}: b3 row {i} column '{c}' changed at second-read merge (the sweep only adds rows)")
+        new_ids = st_set - sn_set
+        total_new += len(new_ids)
+        for i in sorted(new_ids):
+            if ranges and not in_ranges(i, ranges):
+                lint.fail(f"{staging / f}: new second-read row {i} outside the b3b-allocated ranges")
+            status = st_by[i]["Status"]
+            if f == "code_error_register.md" and status != "candidate":
+                lint.fail(f"{staging / f}: new second-read row {i} status '{status}' (must be 'candidate')")
+            elif f == "claims_register.md" and status not in {"inconsistent", "unclear"}:
+                lint.fail(f"{staging / f}: new second-read claim {i} status '{status}' (must be 'inconsistent' or 'unclear')")
+            elif f == "output_register.md" and status not in {"mapped", "orphan", "unclear", "inconsistent"}:
+                lint.fail(f"{staging / f}: new second-read output {i} status '{status}' (must be mapped/orphan/unclear/inconsistent)")
+        link_col = {"claims_register.md": "Related Error IDs", "code_error_register.md": "Related Claim IDs"}.get(f)
+        if link_col:
+            for v in col(st_rows, cols, link_col):
+                if v:
+                    lint.fail(f"{staging / f}: {link_col} must still be blank at b3b (cross-link is a later stage)")
+    if stream == "claims":
+        c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS)
+        o = load_register(lint, staging / "output_register.md", OUTPUT_COLS)
+        if c and o:
+            check_bidirectional(
+                lint, c[1], CLAIMS_COLS, "Claim ID", "Output IDs",
+                o[1], OUTPUT_COLS, "Output ID", "Claim IDs", "b3b C<->O",
+            )
+    rep_text = read_text(lint, report_path)
+    if rep_text is None:
+        return
+    try:
+        rep = json.loads(rep_text)
+    except json.JSONDecodeError as exc:
+        lint.fail(f"{report_path}: invalid JSON ({exc})")
+        return
+    added_total = 0
+    for f, cols, idc in files:
+        entry = rep.get(f)
+        if not isinstance(entry, dict):
+            lint.fail(f"{report_path}: missing per-register entry '{f}'")
+            continue
+        try:
+            sr, dd, ad = int(entry["shard_rows"]), int(entry["dedup_removed"]), int(entry["added"])
+        except (KeyError, ValueError, TypeError):
+            lint.fail(f"{report_path}: '{f}' must carry integer shard_rows/dedup_removed/added")
+            continue
+        if sr - dd != ad:
+            lint.fail(f"{report_path}: '{f}' identity violated: {sr} - {dd} != {ad}")
+        added_total += ad
+    if added_total != total_new:
+        lint.fail(f"{report_path}: added total {added_total} != {total_new} new row(s) in staging")
+
+
 def recheck_plan_path(audit, stream):
     return audit / "plans" / ("claims_recheck_plan.md" if stream == "claims" else "code_error_recheck_plan.md")
 
@@ -1018,7 +1121,9 @@ def stage_b9(lint, audit, manifest):
 
 STAGES = (
     ["b0"]
-    + [f"b{n}-{s}" for n in range(1, 7) for s in ("claims", "code")]
+    + [f"b{n}-{s}" for n in range(1, 4) for s in ("claims", "code")]
+    + [f"b3b-{s}" for s in ("claims", "code")]
+    + [f"b{n}-{s}" for n in range(4, 7) for s in ("claims", "code")]
     + ["b7", "b8", "b9"]
 )
 
@@ -1050,6 +1155,8 @@ def main() -> int:
         stage_b2(lint, audit, stream, args.shard)
     elif n == "b3":
         stage_b3(lint, audit, stream)
+    elif n == "b3b":
+        stage_b3b(lint, audit, stream)
     elif n == "b4":
         stage_b4(lint, audit, stream)
     elif n == "b5":

@@ -43,6 +43,36 @@ generated `audit/audit_readme.md`). Lint stages here are `--stage b<N>-claims`.
    of planned ranges, links C↔O bidirectional, cross-link columns blank, row-count
    reconciliation, coverage reconciled). On pass, atomically rename staging over canon.
 
+## b3b — Second-read recall sweep (conductor-planned, adds candidates)
+
+A recall pass, not a recheck: re-read every file/section the first pass already flagged, to
+surface the inconsistencies it missed. See `references/review-principles.md` for why. Runs after
+b3, before the recheck plan (b4), so the new rows flow into the recheck automatically.
+
+1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Mechanically compute
+   the set of files/sections that produced at least one issue-flagged (`inconsistent`) claim — at
+   `shallow` only those with a Severity ≥ 3 issue, at `standard`/`deep` any issue-flagged claim.
+   Key each trigger to the claim row's `Code/Data Source` file(s) and `Paper Context` section. If
+   the set is empty, skip b3b.
+2. **Allocation.** Write `audit/plans/claims_second_read_plan.md` yourself: one second-read worker
+   per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File (under
+   audit/_work_second_read/) | Claim ID Range | Output ID Range | Known Findings |`. Ranges are
+   fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
+   Findings` lists the C-IDs and one-line mechanism already logged there.
+3. **Dispatch** `prompts/second-read-worker.md` (stream = claims), one subagent per row,
+   fire-and-forget. At `deep` depth dispatch a second pass with a different `{MANDATE_LENS}` and
+   its own disjoint ranges. Completion = shard exists; retry-once → blocked-continue.
+4. **Merge.** Snapshot `claims_register.md` + `output_register.md` to
+   `audit/_run/snapshots/claims_b3b/`; dispatch `prompts/merge-first-pass.md` filled for the
+   claims stream with `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b
+   allocation plan, and `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
+   **adds** the new rows to the existing canon, preserving every b3 row unchanged.
+5. `lint_registers.py --stage b3b-claims` (new claim rows in b3b ranges and `inconsistent` or
+   `unclear`; new output rows not `listed`/`confirmed`; no b3 row deleted or mutated; C↔O links
+   bidirectional; report identity holds). Atomic rename on pass. Manifest `claims_b3b = done`.
+
+The recheck inventory (b4) then picks up every new issue-flagged and `unclear` row.
+
 ## b4 — Recheck plan (conductor-computed, no LLM)
 
 Build the recheck inventory **mechanically** from the canonical claims register (claims rows

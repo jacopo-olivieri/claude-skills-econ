@@ -27,7 +27,8 @@ Invariants you never break:
 - **Skeleton text is invariant** — you and the planner subagents fill the designated slots only.
 - **Every canonical register mutation** goes write-to-staging (`audit/_staging/`) → lint →
   atomic rename (`mv`), with a pre-stage snapshot of the register under
-  `audit/_run/snapshots/<stage-key>/`.
+  `audit/_run/snapshots/<stage-key>/`. Exception: the final b8 promotion copies instead of
+  renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, `b7`, `b8`, `b9`;
   worker-shard checks add `--shard <path>`). On failure, re-dispatch the producing agent once

@@ -18,9 +18,33 @@ canon exists.
 1. Snapshot both link-bearing registers to `audit/_run/snapshots/b7/`.
 2. Dispatch one subagent with `prompts/cross-linker.md`. It edits **only** `Related Error IDs`
    (claims) and `Related Claim IDs` (code errors) in staging copies, and writes
-   `audit/register_cross_link_summary.md`.
+   `audit/register_cross_link_summary.md` — including a `## Status conflicts` section for
+   every link pairing a `confirmed` claim with a `confirmed` code error, and a
+   `## Severity divergences` section for every link whose two rows carry filled, differing
+   severities.
 3. `lint_registers.py --stage b7`: non-link columns byte-identical to snapshot; every link
-   resolves both ways (C-x lists E-y ⟺ E-y lists C-x); summary exists. Atomic rename.
+   resolves both ways (C-x lists E-y ⟺ E-y lists C-x); summary exists; every
+   confirmed-claim↔confirmed-error link is listed under `## Status conflicts`; every
+   divergent-severity link is listed under `## Severity divergences`. Atomic rename.
+4. **Status-conflict resolution** (only when the summary lists conflicts): dispatch one
+   recheck-cluster-worker over the conflicted claim rows, with the linked error rows named as
+   evidence to check. Apply the standard verdict→register mapping (registers.md) to the
+   claims register mechanically. If a verdict leaves the claim `confirmed` (the error does
+   not actually contradict it), the link itself was wrong: remove it from both rows and note
+   the removal in the summary. No confirmed-claim↔confirmed-error link may survive into b8
+   (lint b8 enforces).
+5. **Severity-divergence resolution** (only when the summary lists divergences; may share
+   the step-4 dispatch): the recheck revisits each listed pair and returns a verdict; the
+   conductor then either aligns the two severities (verdict→register mapping, mechanically
+   applied) or appends a one-line justification for the gap — taken from the ledger's
+   `Proposed Note` — to the pair's line in the summary. The recheck worker writes only its
+   shard, never the summary. Legitimate gaps exist (a claim row may assert something
+   narrower than the error breaks) but are never left silent. Pairs still divergent at b8
+   must remain listed in the section (lint b8 enforces listing; the justification is a
+   prose obligation on the conductor).
+6. Whenever step 4 or step 5 changed any register row, refresh the b7 snapshot and re-run
+   the b7 lint before moving on (otherwise post-run `--stage b7` replay fails on the
+   changed rows).
 
 ## b8 — Author-facing rewrite
 
@@ -30,8 +54,13 @@ canon exists.
    versions, armed with the five contrastive gold examples and the jargon ban carried verbatim
    in the skeleton.
 3. `lint_registers.py --stage b8`: counts/IDs/statuses/paths byte-identical; `*_Original`
-   columns preserve prior text; blankness pairing both directions; no `Notes` columns.
-   Atomic rename.
+   columns preserve prior text; blankness pairing both directions; no `Notes` columns; any
+   linked pair with differing severities listed under `## Severity divergences`.
+4. **Promote by copy, not move**: copy the staging registers over canon (write via temp
+   file + atomic rename on the canon side) and leave the copies in `_staging/` untouched as
+   the frozen b8 boundary state, so `lint_registers.py --stage b8` stays replayable after
+   the run. Add one line to `audit_readme.md`: `_staging/` holds the frozen b8 registers,
+   superseded by the root registers.
 
 ## b9 — Export (script only — never an LLM)
 

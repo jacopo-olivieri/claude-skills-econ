@@ -1,7 +1,7 @@
 {
   "fixture": "planted",
   "audited_scope": "fixture/planted/ only — this answer key and fixture/README.md sit outside the repo root handed to the skill and must never be visible to any worker",
-  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; re-score after ANY skeleton edit",
+  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit",
   "must_find": [
     {
       "id": "P-01",
@@ -82,6 +82,14 @@
       "where": "data/households.csv columns head_name, gps_lat, gps_lon",
       "mechanism": "Respondent names and household GPS coordinates ship in the public data file.",
       "min_severity": 2
+    },
+    {
+      "id": "P-11",
+      "kind": "claim_or_code_error",
+      "expected_type": "treatment_or_event_timing_error (aggregation_or_unit_error also accepted: the mechanism is a wrong-baseline mean, which reviewers may defensibly type either way)",
+      "where": "paper Sec. 1 ('long-run historical mean (the 1991--2020 climate normal)') vs do/build_panel.do rain_mean",
+      "mechanism": "Paper defines the shock as the deviation from the village's long-run historical (1991-2020) mean; build_panel.do computes rain_mean as the mean of rain_mm over the two in-sample waves, so the shock is measured against a two-observation in-sample mean, not a long-run climate normal. Designed to split the reviews: the code line reads as a plausible 'village mean' on surface inspection, so a claims pass may confirm the definition while the code pass flags the wrong baseline.",
+      "min_severity": 2
     }
   ],
   "must_not_find": [
@@ -90,6 +98,13 @@
       "kind": "decoy",
       "where": "paper/paper.tex commented-out placebo figure block",
       "mechanism": "A fully commented-out figure references artifacts/fig_placebo.pdf, which no script produces. Comment-blanking removes it from the audited paper; any finding about the placebo figure or fig_placebo.pdf is a false positive."
+    }
+  ],
+  "expected_status_conflicts": [
+    {
+      "id": "SC-01",
+      "trigger": "P-11",
+      "rule": "Conditional — applies only when the run both (a) leaves a claims-register row asserting the long-run-mean shock definition at status confirmed AND (b) records a confirmed code-error row for the P-11 mechanism. In that case the cross-linker must link the pair, list it under '## Status conflicts' in register_cross_link_summary.md, and the conflict must be resolved before b8 (the claim must not remain confirmed while linked to the confirmed error). If instead the claims review directly marks the shock-definition claim inconsistent or confirmation_needed, no conflict arises and this rule passes vacuously — P-11 recall is required either way. A run that has both (a) and (b) but never surfaces the conflict fails this check even if P-11 recall passes."
     }
   ],
   "expected_confirmed_examples": [

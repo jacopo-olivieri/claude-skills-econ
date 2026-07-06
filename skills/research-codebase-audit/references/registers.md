@@ -45,6 +45,13 @@ severity 1–2 unless there is concrete evidence the result itself is affected.
 `pii_or_disclosure_risk` findings default to severity 2–3: disclosure harm is orthogonal to
 result-materiality, so they are never severity-1 cosmetic.
 
+Severity is judged against **all reported quantities** — headline estimates, descriptive
+statistics, sample counts, stated units, and figure axes — not only headline results.
+"Does not affect the coefficient" is never by itself grounds for severity 2 when some other
+reported number is wrong: severity 2's "does not change results" means no reported quantity
+changes, and severity 3's "changes a reported number" includes the levels and stated units of
+any quantity the paper reports.
+
 **Issue-flagging rule** (two register-specific, lintable forms):
 
 - Claims: `Issue Description` non-empty ⟺ `Severity` filled. A row is issue-flagged iff
@@ -241,6 +248,34 @@ The last five deserve definitions (all statically detectable):
 - Recheck merges may split or merge rows only when required to represent the evidence
   faithfully, and must declare every split/merge in the merge summary (lint reconciles counts).
   Split rows take new IDs from the merge-coordinator range.
+
+## Cross-link consistency (b7)
+
+The cross-linker links every `confirmed` or `confirmation_needed` code error to the claim rows
+that assert what the error breaks — **including claims whose status is `confirmed` or
+`mapped`**; a link is never skipped because the claim row is unflagged. Link scope is
+**direct assertion only**: link the claim rows that directly assert the broken thing itself.
+Claims about downstream results (significance, magnitudes, R²) that merely depend on the
+broken quantity are not linked — they are reached through the directly-asserting claim, and
+linking them would make every error link to every result row. A claim must not
+remain `confirmed` while linked to a `confirmed` code error: under the link semantics such a
+link means the error contradicts what the claim asserts, so the pair is a **status conflict**.
+The cross-linker cannot change statuses; it records every such pair under a
+`## Status conflicts` section of `register_cross_link_summary.md`, and the conductor resolves
+each listed pair with a targeted recheck before the rewrite pass. Lint enforces both ends:
+b7 fails on a confirmed-claim↔confirmed-error link not listed as a status conflict, and b8
+fails if any such link survives into the rewrite.
+
+**Severity divergences.** Linked rows describe one mechanism from two perspectives — what the
+claim misstates about the paper vs what the error breaks in the code — so their severities may
+legitimately differ (e.g. a table-label claim asserts something narrower than the error it is
+linked to). A divergence is never silent: the cross-linker (which cannot edit severities) lists
+every linked pair whose filled severities differ under a `## Severity divergences` section of
+`register_cross_link_summary.md`, and the conductor resolves each listed pair before the
+rewrite pass — the targeted recheck either aligns the two severities or appends a one-line
+justification for the gap to the pair's line in the summary. Lint enforces listing at both
+ends: b7 and b8 fail on any linked pair with differing filled severities that is absent from
+the section.
 
 ## Recheck vocabulary
 

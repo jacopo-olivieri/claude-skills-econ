@@ -807,6 +807,64 @@ def non_link_identical(lint, staging_reg, snap_reg, cols, idc, link_col, label):
                 lint.fail(f"{label}: {i} non-link column '{c}' changed at cross-link")
 
 
+def confirmed_conflict_links(claim_rows, error_rows, claim_cols=None, error_cols=None):
+    """Links pairing a confirmed claim with a confirmed code error (status conflicts)."""
+    ccols = claim_cols or CLAIMS_COLS
+    ecols = error_cols or ERROR_COLS
+    err_status = {
+        d["Error ID"]: d.get("Status")
+        for d in (dict(zip(ecols, r)) for r in error_rows if not is_example_row(r))
+        if d.get("Error ID")
+    }
+    pairs = []
+    for r in claim_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ccols, r))
+        if d.get("Status") != "confirmed" or not d.get("Claim ID"):
+            continue
+        for eid in ids_in(d.get("Related Error IDs", ""), "E"):
+            if err_status.get(eid) == "confirmed":
+                pairs.append((d["Claim ID"], eid))
+    return pairs
+
+
+def severity_divergence_links(claim_rows, error_rows, claim_cols=None, error_cols=None):
+    """Links whose two rows carry filled, differing severities (severity divergences)."""
+    ccols = claim_cols or CLAIMS_COLS
+    ecols = error_cols or ERROR_COLS
+    err_sev = {
+        d["Error ID"]: d.get("Severity")
+        for d in (dict(zip(ecols, r)) for r in error_rows if not is_example_row(r))
+        if d.get("Error ID")
+    }
+    pairs = []
+    for r in claim_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ccols, r))
+        if not d.get("Severity") or not d.get("Claim ID"):
+            continue
+        for eid in ids_in(d.get("Related Error IDs", ""), "E"):
+            es = err_sev.get(eid)
+            if es and es != d["Severity"]:
+                pairs.append((d["Claim ID"], eid))
+    return pairs
+
+
+def check_pairs_listed(lint, summary, section, pairs, stage, reason):
+    m = re.search(
+        rf"^##\s*{re.escape(section)}\b(.*?)(?=^##\s|\Z)", summary or "", re.M | re.S
+    )
+    lines = (m.group(1) if m else "").split("\n")
+    for cid, eid in pairs:
+        if not any(cid in ln and eid in ln for ln in lines):
+            lint.fail(
+                f"{stage}: {reason} ({cid} <-> {eid}) but no line under "
+                f"'## {section}' in register_cross_link_summary.md lists the pair"
+            )
+
+
 def stage_b7(lint, audit):
     snap = audit / "_run" / "snapshots" / "b7"
     staging = audit / "_staging"
@@ -822,7 +880,15 @@ def stage_b7(lint, audit):
         lint, c[1], CLAIMS_COLS, "Claim ID", "Related Error IDs",
         e[1], ERROR_COLS, "Error ID", "Related Claim IDs", "b7 C<->E",
     )
-    read_text(lint, audit / "register_cross_link_summary.md")
+    summary = read_text(lint, audit / "register_cross_link_summary.md")
+    check_pairs_listed(
+        lint, summary, "Status conflicts", confirmed_conflict_links(c[1], e[1]),
+        "b7", "confirmed claim linked to confirmed error",
+    )
+    check_pairs_listed(
+        lint, summary, "Severity divergences", severity_divergence_links(c[1], e[1]),
+        "b7", "linked pair with differing severities",
+    )
 
 
 REWRITE_PAIRS = {
@@ -881,6 +947,21 @@ def stage_b8(lint, audit, manifest):
                     lint.fail(f"{staging / f}: {i} '{orig_col}' does not preserve prior text")
                 if bool(row.get(new_col, "")) != bool(orig_val):
                     lint.fail(f"{staging / f}: {i} blankness pairing violated for '{new_col}'")
+    if mode != "code_errors_only":
+        st_c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS, allow_extra=True)
+        st_e = load_register(lint, staging / "code_error_register.md", ERROR_COLS, allow_extra=True)
+        if st_c is not None and st_e is not None:
+            for cid, eid in confirmed_conflict_links(st_c[1], st_e[1], st_c[0], st_e[0]):
+                lint.fail(
+                    f"{staging / 'claims_register.md'}: confirmed claim {cid} still linked to "
+                    f"confirmed error {eid} at b8 (unresolved status conflict)"
+                )
+            summary = read_text(lint, audit / "register_cross_link_summary.md")
+            check_pairs_listed(
+                lint, summary, "Severity divergences",
+                severity_divergence_links(st_c[1], st_e[1], st_c[0], st_e[0]),
+                "b8", "linked pair with differing severities",
+            )
 
 
 def stage_b9(lint, audit, manifest):

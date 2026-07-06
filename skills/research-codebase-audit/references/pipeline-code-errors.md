@@ -96,7 +96,11 @@ Inventory, mechanically:
 - a ~10% random sample of the remaining `confirmed` rows, stratified by Error Type (bounds
   total across strata: min 3 or all available if fewer, max 15).
 
-Cluster by Error Type, ≤ 8 IDs per cluster, shard files under `audit/_code_error_recheck/`.
+Cluster per `review_depth` (manifest). At `shallow`/`standard`: cluster by Error Type, ≤ 8 IDs
+per cluster. At `deep`: every **substantive ID** gets its own single-ID cluster — a substantive
+ID is any inventory row that is `candidate`, or `confirmed` with Severity ≥ 3; the sampled
+remaining `confirmed` rows are not substantive and may still be grouped by Error Type into
+clusters of ≤ 8 IDs. Shard files under `audit/_code_error_recheck/`.
 Write `audit/plans/code_error_recheck_plan.md` yourself with the same table formats as the
 claims recheck plan (inventory `| ID | Reason | Likely Evidence |`; clusters
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; vocabulary pointer to

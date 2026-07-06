@@ -63,10 +63,9 @@ defaults and let the user correct.
 4. **Review depth.** How much redundancy the run spends on thoroughness — propose `standard`
    (the default) and let the user pick `shallow` or `deep`, same style as the ladder/budget.
    Depth is **orthogonal to the review ladder**: the ladder governs *what techniques are
-   allowed*; depth governs *how much redundancy is spent*. The chosen level sets three
-   conductor knobs — the second-read trigger threshold, how many independent reading passes a
-   first-pass worker gets, and whether the recheck runs per-finding — per the depth-knob table
-   below.
+   allowed*; depth governs *how much redundancy is spent*. The chosen depth sets two
+   conductor knobs — the second-read trigger threshold and whether the recheck runs
+   per-finding — per the depth-knob table below.
 5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
    exploratory folders); the user corrects. Record the final exclusion list.
 6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
@@ -100,6 +99,9 @@ Write `audit/_run/manifest.json`:
 }
 ```
 
+Every manifest write — this initial one and every later status update — goes to a temp file in
+the same directory followed by an atomic rename over `manifest.json`; never edit it in place.
+
 Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
 exist only where the mode runs them). `shards` appears on worker stages only; a worker stage is
@@ -108,16 +110,18 @@ exist only where the mode runs them). `shards` appears on worker stages only; a 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
 receives — compose it once from mode + ladder + budget + off-limits.
 
-**Depth-knob table.** `review_depth` (default `standard`) resolves to three conductor knobs the
+**Depth-knob table.** `review_depth` (default `standard`) resolves to two conductor knobs the
 downstream stages read. This table is authoritative for those knobs; it lives here — beside the
 manifest schema — and NOT in `references/registers.md`, because these are conductor behaviours,
-not register semantics pasted into worker contexts.
+not register semantics pasted into worker contexts. (A third knob — 2 independent first-pass
+passes per b2 worker at `deep` — was deleted: it was never implemented, and pair-allocating
+scopes would break the b1 exactly-one-scope lints. Extra `deep` redundancy comes from the b3b
+second-lens pass instead.)
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |
 | **Second-read trigger** (U2 sweep after b3) | serious findings only: re-read a file only if it carries a first-pass finding at Severity ≥ 3 | any first-pass finding: re-read a file that carries at least one first-pass finding of any severity | any first-pass finding, **and** the second-read worker runs a second independent pass with a different mandate lens |
-| **Independent first-pass passes** per chunk/section worker (b2) | 1 | 1 | 2 (the extra pass carries a distinct mandate) |
-| **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one recheck cluster per issue-flagged/candidate finding |
+| **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one single-ID cluster per substantive ID (issue-flagged/`unclear` claim; `candidate` or Severity ≥ 3 code row); only sampled clean `confirmed` rows may still be grouped |
 
 Depth never changes *which* techniques are permitted (that is the ladder) — only how much
 redundancy is spent. The trigger is per-file, not per-finding, so a file with five findings is

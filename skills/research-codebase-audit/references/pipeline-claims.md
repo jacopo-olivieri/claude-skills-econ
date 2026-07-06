@@ -86,7 +86,11 @@ merge):
 - a ~10% random sample of `confirmed` rows, stratified by Claim Type (bounds total across
   strata: min 3 or all available if fewer, max 15).
 
-Group the inventory by Claim Type into clusters of ≤ 8 IDs; assign each cluster a shard file
+Cluster per `review_depth` (manifest). At `shallow`/`standard`: group the inventory by Claim
+Type into clusters of ≤ 8 IDs. At `deep`: every **substantive ID** gets its own single-ID
+cluster — a substantive ID is any inventory claim row that is issue-flagged (Severity
+non-empty) or `unclear`; the sampled clean `confirmed` rows are not substantive and may still
+be grouped by Claim Type into clusters of ≤ 8 IDs. Assign each cluster a shard file
 under `audit/_recheck/`. Write `audit/plans/claims_recheck_plan.md` yourself with:
 an inventory table `| ID | Reason | Likely Evidence |`; a cluster table
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; and a pointer to the

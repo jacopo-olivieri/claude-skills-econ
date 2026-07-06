@@ -15,7 +15,9 @@ ax = means.plot(marker="o")
 ax.set_xlabel("Survey wave")
 ax.set_ylabel("Income (thousands)")
 ax.set_title("Average household income by wave")
-ax.legend(["Non-shocked", "Shocked"])
+# shocked = (rain_shock < 0): unstack yields columns [0, 1] = [non-shocked, shocked],
+# plotted in that order.
+ax.legend(["Shocked", "Non-shocked"])
 
 plt.tight_layout()
 plt.savefig("artifacts/fig1_income_trends.pdf")

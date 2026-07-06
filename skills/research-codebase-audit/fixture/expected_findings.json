@@ -1,7 +1,7 @@
 {
   "fixture": "planted",
   "audited_scope": "fixture/planted/ only — this answer key and fixture/README.md sit outside the repo root handed to the skill and must never be visible to any worker",
-  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit",
+  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit. Behavior tests added 2026-07-06: P-12 exercises the second-read recall sweep (a second independent error in a file already flagged by P-06 — recovery requires re-reading the flagged file), P-13 exercises cheap-check arithmetic recompute (must be flagged inconsistent, not left mapped), and P-14 exercises the blocked-visible-metadata discipline. P-14 dual-accept: satisfied by an inconsistent claim (severity >= 2) OR by a blocked claim whose Blocked Check records the 1-in-20 vs one-in-ten contradiction (in that branch the severity floor is waived); a silently-blocked row with no such note fails P-14.",
   "must_find": [
     {
       "id": "P-01",
@@ -89,6 +89,30 @@
       "expected_type": "treatment_or_event_timing_error (aggregation_or_unit_error also accepted: the mechanism is a wrong-baseline mean, which reviewers may defensibly type either way)",
       "where": "paper Sec. 1 ('long-run historical mean (the 1991--2020 climate normal)') vs do/build_panel.do rain_mean",
       "mechanism": "Paper defines the shock as the deviation from the village's long-run historical (1991-2020) mean; build_panel.do computes rain_mean as the mean of rain_mm over the two in-sample waves, so the shock is measured against a two-observation in-sample mean, not a long-run climate normal. Designed to split the reviews: the code line reads as a plausible 'village mean' on surface inspection, so a claims pass may confirm the definition while the code pass flags the wrong baseline.",
+      "min_severity": 2
+    },
+    {
+      "id": "P-12",
+      "kind": "code_error",
+      "expected_type": "output_label_or_path_mismatch",
+      "where": "py/make_figures.py legend vs the plotted column order",
+      "mechanism": "make_figures.py plots income by shock status: groupby(['wave','shocked']).unstack() yields columns [0,1] = [non-shocked, shocked], plotted in that order, but ax.legend(['Shocked','Non-shocked']) reverses the labels, so the figure series are mislabeled. SECOND-READ TEST: this is a second, independent error in a file whose prominent first finding is the P-06 stale path (reads output/panel_v2.csv). A satisficing first pass logs P-06 and stops; recovering P-12 requires re-reading the already-flagged file. Behavior-shaped (two-independent-errors-in-one-file), not floods-specific.",
+      "min_severity": 1
+    },
+    {
+      "id": "P-13",
+      "kind": "claim",
+      "expected_type": "interpretation (rounding_or_precision or quantitative_result also accepted)",
+      "where": "paper/paper.tex Data section: '725 households --- 25 percent of the panel'",
+      "mechanism": "The prose reports 2,416 households and states 725 of them (25 percent) experienced a negative rainfall shock; 725/2,416 = 30 percent, not 25. CHEAP-CHECK TEST: a one-line arithmetic recompute against numbers already in the prose settles it -- no external data or script needed -- so it must be flagged inconsistent, not left 'mapped'/located-but-unverified. Behavior-shaped (paper arithmetic slip), not floods-specific.",
+      "min_severity": 2
+    },
+    {
+      "id": "P-14",
+      "kind": "claim",
+      "expected_type": "data_construction (sample_count also accepted)",
+      "where": "paper/paper.tex Data section ('public one-in-ten subsample') vs planted/README.md households.csv description ('public 1-in-20 subsample')",
+      "mechanism": "The paper says estimates use a one-in-ten subsample and that the complete enumeration is restricted-access, so a naive check marks the claim blocked (the full census cannot be inspected). But the visible package metadata already contradicts it: the README describes data/households.csv as a '1-in-20 subsample'. BLOCKED-VISIBLE TEST: a visible-metadata check on a blocked claim (filenames, headers, README descriptions) catches the one-in-ten vs 1-in-20 contradiction. Dual-accept: recovered as an inconsistent claim (preferred), OR as a blocked claim whose Blocked Check explicitly records the 1-in-20 contradiction. A silently-blocked row with no Blocked Check note is a FAILURE of this test. Behavior-shaped (blocked claim whose visible metadata contradicts it), not floods-specific.",
       "min_severity": 2
     }
   ],

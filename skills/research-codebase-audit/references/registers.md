@@ -52,6 +52,14 @@ reported number is wrong: severity 2's "does not change results" means no report
 changes, and severity 3's "changes a reported number" includes the levels and stated units of
 any quantity the paper reports.
 
+**Downstream-use severities must cite the search that establishes the use.** When a severity
+rests on the finding being *used downstream* — a code error matters because its output feeds a
+reported result, or a claim matters because the quantity is consumed elsewhere — the row must
+cite the specific script, table, or figure where that downstream use occurs, in either direction
+(claim→code or code→claim). An uncited "used downstream" justification cannot lift a severity
+above the finding's on-its-face level; do the search and cite it, or rate the finding on its own
+terms.
+
 **Issue-flagging rule** (two register-specific, lintable forms):
 
 - Claims: `Issue Description` non-empty ⟺ `Severity` filled. A row is issue-flagged iff
@@ -69,14 +77,41 @@ code/output shows → (3) why it matters** for the claim, table, reproducibility
 interpretation. Workers write it technically but complete; the dedicated rewrite pass produces
 the author-facing version. Do not restate these parts as separate columns.
 
+## Standing self-consistency checks
+
+Every review runs these three general checks. Each is phrased as a self-claim the package makes
+about itself — "the package asserts X; confirm X" — so they transfer to any package and encode no
+package-specific bug pattern. A concern that can only be stated as "look for bug pattern Z" is an
+ordinary worker observation, not one of these.
+
+1. **Declared setup works.** The package asserts its install/setup commands run. Parse each
+   documented installation or setup command (README, requirements/environment manifest, master
+   script header) and confirm every named dependency, path, and version is satisfiable from the
+   package. First-pass workers check statically only (they never execute scripts); actually
+   attempting the command is a runtime probe reserved for the recheck where the ladder permits it.
+   A mismatch is a `readme_or_package_mismatch` (or the more specific
+   `version_or_dependency_error` / `stale_or_wrong_path`).
+2. **Shared conventions agree.** The package asserts one definition for each convention it uses in
+   more than one place. Gather every site that defines a shared convention — fiscal-year or
+   sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
+   separator, ID/merge key — and confirm the definitions agree across files. A divergence is the
+   error, typed by its mechanism per the error taxonomy below.
+3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each
+   point where the pipeline hands off between languages or scripts, follow the inputs and outputs
+   and confirm what one step writes is exactly where the next reads — same path, name, and shape.
+   A break is a `missing_input_or_output` / `stale_or_wrong_path`.
+
+Checks (1) and (3) are primarily code-stream (chunk workers); (2) spans both streams — a
+convention the paper also states is a claims-stream check as well as a code-stream one.
+
 ## Claims register — `audit/claims_register.md`
 
 Purpose: one row per independently checkable paper assertion that rests on code or data, and
 whether the code supports it.
 
-| Claim ID | Paper Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data Source | Output IDs | Status | Severity | Issue Description | Related Error IDs |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| C-0000 | Appendix F > Table F.33 note | "excluding capital-goods suppliers" | TRUE | robustness | Table F.33's `Cap` column excludes capital-goods suppliers. | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | O-0000 | inconsistent | 4 | The table note says the `Cap` column excludes capital-goods suppliers, but the code filters the opposite sample: the builder sets `sample_excl_cap == 1` when neither party is capital-good, while the table code keeps `sample_excl_cap == 0`. This reverses the intended robustness sample, so the column does not test what the note claims. |  |
+| Claim ID | Paper Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data Source | Output IDs | Status | Severity | Issue Description | Blocked Check | Related Error IDs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C-0000 | Appendix F > Table F.33 note | "excluding capital-goods suppliers" | TRUE | robustness | Table F.33's `Cap` column excludes capital-goods suppliers. | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | O-0000 | inconsistent | 4 | The table note says the `Cap` column excludes capital-goods suppliers, but the code filters the opposite sample: the builder sets `sample_excl_cap == 1` when neither party is capital-good, while the table code keeps `sample_excl_cap == 0`. This reverses the intended robustness sample, so the column does not test what the note claims. |  |  |
 
 Column meanings:
 
@@ -108,6 +143,10 @@ Column meanings:
 - `Status`: see vocabulary below.
 - `Severity`: 1–4 per the rubric; filled iff issue-flagged.
 - `Issue Description`: three-part structure; filled iff issue-flagged.
+- `Blocked Check`: for a `blocked` row, what remained checkable from visible material (filenames,
+  column headers, file shapes, metadata) and what that check found; empty on every non-blocked
+  row. **Required non-empty iff `Status == blocked`** (lint enforces both directions). This is
+  auditor-facing evidence, not author prose — the rewrite pass never touches it.
 - `Related Error IDs`: cross-links to code errors. **Blank until the cross-link stage**; only the
   cross-linker fills it. Bidirectional after cross-link: C-x lists E-y ⟺ E-y lists C-x (lint
   enforces at b7).
@@ -121,12 +160,35 @@ get one row.
 | Status | Meaning |
 | --- | --- |
 | `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** |
-| `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. |
+| `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. |
 | `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. |
-| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. |
+| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. If that visible check contradicts the claim, the row is `inconsistent`, not `blocked`. |
 | `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
+
+### Cheap-check completion (mapped-closure discipline)
+
+`mapped` ("located but not verified") is for checks that genuinely cannot be run within the
+ladder — they need the full original script executed or the exact restricted data. It is not a
+resting place for a check that is simply cheap. When a check reduces to any of the following
+against already-located code, the worker **completes it during review** and records the result
+(`confirmed` or `inconsistent`), never `mapped`:
+
+- **Enumerable list** — a documented set vs a coded set (control variables, fixed effects, sample
+  filters, dropped observations): compare the two lists element by element.
+- **Single constant** — a documented threshold, coefficient, seed, or scale factor vs the value
+  in code.
+- **Closed-form arithmetic** — a reported quantity that the located inputs imply by a one-line
+  computation: recompute it. This applies squarely to `interpretation` claims (e.g. the paper
+  reads a coefficient of 0.25 as "a 30% increase" — recompute against the stated base and flag
+  the mismatch) and to any `transcription` / `rounding_or_precision` claim.
+
+These three are all **static**, so any worker completes them — no execution needed. A check that
+would instead be settled by a small unit test or a simulated run of error-prone code is completed
+where the ladder permits execution (the recheck's runtime probe), not left `mapped` and
+unremarked. When a row must stay `mapped`, state the specific reason it cannot be closed — which
+script must run, or which restricted input is missing.
 
 ## Output register — `audit/output_register.md`
 
@@ -171,6 +233,14 @@ onward.
 ## Code-error register — `audit/code_error_register.md`
 
 Purpose: one row per potential source-code or pipeline error, independent of the paper.
+
+**Code-detectable vs paper-relative (no backfill).** This register is for defects wrong on the
+code's own terms — a defect that is only wrong *relative to the paper* (e.g. a filter that keeps
+the complementary sample but is well-formed on its own terms, or a value that is fine except that
+it contradicts the manuscript) belongs to the claims register alone. No rule backfills such an
+item into the code-error register: forcing a code-error row would assert the code is wrong on its
+own terms when it is not. The cross-link stage still connects the two registers where a genuine
+code error underlies a claim issue.
 
 | Error ID | Error Type | Code/Data Source | Code Location | Status | Severity | Error Description | Why It Matters | Related Claim IDs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -266,6 +336,21 @@ each listed pair with a targeted recheck before the rewrite pass. Lint enforces 
 b7 fails on a confirmed-claim↔confirmed-error link not listed as a status conflict, and b8
 fails if any such link survives into the rewrite.
 
+**Escalated mapped claims (backstop for the located-but-unverified miss).** A `mapped` claim
+linked to a `confirmed` code error that contradicts what the claim asserts is a weaker signal
+than a status conflict but still must not pass silently: the error suggests the claim is actually
+false, yet the claim was only located, never verified. This is the miss the deeper claim-to-code
+search (the cheap-check and second-read work) is meant to catch at the source; the cross-link
+escalation is the backstop. The cross-linker lists every such pair under its **own**
+`## Escalated mapped claims` section — never under `## Status conflicts` — and the conductor gives
+each a **second look** (a targeted recheck of the claim with the error named as evidence). The
+outcome is open: the recheck may make the claim `inconsistent` (the error settles it) or leave it
+`mapped` (the error does not actually settle the claim). Because a `mapped`-and-linked pair may
+legitimately survive, the status-conflict "must not survive b8" rule does **not** apply here.
+Lint enforces listing at b7 (every mapped-claim↔confirmed-error contradiction is in the section);
+at b8 it requires only that the second look happened (a recheck ledger entry for the claim), not
+any particular status outcome.
+
 **Severity divergences.** Linked rows describe one mechanism from two perspectives — what the
 claim misstates about the paper vs what the error breaks in the code — so their severities may
 legitimately differ (e.g. a table-label claim asserts something narrower than the error it is
@@ -327,6 +412,10 @@ Claims:
 | `not_substantiated` | per evidence (`confirmed` if verified sound, else `mapped`/`unclear`) | cleared | cleared |
 | `confirmation_needed` | `confirmation_needed` | kept | kept |
 | `blocked` | `blocked` | kept | kept, blocker appended |
+
+A row set to `blocked` by the recheck also gets its `Blocked Check` populated from the ledger's
+visible-metadata check (what stayed checkable from filenames/headers/shapes and the result); the
+column is required non-empty on every `blocked` claim.
 
 For a sampled `confirmed` row escalated by verdict `substantiated`, the row had no issue text:
 the merge writes `Issue Description` from the ledger's `Proposed Note` (three-part structure)

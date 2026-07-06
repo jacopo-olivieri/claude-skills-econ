@@ -107,6 +107,7 @@ CLAIMS_COLUMN_MEANINGS = {
     "Potential Issue": "TRUE if the review flagged a potential issue on this row.",
     "Severity": "1 (cosmetic) to 4 (could change a headline result); filled only on flagged rows.",
     "Issue Description": "Author-facing description: what the paper says, what the code shows, why it matters.",
+    "Blocked Check": "For a blocked claim, what stayed checkable from visible material (filenames, headers, shapes) and what that check found.",
     "Related Error IDs": "Directly related code-error rows, if any.",
 }
 

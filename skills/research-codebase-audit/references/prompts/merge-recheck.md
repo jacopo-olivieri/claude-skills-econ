@@ -47,7 +47,9 @@ to `{SUMMARY_FILE}`.
    `audit/audit_readme.md` — mechanically: status, severity, and description columns change
    exactly as the table says, including writing escalated issues from the ledger's
    `Proposed Note`. Where cluster evidence sharpened a mechanism, tighten the description
-   (three-part structure).
+   (three-part structure). When a verdict sets a claim row to `blocked`, populate its
+   `Blocked Check` column from the ledger (what stayed checkable from visible material and the
+   result) — it is required non-empty on every `blocked` claim.
 3. Follow the row-lifecycle rules in `audit/audit_readme.md`: never delete; demotions follow
    the mapping; cross-cluster duplicates become tombstones; splits/merges only when required
    to represent the evidence faithfully, each declared in the summary, with split rows

@@ -30,8 +30,8 @@ Invariants you never break:
   `audit/_run/snapshots/<stage-key>/`. Exception: the final b8 promotion copies instead of
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
-  are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, `b7`, `b8`, `b9`;
-  worker-shard checks add `--shard <path>`). On failure, re-dispatch the producing agent once
+  are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
+  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>`). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, mark that shard/stage
   `blocked` in the manifest and continue everything that does not depend on it. **Merges
   proceed over the non-blocked shards** and document blocked ones in the merge report.
@@ -60,11 +60,18 @@ defaults and let the user correct.
    simulated data, targeted reruns, each under a per-check compute budget (default per
    `references/registers.md`: 15 min). Level 3 = unrestricted. Record the level, the budget,
    and an explicit off-limits list (scripts/data/commands the run must not touch).
-4. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
+4. **Review depth.** How much redundancy the run spends on thoroughness — propose `standard`
+   (the default) and let the user pick `shallow` or `deep`, same style as the ladder/budget.
+   Depth is **orthogonal to the review ladder**: the ladder governs *what techniques are
+   allowed*; depth governs *how much redundancy is spent*. The chosen level sets three
+   conductor knobs — the second-read trigger threshold, how many independent reading passes a
+   first-pass worker gets, and whether the recheck runs per-finding — per the depth-knob table
+   below.
+5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
    exploratory folders); the user corrects. Record the final exclusion list.
-5. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
+6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
    data, quirks (e.g. mirror folders that are import-only).
-6. **Output preferences and worker model tier** (default: inherit the session model).
+7. **Output preferences and worker model tier** (default: inherit the session model).
 
 Write `audit/_run/manifest.json`:
 
@@ -73,6 +80,7 @@ Write `audit/_run/manifest.json`:
   "mode": "replication | code_errors_only",
   "ladder_level": 1,
   "compute_budget_minutes": 15,
+  "review_depth": "shallow | standard | deep",
   "off_limits": [],
   "scope_exclusions": [],
   "known_context": "…",
@@ -92,13 +100,30 @@ Write `audit/_run/manifest.json`:
 }
 ```
 
-Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, `b7`,
-`b8`, `b9` (finalize keys exist only where the mode runs them). `shards` appears on worker
-stages only; a worker stage is `done` when every shard is `done` or `blocked` and at least one
-is `done`.
+Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, the
+second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
+exist only where the mode runs them). `shards` appears on worker stages only; a worker stage is
+`done` when every shard is `done` or `blocked` and at least one is `done`.
 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
 receives — compose it once from mode + ladder + budget + off-limits.
+
+**Depth-knob table.** `review_depth` (default `standard`) resolves to three conductor knobs the
+downstream stages read. This table is authoritative for those knobs; it lives here — beside the
+manifest schema — and NOT in `references/registers.md`, because these are conductor behaviours,
+not register semantics pasted into worker contexts.
+
+| Knob | `shallow` | `standard` (default) | `deep` |
+| --- | --- | --- | --- |
+| **Second-read trigger** (U2 sweep after b3) | serious findings only: re-read a file only if it carries a first-pass finding at Severity ≥ 3 | any first-pass finding: re-read a file that carries at least one first-pass finding of any severity | any first-pass finding, **and** the second-read worker runs a second independent pass with a different mandate lens |
+| **Independent first-pass passes** per chunk/section worker (b2) | 1 | 1 | 2 (the extra pass carries a distinct mandate) |
+| **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one recheck cluster per issue-flagged/candidate finding |
+
+Depth never changes *which* techniques are permitted (that is the ladder) — only how much
+redundancy is spent. The trigger is per-file, not per-finding, so a file with five findings is
+re-read once (or twice at `deep`), not five times. A *first-pass finding* is a `candidate` row in
+the code stream or an issue-flagged (`inconsistent`) claim in the claims stream — b3b runs before
+the recheck, so no row is `confirmed` at that point.
 
 Completion: manifest written and every field above resolved with the user.
 
@@ -131,8 +156,10 @@ each stream:
 | Stage keys | Lint stages | Instructions |
 | --- | --- | --- |
 | `claims_b1`–`claims_b3` (plan → section workers → merge) | `b1-claims`–`b3-claims` | `references/pipeline-claims.md` |
+| `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
 | `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
+| `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
 | `code_b4`–`code_b6` (recheck plan → cluster workers → merge) | `b4-code`–`b6-code` | `references/pipeline-code-errors.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
 | `b8` author-facing rewrite | `b8` | `references/pipeline-finalize.md` |

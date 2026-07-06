@@ -53,6 +53,40 @@ Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3/`; dispatch
 every inventory script is covered (coverage row in some shard footer) or has a documented
 blocker. Atomic rename on pass.
 
+## b3b — Second-read recall sweep (conductor-planned, adds candidates)
+
+A recall pass, not a recheck: re-read every file the first pass already flagged, to surface what
+it missed. See `references/review-principles.md` for why. Runs after b3, before the recheck plan
+(b4) is built, so the new candidates flow into the recheck automatically.
+
+1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Mechanically compute
+   the set of scripts that carry at least one first-pass finding — i.e. a `candidate` code-error
+   row. (b3b runs before the recheck, so every first-pass code finding is still `candidate`; none
+   is `confirmed` yet — keying on `confirmed` here would make the sweep always skip.) At `shallow`
+   include only scripts with a `candidate` row at Severity ≥ 3; at `standard`/`deep` any script
+   with a `candidate` row of any severity. Group by `Code/Data Source` script. If the set is
+   empty, skip b3b.
+2. **Allocation.** Write `audit/plans/code_error_second_read_plan.md` yourself: one second-read
+   worker per flagged script, with columns `| Worker ID | Script Scope | Shard File | Error ID
+   Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint requires it — and
+   put each shard path, under `audit/_code_errors_second_read/`, in the cell). Each Error ID Range
+   is fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
+   Findings` lists the E-IDs and one-line mechanism already logged in that script.
+3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
+   fire-and-forget. At `deep` depth dispatch a second pass per script with a different
+   `{MANDATE_LENS}` and its own disjoint range. Completion = shard exists; retry-once →
+   blocked-continue.
+4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
+   `prompts/merge-first-pass.md` filled for the code stream with `{SHARD_DIR}` =
+   `audit/_code_errors_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and `{MERGE_REPORT}`
+   = `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
+   existing canon, preserving every b3 row unchanged.
+5. `lint_registers.py --stage b3b-code` (new rows in b3b ranges, all `candidate`, no b3 row
+   deleted or mutated, report identity holds). Atomic rename on pass. Manifest `code_b3b = done`.
+
+The recheck inventory (b4) then picks up every new `candidate`; the b6 no-surviving-candidate
+rule is the hard backstop if one is missed.
+
 ## b4 — Recheck plan (conductor-computed, no LLM)
 
 Inventory, mechanically:

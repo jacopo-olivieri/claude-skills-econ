@@ -50,7 +50,9 @@ per register filename; the identity shard_rows − dedup_removed == added must h
 ## WHAT TO DO
 
 1. Merge all shard rows into the staging registers, preserving every worker-assigned ID
-   exactly — no renumbering, ever.
+   exactly — no renumbering, ever. If the canonical registers already contain rows (a
+   second-read sweep merges on top of the first pass), carry every existing canon row forward
+   **unchanged** and add the shard rows to them; `added` then counts only the newly added rows.
 2. Deduplicate per the row-lifecycle rule in `audit/audit_readme.md`: only where location AND
    mechanism both match. Dropped duplicates are counted in `dedup_removed`, keeping the row
    whose evidence is strongest.

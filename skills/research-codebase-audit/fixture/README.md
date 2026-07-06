@@ -1,10 +1,22 @@
 # Fixture — planted-error validation package
 
 `planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, one
-Python script, data, artifacts, README) with **10 planted errors** spanning the error
-taxonomy — including the three classes added by the design (seed, SE specification,
-weights), a transcription mismatch against a shipped artifact, hygiene/PII findings, and
-**one decoy** (a commented-out figure) that must NOT be flagged.
+Python script, data, artifacts, README) with **14 planted findings** (`must_find` items P-01
+through P-14) spanning the error taxonomy — including the three classes added by the design
+(seed, SE specification, weights), a transcription mismatch against a shipped artifact,
+hygiene/PII findings, and **one decoy** (a commented-out figure) that must NOT be flagged.
+
+**Behavior-test plants (added 2026-07-06)** — P-12/P-13/P-14 exist to predict the Floods
+failure mode, keyed to the behavior each tests:
+- **P-12** — a second, independent error (a reversed figure legend) in `py/make_figures.py`,
+  whose prominent first finding is the P-06 stale path. Recovering it requires the
+  **second-read recall sweep** re-reading an already-flagged file.
+- **P-13** — an arithmetic slip in the paper prose (725 of 2,416 households is 30%, not the
+  stated 25%). Caught by the **cheap-check arithmetic recompute**, not left located-unverified.
+- **P-14** — a claim (`one-in-ten subsample`) resting on restricted data but contradicted by
+  visible package metadata (the README calls `households.csv` a `1-in-20 subsample`). Tests the
+  **blocked-visible-metadata discipline**: flagged inconsistent (or blocked with a Blocked Check
+  note), never silently blocked.
 
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
@@ -17,9 +29,9 @@ see this folder's other files.
    ladder level 1 (static), no exclusions.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 10 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 14 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
-     `min_severity`.
+     `min_severity` (see `expected_findings.json` `scoring` for P-14's dual-accept rule).
    - **Precision**: nothing about the placebo figure / `fig_placebo.pdf` (`must_not_find`),
      and the `expected_confirmed_examples` come out clean rather than flagged.
 

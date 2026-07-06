@@ -61,13 +61,22 @@ code, output, or artifact locations only when needed to decide whether a link is
    (`C-xxxx <-> E-xxxx — one-line reason`). Do NOT change any status yourself; the
    conductor resolves listed conflicts with a targeted recheck. Omit the section if there
    are none.
-7. **Severity divergences**: every link whose two rows carry filled, differing severities
+7. **Escalated mapped claims**: every link that pairs a `confirmed` code error with a claim
+   whose status is `mapped`, where the error contradicts what the claim asserts, is an
+   escalated mapped claim — the error suggests the located-but-unverified claim is actually
+   false. List each such pair under its **own** `## Escalated mapped claims` section (never
+   under `## Status conflicts`), one line per pair
+   (`C-xxxx (mapped) <-> E-xxxx — one-line reason the error contradicts the claim`). Do NOT
+   change any status yourself; the conductor gives each a second-look recheck whose outcome is
+   open (the claim may end `inconsistent` or legitimately stay `mapped`). Omit the section if
+   there are none.
+8. **Severity divergences**: every link whose two rows carry filled, differing severities
    is a severity divergence. List each pair under a `## Severity divergences` section of
    the summary, one line per pair
    (`C-xxxx (sev a) <-> E-xxxx (sev b) — one-line note on the apparent reason`). Do NOT
    change any severity yourself; the conductor resolves each listed pair (align or
    justify). Omit the section if there are none.
-8. The summary lists the links added, grouped by ID, with brief notes only for non-obvious
+9. The summary lists the links added, grouped by ID, with brief notes only for non-obvious
    links.
 
 ## CONSTRAINTS
@@ -80,6 +89,6 @@ code, output, or artifact locations only when needed to decide whether a link is
 ## OUTPUT
 
 Updated link fields in the two staging files + `audit/register_cross_link_summary.md`, then
-report: claims linked, errors linked, links added by ID, status conflicts (if any), severity
-divergences (if any).
+report: claims linked, errors linked, links added by ID, status conflicts (if any), escalated
+mapped claims (if any), severity divergences (if any).
 ```

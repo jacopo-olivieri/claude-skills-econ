@@ -50,6 +50,16 @@ Look for visible source-level or pipeline-contract errors, including:
 - README/package mismatches and PII exposure (record as `readme_or_package_mismatch` /
   `pii_or_disclosure_risk`)
 
+Also run the three **standing self-consistency checks** defined in `audit/audit_readme.md`
+("the package asserts X; confirm X"), applied to your scope:
+- (1) each documented install/setup command in scope parses to dependencies, paths, and versions
+  satisfiable from the package (static only — you do not execute it);
+- (2) every shared convention your scope defines (sample-window boundary, date-parse mask,
+  missing-value sentinel, unit/scale factor, path separator, ID/merge key) agrees with the same
+  convention wherever else it is defined;
+- (3) every cross-language or cross-script hand-off your scope touches connects — what one step
+  writes is exactly where the next reads (path, name, shape).
+
 Exclude:
 - code style comments
 - broad refactoring suggestions
@@ -64,6 +74,12 @@ Exclude:
   generated outputs. Do not run the pipeline or execute repository scripts.
 - Use IDs only from your assigned range; if it runs out, stop adding rows and put
   `BLOCKED: ID range exhausted` in your coordinator notes.
+- **Complete the cheap static checks** (see the cheap-check-completion rule in
+  `audit/audit_readme.md`): when a concern reduces to comparing an enumerable list, a single
+  constant, or a closed-form arithmetic implication against the code you have located, do the
+  comparison now and state the concrete result in `Error Description` — do not leave a vague
+  candidate. A check that would need the code actually run is not for you (static only); flag it
+  clearly so the recheck's runtime probe can settle it.
 - Leave `Related Claim IDs` blank; never consult the claim register to judge whether a
   finding matters.
 - Repo-relative paths everywhere.

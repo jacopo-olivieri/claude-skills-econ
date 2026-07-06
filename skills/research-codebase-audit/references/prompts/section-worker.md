@@ -40,9 +40,28 @@ Rules:
 - Link claims to outputs (`Output IDs` / `Claim IDs`) within your shard; both directions.
 - Think carefully about whether the code actually supports each claim before setting
   `Status` — identifying the right script is mapping, not confirmation.
+- **Complete cheap checks; do not park them at `mapped`** (see the cheap-check-completion rule in
+  `audit/audit_readme.md`). When a claim reduces to comparing an enumerable list, a single
+  constant, or a closed-form arithmetic implication against located code, settle it now and set
+  `confirmed` or `inconsistent`. In particular, recompute the arithmetic behind any
+  `interpretation`, `transcription`, or `rounding_or_precision` claim (e.g. a "30%" read off a
+  0.25 coefficient) rather than leaving it `mapped`. `mapped` is only for a check that genuinely
+  needs the full original script run or the exact restricted data — and then state which.
+- Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
+  makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
+  unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and
+  consistently across files (check 2); when a claim depends on a cross-language or cross-script
+  hand-off, confirm what one step writes is where the next reads (check 3). A divergence is an
+  `inconsistent` claim.
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`
   blank.
+- **Before marking a claim `blocked`, fill `Blocked Check`**: state what stayed checkable from
+  visible material (filenames, column headers, file shapes, metadata) and what that check found.
+  If the visible check contradicts the claim (e.g. a filename or header that disagrees with the
+  wording), the row is `inconsistent`, not `blocked`. `Blocked Check` is required non-empty on
+  every `blocked` row and must be empty on every non-blocked row — even a legitimately blocked
+  row with nothing to check must say so ("nothing visible to check").
 - Use IDs only from your assigned ranges. If a range runs out, stop adding rows and put
   `BLOCKED: ID range exhausted` in your coordinator notes.
 - Repo-relative paths everywhere.

@@ -898,17 +898,28 @@ def stage_b6(lint, audit, stream, manifest):
         lint.fail(f"recheck merge: {total_new} new row(s) across registers but 'Splits declared: {splits}'")
 
 
-def non_link_identical(lint, staging_reg, snap_reg, cols, idc, link_col, label):
-    st = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in staging_reg}
-    sn = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in snap_reg}
+def non_link_identical(lint, st_rows, st_cols, sn_rows, base_cols, idc, link_col, rewrite_pairs, label):
+    """Every non-link column must still match the b7 snapshot. Replay-aware: after b8 has run,
+    staging carries the `*Original` columns and its base rewrite-pair columns are rewritten in
+    place — so when a rewrite-pair's `*Original` column is present, compare the snapshot's base
+    value against that `*Original` (the frozen text) rather than the rewritten base column. Every
+    other non-link column compares directly. Staging rows are read under their own header order
+    (`st_cols`) so extra `*Original` columns never misalign the values."""
+    st = {dict(zip(st_cols, r))[idc]: dict(zip(st_cols, r)) for r in st_rows}
+    sn = {dict(zip(base_cols, r))[idc]: dict(zip(base_cols, r)) for r in sn_rows}
     if set(st) != set(sn):
         lint.fail(f"{label}: ID sets differ between staging and snapshot")
         return
+    rewrite_base = {base: orig for base, orig in rewrite_pairs}
     for i, row in st.items():
-        for c in cols:
+        for c in base_cols:
             if c == link_col:
                 continue
-            if row[c] != sn[i][c]:
+            orig_col = rewrite_base.get(c)
+            if orig_col and orig_col in st_cols:
+                if row.get(orig_col, "") != sn[i][c]:
+                    lint.fail(f"{label}: {i} rewrite-pair '{c}' — '{orig_col}' does not match the b7 snapshot")
+            elif row.get(c, "") != sn[i][c]:
                 lint.fail(f"{label}: {i} non-link column '{c}' changed at cross-link")
 
 
@@ -927,6 +938,35 @@ def confirmed_conflict_links(claim_rows, error_rows, claim_cols=None, error_cols
             continue
         d = dict(zip(ccols, r))
         if d.get("Status") != "confirmed" or not d.get("Claim ID"):
+            continue
+        for eid in ids_in(d.get("Related Error IDs", ""), "E"):
+            if err_status.get(eid) == "confirmed":
+                pairs.append((d["Claim ID"], eid))
+    return pairs
+
+
+# NOTE (U6/U7 open question): the "downstream-use severities must cite a search" rule is NOT
+# mechanized here. Detecting that a severity "rests on downstream use" requires interpreting free
+# text (Issue/Error Description), which is not cleanly lintable; it stays review guidance
+# (registers.md severity rubric), not a lint check.
+def escalated_mapped_links(claim_rows, error_rows, claim_cols=None, error_cols=None):
+    """Links pairing a `mapped` claim with a `confirmed` code error (escalated mapped claims).
+    The cross-linker only links a claim to an error that breaks what it asserts, so a
+    mapped-claim↔confirmed-error link is the located-but-unverified miss to escalate for a
+    second look. Unlike a status conflict, such a pair may legitimately survive to b8."""
+    ccols = claim_cols or CLAIMS_COLS
+    ecols = error_cols or ERROR_COLS
+    err_status = {
+        d["Error ID"]: d.get("Status")
+        for d in (dict(zip(ecols, r)) for r in error_rows if not is_example_row(r))
+        if d.get("Error ID")
+    }
+    pairs = []
+    for r in claim_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ccols, r))
+        if d.get("Status") != "mapped" or not d.get("Claim ID"):
             continue
         for eid in ids_in(d.get("Related Error IDs", ""), "E"):
             if err_status.get(eid) == "confirmed":
@@ -973,25 +1013,43 @@ def check_pairs_listed(lint, summary, section, pairs, stage, reason):
 def stage_b7(lint, audit):
     snap = audit / "_run" / "snapshots" / "b7"
     staging = audit / "_staging"
-    c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS)
-    e = load_register(lint, staging / "code_error_register.md", ERROR_COLS)
+    # Replay mode: load staging with allow_extra=True so a post-b8 re-run (staging carries the
+    # `*Original` rewrite columns) still finds the table; the snapshot keeps the exact base cols.
+    c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS, allow_extra=True)
+    e = load_register(lint, staging / "code_error_register.md", ERROR_COLS, allow_extra=True)
     cs = load_register(lint, snap / "claims_register.md", CLAIMS_COLS)
     es = load_register(lint, snap / "code_error_register.md", ERROR_COLS)
     if None in (c, e, cs, es):
         return
-    non_link_identical(lint, c[1], cs[1], CLAIMS_COLS, "Claim ID", "Related Error IDs", "b7 claims")
-    non_link_identical(lint, e[1], es[1], ERROR_COLS, "Error ID", "Related Claim IDs", "b7 errors")
+    # the allow_extra path does not drop schema example rows — filter them here so ID sets match
+    c_headers, c_rows = list(c[0]), [r for r in c[1] if not is_example_row(r)]
+    e_headers, e_rows = list(e[0]), [r for r in e[1] if not is_example_row(r)]
+    non_link_identical(
+        lint, c_rows, c_headers, cs[1], CLAIMS_COLS, "Claim ID", "Related Error IDs",
+        REWRITE_PAIRS["claims_register.md"], "b7 claims",
+    )
+    non_link_identical(
+        lint, e_rows, e_headers, es[1], ERROR_COLS, "Error ID", "Related Claim IDs",
+        REWRITE_PAIRS["code_error_register.md"], "b7 errors",
+    )
     check_bidirectional(
-        lint, c[1], CLAIMS_COLS, "Claim ID", "Related Error IDs",
-        e[1], ERROR_COLS, "Error ID", "Related Claim IDs", "b7 C<->E",
+        lint, c_rows, c_headers, "Claim ID", "Related Error IDs",
+        e_rows, e_headers, "Error ID", "Related Claim IDs", "b7 C<->E",
     )
     summary = read_text(lint, audit / "register_cross_link_summary.md")
     check_pairs_listed(
-        lint, summary, "Status conflicts", confirmed_conflict_links(c[1], e[1]),
+        lint, summary, "Status conflicts",
+        confirmed_conflict_links(c_rows, e_rows, c_headers, e_headers),
         "b7", "confirmed claim linked to confirmed error",
     )
     check_pairs_listed(
-        lint, summary, "Severity divergences", severity_divergence_links(c[1], e[1]),
+        lint, summary, "Escalated mapped claims",
+        escalated_mapped_links(c_rows, e_rows, c_headers, e_headers),
+        "b7", "mapped claim linked to confirmed error",
+    )
+    check_pairs_listed(
+        lint, summary, "Severity divergences",
+        severity_divergence_links(c_rows, e_rows, c_headers, e_headers),
         "b7", "linked pair with differing severities",
     )
 
@@ -1062,6 +1120,15 @@ def stage_b8(lint, audit, manifest):
                     f"confirmed error {eid} at b8 (unresolved status conflict)"
                 )
             summary = read_text(lint, audit / "register_cross_link_summary.md")
+            # A mapped-claim↔confirmed-error pair may legitimately survive to b8 (unlike a status
+            # conflict), but a surviving one must remain documented — b8 checks only that it stays
+            # listed, not any status outcome. Verifying the second look actually ran (a recheck
+            # ledger entry) is a prose obligation on the conductor (pipeline-finalize b7 step 5).
+            check_pairs_listed(
+                lint, summary, "Escalated mapped claims",
+                escalated_mapped_links(st_c[1], st_e[1], st_c[0], st_e[0]),
+                "b8", "mapped claim linked to confirmed error",
+            )
             check_pairs_listed(
                 lint, summary, "Severity divergences",
                 severity_divergence_links(st_c[1], st_e[1], st_c[0], st_e[0]),

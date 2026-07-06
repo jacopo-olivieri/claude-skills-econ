@@ -23,7 +23,7 @@ from pathlib import Path
 CLAIMS_COLS = [
     "Claim ID", "Paper Context", "Paper Quote", "Used in Text", "Claim Type",
     "Claim Text", "Code/Data Source", "Output IDs", "Status", "Severity",
-    "Issue Description", "Related Error IDs",
+    "Issue Description", "Blocked Check", "Related Error IDs",
 ]
 OUTPUT_COLS = [
     "Output ID", "Paper Object", "Paper Context", "Paper Location",
@@ -237,6 +237,8 @@ def check_claims_rows(lint, path, rows, final=False):
         sev, issue = d["Severity"], d["Issue Description"]
         if bool(sev) != bool(issue):
             lint.fail(f"{path}: {cid} Severity/Issue Description biconditional violated")
+        if (st == "blocked") != bool(d["Blocked Check"]):
+            lint.fail(f"{path}: {cid} Blocked Check must be non-empty iff Status is 'blocked' (status='{st}')")
         if sev and sev not in {"1", "2", "3", "4"}:
             lint.fail(f"{path}: {cid} Severity '{sev}' not in 1-4")
         if d["Used in Text"] == "FALSE" and sev and sev != "1":

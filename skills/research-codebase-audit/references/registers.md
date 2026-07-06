@@ -101,9 +101,9 @@ convention the paper also states is a claims-stream check as well as a code-stre
 Purpose: one row per independently checkable paper assertion that rests on code or data, and
 whether the code supports it.
 
-| Claim ID | Paper Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data Source | Output IDs | Status | Severity | Issue Description | Related Error IDs |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| C-0000 | Appendix F > Table F.33 note | "excluding capital-goods suppliers" | TRUE | robustness | Table F.33's `Cap` column excludes capital-goods suppliers. | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | O-0000 | inconsistent | 4 | The table note says the `Cap` column excludes capital-goods suppliers, but the code filters the opposite sample: the builder sets `sample_excl_cap == 1` when neither party is capital-good, while the table code keeps `sample_excl_cap == 0`. This reverses the intended robustness sample, so the column does not test what the note claims. |  |
+| Claim ID | Paper Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data Source | Output IDs | Status | Severity | Issue Description | Blocked Check | Related Error IDs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C-0000 | Appendix F > Table F.33 note | "excluding capital-goods suppliers" | TRUE | robustness | Table F.33's `Cap` column excludes capital-goods suppliers. | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | O-0000 | inconsistent | 4 | The table note says the `Cap` column excludes capital-goods suppliers, but the code filters the opposite sample: the builder sets `sample_excl_cap == 1` when neither party is capital-good, while the table code keeps `sample_excl_cap == 0`. This reverses the intended robustness sample, so the column does not test what the note claims. |  |  |
 
 Column meanings:
 
@@ -135,6 +135,10 @@ Column meanings:
 - `Status`: see vocabulary below.
 - `Severity`: 1–4 per the rubric; filled iff issue-flagged.
 - `Issue Description`: three-part structure; filled iff issue-flagged.
+- `Blocked Check`: for a `blocked` row, what remained checkable from visible material (filenames,
+  column headers, file shapes, metadata) and what that check found; empty on every non-blocked
+  row. **Required non-empty iff `Status == blocked`** (lint enforces both directions). This is
+  auditor-facing evidence, not author prose — the rewrite pass never touches it.
 - `Related Error IDs`: cross-links to code errors. **Blank until the cross-link stage**; only the
   cross-linker fills it. Bidirectional after cross-link: C-x lists E-y ⟺ E-y lists C-x (lint
   enforces at b7).
@@ -152,7 +156,7 @@ get one row.
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. |
 | `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. |
-| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. |
+| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. If that visible check contradicts the claim, the row is `inconsistent`, not `blocked`. |
 | `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
 
 ### Cheap-check completion (mapped-closure discipline)
@@ -377,6 +381,10 @@ Claims:
 | `not_substantiated` | per evidence (`confirmed` if verified sound, else `mapped`/`unclear`) | cleared | cleared |
 | `confirmation_needed` | `confirmation_needed` | kept | kept |
 | `blocked` | `blocked` | kept | kept, blocker appended |
+
+A row set to `blocked` by the recheck also gets its `Blocked Check` populated from the ledger's
+visible-metadata check (what stayed checkable from filenames/headers/shapes and the result); the
+column is required non-empty on every `blocked` claim.
 
 For a sampled `confirmed` row escalated by verdict `substantiated`, the row had no issue text:
 the merge writes `Issue Description` from the ledger's `Proposed Note` (three-part structure)

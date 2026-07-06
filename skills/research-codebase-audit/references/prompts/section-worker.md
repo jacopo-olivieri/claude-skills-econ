@@ -56,6 +56,12 @@ Rules:
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`
   blank.
+- **Before marking a claim `blocked`, fill `Blocked Check`**: state what stayed checkable from
+  visible material (filenames, column headers, file shapes, metadata) and what that check found.
+  If the visible check contradicts the claim (e.g. a filename or header that disagrees with the
+  wording), the row is `inconsistent`, not `blocked`. `Blocked Check` is required non-empty on
+  every `blocked` row and must be empty on every non-blocked row — even a legitimately blocked
+  row with nothing to check must say so ("nothing visible to check").
 - Use IDs only from your assigned ranges. If a range runs out, stop adding rows and put
   `BLOCKED: ID range exhausted` in your coordinator notes.
 - Repo-relative paths everywhere.

@@ -25,8 +25,8 @@ from pathlib import Path
 
 VERBATIM_ENVS = ("verbatim", "verbatim*", "lstlisting", "minted", "Verbatim")
 
-BEGIN_RE = re.compile(r"\\begin\{([A-Za-z*]+)\}")
-END_RE = re.compile(r"\\end\{([A-Za-z*]+)\}")
+BEGIN_RE = re.compile(r"\\begin\{([A-Za-z0-9*]+)\}")
+END_RE = re.compile(r"\\end\{([A-Za-z0-9*]+)\}")
 
 
 def first_unescaped_percent(line: str) -> int:
@@ -125,6 +125,7 @@ def main() -> int:
         )
         return 1
 
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(blanked), encoding="utf-8")
     print(f"OK: wrote {output} ({len(blanked)} lines, count preserved)")
     return 0

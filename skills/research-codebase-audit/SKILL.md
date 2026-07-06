@@ -67,7 +67,10 @@ defaults and let the user correct.
    conductor knobs — the second-read trigger threshold and whether the recheck runs
    per-finding — per the depth-knob table below.
 5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
-   exploratory folders); the user corrects. Record the final exclusion list.
+   exploratory folders); the user corrects. Propose by default: `audit/` itself, `.git/`, caches
+   (`__pycache__`, `.ipynb_checkpoints`, `.Rproj.user`, and similar), package-manager directories
+   (`node_modules`, `renv/library`, `.venv`, `packrat`), and archived or import-only mirror
+   folders. Record the final exclusion list.
 6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
    data, quirks (e.g. mirror folders that are import-only).
 7. **Output preferences and worker model tier** (default: inherit the session model).
@@ -175,6 +178,10 @@ Mechanics:
   stage run in parallel (one subagent per worker/cluster, single fire-and-forget message each).
 - Update the manifest at every transition; a worker is complete only when **its shard exists AND
   lints** at the stage's boundary.
+- **Progress ledger.** At each transition, regenerate `audit/_run/progress.md` from the manifest:
+  one line per boundary giving its status, shards done/blocked, and last lint result. It is a
+  human-readable mirror of the manifest, not a second source of truth — rewrite it whole from the
+  manifest each time so an unsupervised run stays legible without reading the pipeline files.
 - Dispatch with the user's `worker_model` if set. Skeletons for judgment-heavy stages (recheck,
   merge conflicts, claims logic) carry their own thinking cues — do not add more.
 - Blocked work never stalls the run: merges run over the non-blocked shards (documenting the

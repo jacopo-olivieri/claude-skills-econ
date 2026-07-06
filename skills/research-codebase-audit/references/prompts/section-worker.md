@@ -47,6 +47,9 @@ Rules:
   `interpretation`, `transcription`, or `rounding_or_precision` claim (e.g. a "30%" read off a
   0.25 coefficient) rather than leaving it `mapped`. `mapped` is only for a check that genuinely
   needs the full original script run or the exact restricted data — and then state which.
+- **Arithmetic sweep**: for every share, percentage, ratio, or "X out of Y" in your section,
+  recompute it from numbers already visible in the paper or the shipped artifacts (static only —
+  do not run code); a recompute that disagrees with the stated figure is an `inconsistent` claim.
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
   unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and

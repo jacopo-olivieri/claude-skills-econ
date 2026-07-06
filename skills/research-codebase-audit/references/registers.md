@@ -165,7 +165,7 @@ get one row.
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
 | `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. Includes contradictions the shipped files establish only *could* occur — a value only absent data would reveal fails the visibility test and stops here, not at `inconsistent`. |
 | `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. **Escalation is forced by the `Blocked Check`'s own content, not by how blocked the check felt**: if the visible check contradicts the claim, the row is `inconsistent` (both halves shipped) or `confirmation_needed` (only absent data would confirm it) — never `blocked`. A `Blocked Check` that itself records a paper-vs-code discrepancy (a shipped filename, header, shape, or metadata value that disagrees with what the paper states) has already found the contradiction in visible material, so the row cannot rest at `blocked`: escalate it, or state in one line why the recorded disagreement does not settle the claim. |
-| `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
+| `duplicate_of:<ID>` | Same mechanism as claim `<ID>`, and same location — where "same location" depends on the merge context: for a **first-pass across-parallel-shards merge** the exact locator must match; for a **second-read merge against canon** same file is enough (the locators may differ within that file). Format `duplicate_of:C-\d{4}`, same-register target. Tombstone; created only by merge coordinators. |
 
 ### Cheap-check completion (mapped-closure discipline)
 
@@ -322,11 +322,20 @@ The last five deserve definitions (all statically detectable):
 - **Rows are never deleted** from a canonical register. Wrong findings are demoted
   (`not_error`, cleared issue-flag); duplicates become `duplicate_of:<ID>`. Removal destroys
   the audit trail and lets persistent shards resurrect demoted findings.
-- **Merge two rows only when location AND mechanism both match** — same script/lines and same
-  causal story. Topic overlap ("both about weights") is not a duplicate.
+- **Merge two rows only when location AND mechanism both match** — the mechanism (same causal
+  story) is always required; topic overlap ("both about weights") is never a duplicate. What
+  "location matches" means is set by the merge context:
+  - **First-pass across-parallel-shards merge** (canon empty): **exact location** — same
+    script/lines. Parallel shards see the same file; a genuine duplicate cites the same locator.
+  - **Second-read-onto-canon merge** (canon already populated): **file granularity** — same file
+    is enough, the two rows may cite different locators within that file. The second read re-reads
+    a whole file and is expected to rediscover a first-pass finding under a slightly different
+    locator, so requiring the exact locator would let that duplicate survive. Mechanism still
+    keeps genuinely distinct same-file defects apart.
 - At the **first merge**, duplicate shard rows are simply not added to canon; the merge report
-  accounts for every drop (`shard_rows − dedup_removed == added`). `duplicate_of:<ID>`
-  tombstones arise only when a **recheck merge** collapses rows already in canon.
+  accounts for every drop (`shard_rows − dedup_removed == added`, which holds in both contexts).
+  `duplicate_of:<ID>` tombstones arise only when a **recheck merge** (or a second-read merge onto
+  canon) collapses rows already in canon.
 - Recheck merges may split or merge rows only when required to represent the evidence
   faithfully, and must declare every split/merge in the merge summary (lint reconciles counts).
   Split rows take new IDs from the merge-coordinator range.

@@ -6,7 +6,7 @@ Everything in this package is fabricated. It exists to exercise an audit pipelin
 
 | File | Description |
 | --- | --- |
-| `data/households.csv` | Household survey panel, three villages, two waves. |
+| `data/households.csv` | Household survey panel (public 1-in-20 subsample), three villages, two waves. |
 | `data/rainfall_stations.csv` | Station-level rainfall used to construct the shock variable. |
 
 ## Run order

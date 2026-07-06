@@ -52,6 +52,14 @@ reported number is wrong: severity 2's "does not change results" means no report
 changes, and severity 3's "changes a reported number" includes the levels and stated units of
 any quantity the paper reports.
 
+**Downstream-use severities must cite the search that establishes the use.** When a severity
+rests on the finding being *used downstream* — a code error matters because its output feeds a
+reported result, or a claim matters because the quantity is consumed elsewhere — the row must
+cite the specific script, table, or figure where that downstream use occurs, in either direction
+(claim→code or code→claim). An uncited "used downstream" justification cannot lift a severity
+above the finding's on-its-face level; do the search and cite it, or rate the finding on its own
+terms.
+
 **Issue-flagging rule** (two register-specific, lintable forms):
 
 - Claims: `Issue Description` non-empty ⟺ `Severity` filled. A row is issue-flagged iff
@@ -226,6 +234,14 @@ onward.
 
 Purpose: one row per potential source-code or pipeline error, independent of the paper.
 
+**Code-detectable vs paper-relative (no backfill).** This register is for defects wrong on the
+code's own terms — a defect that is only wrong *relative to the paper* (e.g. a filter that keeps
+the complementary sample but is well-formed on its own terms, or a value that is fine except that
+it contradicts the manuscript) belongs to the claims register alone. No rule backfills such an
+item into the code-error register: forcing a code-error row would assert the code is wrong on its
+own terms when it is not. The cross-link stage still connects the two registers where a genuine
+code error underlies a claim issue.
+
 | Error ID | Error Type | Code/Data Source | Code Location | Status | Severity | Error Description | Why It Matters | Related Claim IDs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | E-0000 | sample_filter_or_flag_error | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | `do/data_building/expand_transaction_panel.do:270-280`; `do/analysis_jl/transact_regress_route.jl:210-225` | candidate | 4 | The builder sets `sample_excl_cap == 1` when neither buyer nor seller is capital-good, but the table code uses `sample_excl_cap == 0` for the capital-goods exclusion column. | Reverses the intended robustness sample and affects the downstream table. |  |
@@ -319,6 +335,21 @@ The cross-linker cannot change statuses; it records every such pair under a
 each listed pair with a targeted recheck before the rewrite pass. Lint enforces both ends:
 b7 fails on a confirmed-claim↔confirmed-error link not listed as a status conflict, and b8
 fails if any such link survives into the rewrite.
+
+**Escalated mapped claims (backstop for the located-but-unverified miss).** A `mapped` claim
+linked to a `confirmed` code error that contradicts what the claim asserts is a weaker signal
+than a status conflict but still must not pass silently: the error suggests the claim is actually
+false, yet the claim was only located, never verified. This is the miss the deeper claim-to-code
+search (the cheap-check and second-read work) is meant to catch at the source; the cross-link
+escalation is the backstop. The cross-linker lists every such pair under its **own**
+`## Escalated mapped claims` section — never under `## Status conflicts` — and the conductor gives
+each a **second look** (a targeted recheck of the claim with the error named as evidence). The
+outcome is open: the recheck may make the claim `inconsistent` (the error settles it) or leave it
+`mapped` (the error does not actually settle the claim). Because a `mapped`-and-linked pair may
+legitimately survive, the status-conflict "must not survive b8" rule does **not** apply here.
+Lint enforces listing at b7 (every mapped-claim↔confirmed-error contradiction is in the section);
+at b8 it requires only that the second look happened (a recheck ledger entry for the claim), not
+any particular status outcome.
 
 **Severity divergences.** Linked rows describe one mechanism from two perspectives — what the
 claim misstates about the paper vs what the error breaks in the code — so their severities may

@@ -67,9 +67,10 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    with a `candidate` row of any severity. Group by `Code/Data Source` script. If the set is
    empty, skip b3b.
 2. **Allocation.** Write `audit/plans/code_error_second_read_plan.md` yourself: one second-read
-   worker per flagged script, with columns `| Worker ID | Script Scope | Shard File (under
-   audit/_code_errors_second_read/) | Error ID Range | Known Findings |`. Each Error ID Range is
-   fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
+   worker per flagged script, with columns `| Worker ID | Script Scope | Shard File | Error ID
+   Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint requires it — and
+   put each shard path, under `audit/_code_errors_second_read/`, in the cell). Each Error ID Range
+   is fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
    Findings` lists the E-IDs and one-line mechanism already logged in that script.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
    fire-and-forget. At `deep` depth dispatch a second pass per script with a different

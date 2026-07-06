@@ -55,9 +55,10 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    Key each trigger to the claim row's `Code/Data Source` file(s) and `Paper Context` section. If
    the set is empty, skip b3b.
 2. **Allocation.** Write `audit/plans/claims_second_read_plan.md` yourself: one second-read worker
-   per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File (under
-   audit/_work_second_read/) | Claim ID Range | Output ID Range | Known Findings |`. Ranges are
-   fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
+   per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File | Claim ID
+   Range | Output ID Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint
+   requires it — and put each shard path, under `audit/_work_second_read/`, in the cell). Ranges
+   are fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
    Findings` lists the C-IDs and one-line mechanism already logged there.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = claims), one subagent per row,
    fire-and-forget. At `deep` depth dispatch a second pass with a different `{MANDATE_LENS}` and

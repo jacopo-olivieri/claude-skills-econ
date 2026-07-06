@@ -69,6 +69,33 @@ code/output shows → (3) why it matters** for the claim, table, reproducibility
 interpretation. Workers write it technically but complete; the dedicated rewrite pass produces
 the author-facing version. Do not restate these parts as separate columns.
 
+## Standing self-consistency checks
+
+Every review runs these three general checks. Each is phrased as a self-claim the package makes
+about itself — "the package asserts X; confirm X" — so they transfer to any package and encode no
+package-specific bug pattern. A concern that can only be stated as "look for bug pattern Z" is an
+ordinary worker observation, not one of these.
+
+1. **Declared setup works.** The package asserts its install/setup commands run. Parse each
+   documented installation or setup command (README, requirements/environment manifest, master
+   script header) and confirm every named dependency, path, and version is satisfiable from the
+   package. First-pass workers check statically only (they never execute scripts); actually
+   attempting the command is a runtime probe reserved for the recheck where the ladder permits it.
+   A mismatch is a `readme_or_package_mismatch` (or the more specific
+   `version_or_dependency_error` / `stale_or_wrong_path`).
+2. **Shared conventions agree.** The package asserts one definition for each convention it uses in
+   more than one place. Gather every site that defines a shared convention — fiscal-year or
+   sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
+   separator, ID/merge key — and confirm the definitions agree across files. A divergence is the
+   error, typed by its mechanism per the error taxonomy below.
+3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each
+   point where the pipeline hands off between languages or scripts, follow the inputs and outputs
+   and confirm what one step writes is exactly where the next reads — same path, name, and shape.
+   A break is a `missing_input_or_output` / `stale_or_wrong_path`.
+
+Checks (1) and (3) are primarily code-stream (chunk workers); (2) spans both streams — a
+convention the paper also states is a claims-stream check as well as a code-stream one.
+
 ## Claims register — `audit/claims_register.md`
 
 Purpose: one row per independently checkable paper assertion that rests on code or data, and

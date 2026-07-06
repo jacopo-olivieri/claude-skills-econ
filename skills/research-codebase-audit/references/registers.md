@@ -162,8 +162,8 @@ get one row.
 | `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** |
 | `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
-| `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. |
-| `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. |
+| `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
+| `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. Includes contradictions the shipped files establish only *could* occur — a value only absent data would reveal fails the visibility test and stops here, not at `inconsistent`. |
 | `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. If that visible check contradicts the claim, the row is `inconsistent`, not `blocked`. |
 | `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
 
@@ -327,7 +327,30 @@ that assert what the error breaks — **including claims whose status is `confir
 **direct assertion only**: link the claim rows that directly assert the broken thing itself.
 Claims about downstream results (significance, magnitudes, R²) that merely depend on the
 broken quantity are not linked — they are reached through the directly-asserting claim, and
-linking them would make every error link to every result row. A claim must not
+linking them would make every error link to every result row.
+
+**Exception — inference/specification/weighting errors.** When the code error is an inference,
+specification, or weighting error (`inference_or_se_specification`, `weighting_error`, or an
+error that breaks the estimation specification itself), claims about p-values, confidence
+intervals, statistical significance, standard errors, clustering, weights, fixed effects,
+controls, samples, or model specification are **direct assertions** and MUST be linked when
+the error breaks them. Such an error breaks the inference or specification itself, so a
+significance or specification claim asserts the broken thing directly — it only looks
+downstream. Purely downstream magnitude/R²/interpretation claims stay unlinked. Worked
+examples:
+
+- Links (direct): a claim that "all regressions include region fixed effects" links to a
+  confirmed error showing the fixed effects are omitted — the claim asserts the
+  specification the error breaks.
+- No link (downstream): a claim reading that regression's coefficient as "a 12% increase"
+  stays unlinked from the same error — the magnitude is reached through the specification
+  claim, not asserted directly.
+- Links (looks downstream, is direct): a claim that "the effect is significant at the 5%
+  level" links to a confirmed clustering error (paper says clustered at the group level,
+  code clusters at the unit level) — the error breaks exactly the inference the claim
+  asserts.
+
+A claim must not
 remain `confirmed` while linked to a `confirmed` code error: under the link semantics such a
 link means the error contradicts what the claim asserts, so the pair is a **status conflict**.
 The cross-linker cannot change statuses; it records every such pair under a

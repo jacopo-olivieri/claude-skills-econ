@@ -1,0 +1,9 @@
+{
+  "README.md": "3408f8934464c635cfca6a9ff039fae5f6d5dc336a9a21955a923a7cfa245e64",
+  "artifacts/tab1.tex": "51af5102223b79a7bb39c071b478252e0393e8c3a837008243af0fc472c5c82b",
+  "data/households.csv": "868bbc7684ff1a41c817ed8c70fef147fb87b9ddff3de8dbf55499a4c064563a",
+  "do/analysis.do": "d9d7c5b12ce26cf873f95dbbf2a8601a415939c962f605b8a9266cb22f8d61a4",
+  "do/build_panel.do": "f5d6628f273a7554635ed25ebbfac60efa0c9369b8d6f68dbcb7d7d211b937da",
+  "paper/paper.tex": "0d0a52cc3428ea567faee334b43ef6b1847adf61e3c45a4afd55043074cac934",
+  "py/make_figures.py": "f02f2709e6e378e1c971dd4c8677bce12ba3429beb9573312412c65596797e6d"
+}

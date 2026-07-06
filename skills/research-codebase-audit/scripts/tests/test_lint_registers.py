@@ -60,7 +60,6 @@ def test_b6_claims_red_on_blocked_without_blocked_check(tmp_path):
 # ------------------------------------------- U1 advisory heuristic (pinned)
 
 
-@pytest.mark.xfail(strict=True, reason="U1 heuristic not yet implemented")
 def test_adjudication_advisory_warning_contract(tmp_path):
     """CONTRACT pinned for U1 (remove the xfail marker when implementing).
 

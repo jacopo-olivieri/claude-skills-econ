@@ -245,6 +245,81 @@ def check_claims_rows(lint, path, rows, final=False):
             lint.fail(f"{path}: {cid} Used in Text=FALSE cannot carry Severity > 1")
 
 
+# --- U1 advisory adjudication heuristic (KTD-1: advisory, never a hard fail) --
+#
+# A closed claims row (`confirmed`/`blocked`) whose OWN recorded evidence — its
+# Issue Description or Blocked Check — describes a paper-vs-code discrepancy is
+# very likely mis-adjudicated: the escalation rule in registers.md would push it
+# to `inconsistent` (or `confirmation_needed`). This lexical proxy surfaces such
+# rows for human review. It is deliberately advisory (a WARNING, exit code
+# unchanged): the token set both over- and under-matches, so a hard fail would
+# false-block legitimate closures whose prose merely contains a contradiction
+# word. The reasoning gate lives in the recheck-worker checklist; this is the
+# safety net.
+#
+# Token set — a small, inline, documented list of contradiction phrases:
+ADJUDICATION_TOKENS = (
+    "whereas", "but the code", "instead", "does not match",
+    "should be", "contradicts",
+)
+# Negation guard — phrases that, when they immediately precede a token, mark it
+# as a NEUTRAL/NEGATED mention that must NOT fire (e.g. "nothing visible confirms
+# or contradicts the claim"). Matched case-insensitively against the text right
+# before the token's start offset.
+ADJUDICATION_NEGATORS = (
+    "confirms or ", "confirm or ", "confirmed or ", "nor ", "neither ",
+    "no ", "not ", "nothing ",
+)
+
+
+def adjudication_flag(text):
+    """Return the first contradiction token *actively* present in *text*, or None.
+
+    A token is skipped when it is immediately preceded (ignoring surrounding
+    whitespace) by any negator phrase — so a neutral clause such as "nothing
+    visible confirms or contradicts the claim" stays silent.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    for tok in ADJUDICATION_TOKENS:
+        start = 0
+        while True:
+            i = low.find(tok, start)
+            if i == -1:
+                break
+            before = low[:i].rstrip()
+            if not any(before.endswith(neg.rstrip()) for neg in ADJUDICATION_NEGATORS):
+                return tok
+            start = i + len(tok)
+    return None
+
+
+def check_adjudication_advisory(lint, path, rows, cols=None):
+    """Advisory-only scan of FINAL claims registers (b6-claims, b8): flag every
+    `confirmed`/`blocked` row whose own Issue Description or Blocked Check carries
+    contradiction language. One WARNING per flagged row; never a hard fail.
+
+    *cols* is the actual header order of *rows* (defaults to the canonical
+    ``CLAIMS_COLS``); at b8 the staging register carries extra ``*Original``
+    columns, so the caller passes those headers to keep field lookup aligned."""
+    cols = cols or CLAIMS_COLS
+    for r in rows:
+        d = dict(zip(cols, r))
+        st = d.get("Status", "")
+        if st not in {"confirmed", "blocked"}:
+            continue
+        for field in ("Issue Description", "Blocked Check"):
+            tok = adjudication_flag(d.get(field, ""))
+            if tok:
+                lint.warn(
+                    f"adjudication: {d['Claim ID']} ({st}) — {field} contains "
+                    f"contradiction language ('{tok}'); review against the "
+                    f"escalation rule (registers.md)"
+                )
+                break
+
+
 def check_output_rows(lint, path, rows, final=False):
     statuses = OUTPUT_STATUS_FINAL if final else OUTPUT_STATUS_FIRST
     for r in rows:
@@ -887,6 +962,8 @@ def stage_b6(lint, audit, stream, manifest):
                 lint.fail(f"{staging / f}: duplicate_of target {m_dup.group(1)} not in register")
         if f == "claims_register.md":
             check_claims_rows(lint, staging / f, st_rows, final=True)
+            # U1 advisory: this is a FINAL claims register (recheck merge).
+            check_adjudication_advisory(lint, staging / f, st_rows)
         elif f == "output_register.md":
             check_output_rows(lint, staging / f, st_rows, final=True)
         else:
@@ -1086,6 +1163,10 @@ def stage_b8(lint, audit, manifest):
         st_headers, st_rows = st
         st_rows = [r for r in st_rows if not is_example_row(r)]
         _, sn_rows = sn
+        if f == "claims_register.md":
+            # U1 advisory: b8 also lints a FINAL claims register. Read under the
+            # staging header order (extra `*Original` cols) so field lookup aligns.
+            check_adjudication_advisory(lint, staging / f, st_rows, list(st_headers))
         if any(h in ("Notes", "Notes Original") for h in st_headers):
             lint.fail(f"{staging / f}: Notes columns are forbidden")
         for new_col, orig_col in REWRITE_PAIRS[f]:

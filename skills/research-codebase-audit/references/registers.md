@@ -164,7 +164,7 @@ get one row.
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
 | `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. Includes contradictions the shipped files establish only *could* occur — a value only absent data would reveal fails the visibility test and stops here, not at `inconsistent`. |
-| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. If that visible check contradicts the claim, the row is `inconsistent`, not `blocked`. |
+| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. **Escalation is forced by the `Blocked Check`'s own content, not by how blocked the check felt**: if the visible check contradicts the claim, the row is `inconsistent` (both halves shipped) or `confirmation_needed` (only absent data would confirm it) — never `blocked`. A `Blocked Check` that itself records a paper-vs-code discrepancy (a shipped filename, header, shape, or metadata value that disagrees with what the paper states) has already found the contradiction in visible material, so the row cannot rest at `blocked`: escalate it, or state in one line why the recorded disagreement does not settle the claim. |
 | `duplicate_of:<ID>` | Same location AND mechanism as claim `<ID>` (format `duplicate_of:C-\d{4}`, same-register target). Tombstone; created only by merge coordinators. |
 
 ### Cheap-check completion (mapped-closure discipline)
@@ -183,6 +183,18 @@ against already-located code, the worker **completes it during review** and reco
   computation: recompute it. This applies squarely to `interpretation` claims (e.g. the paper
   reads a coefficient of 0.25 as "a 30% increase" — recompute against the stated base and flag
   the mismatch) and to any `transcription` / `rounding_or_precision` claim.
+
+**Caution default on a numerical disagreement.** When a recompute produces a number that differs
+from the paper's (the formula gives ≈25% where the paper states 30%), the disagreement is a
+finding: the row is `inconsistent` unless a **concrete, cited** explanation resolves it. "Probably
+rounding," "close enough," or "the author likely rounded loosely" is **not** a concrete
+explanation and never clears the disagreement — do not close the row `confirmed` on that basis.
+What *is* acceptable, cited to the specific place it appears, is exactly one of: the paper itself
+hedges the figure (it says "approximately", "about", "roughly", or "~" at that number); the
+package states a defined rounding or precision convention that the gap falls within; or the paper
+marks the figure as explicitly illustrative (a stylized or round-number example, not a computed
+result). Absent one of these, an unexplained numerical disagreement defaults to `inconsistent`
+(both quantities visible) or `confirmation_needed` (the reconciling value is only in absent data).
 
 These three are all **static**, so any worker completes them — no execution needed. A check that
 would instead be settled by a small unit test or a simulated run of error-prone code is completed

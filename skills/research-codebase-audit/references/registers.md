@@ -126,7 +126,9 @@ ordinary worker observation, not one of these.
    package. First-pass workers check statically only (they never execute scripts); actually
    attempting the command is a runtime probe reserved for the recheck where the ladder permits it.
    A mismatch is a `readme_or_package_mismatch` (or the more specific
-   `version_or_dependency_error` / `stale_or_wrong_path`).
+   `version_or_dependency_error` / `stale_or_wrong_path`). Mechanical helper: the conductor runs
+   `scripts/check_manifests.py` at b4, which parses each recognized manifest and emits candidate
+   findings (see `pipeline-code-errors.md`, b4).
 2. **Shared conventions agree.** The package asserts one definition for each convention it uses in
    more than one place. Gather every site that defines a shared convention — fiscal-year or
    sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path

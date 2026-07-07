@@ -137,6 +137,20 @@ the b4 inventory so the recheck resolves it. If the artifact is absent or lists 
 skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
 the claims side reaches the code side as a concrete grep target.
 
+**Manifest-parseability check (conductor-invoked script; adds candidates before the plan is
+frozen).** Alongside the shared-conventions grep, and likewise before writing the recheck plan,
+run `check_manifests.py <package_root> --audit-dir audit`. The script parses every recognized
+dependency and configuration manifest the way its consuming tool would (TOML via the
+standard-library parser; requirements-style lists via the crude line grammar documented in the
+script's docstring) and writes `audit/_run/manifest_check.md`. Each row of that artifact's
+candidate-findings table becomes a new `candidate` code-error row — typed
+`version_or_dependency_error` for a dependency line an installer would reject, or
+`readme_or_package_mismatch` where the defect is between the documented setup and the shipped
+manifest — minted from an unused error-ID range and folded into the b4 inventory so the recheck
+resolves it (a worker dispositions every candidate; a legitimate line the crude grammar
+over-flagged closes as `not_error`). The script never hard-fails on package content and its exit
+status carries no findings; if the artifact reports no candidates, nothing is added — non-blocking.
+
 ## b5 — Recheck cluster workers (parallel)
 
 `prompts/recheck-cluster-worker.md` with stream = code. Same completion/lint/retry rules

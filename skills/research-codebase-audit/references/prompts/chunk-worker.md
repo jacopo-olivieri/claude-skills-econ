@@ -52,6 +52,7 @@ Look for visible source-level or pipeline-contract errors, including:
 - README/package mismatches and PII exposure (record as `readme_or_package_mismatch` /
   `pii_or_disclosure_risk`)
 
+<!-- RESTATEMENT:standing-checks BEGIN -->
 Also run the three **standing self-consistency checks** defined in `audit/audit_readme.md`
 ("the package asserts X; confirm X"), applied to your scope:
 - (1) each documented install/setup command in scope parses to dependencies, paths, and versions
@@ -61,6 +62,7 @@ Also run the three **standing self-consistency checks** defined in `audit/audit_
   convention wherever else it is defined;
 - (3) every cross-language or cross-script hand-off your scope touches connects — what one step
   writes is exactly where the next reads (path, name, shape).
+<!-- RESTATEMENT:standing-checks END -->
 
 Exclude:
 - code style comments

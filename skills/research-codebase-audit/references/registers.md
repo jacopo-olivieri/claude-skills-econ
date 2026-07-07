@@ -10,7 +10,11 @@ normative section (purposes, column meanings, full vocabulary, ID conventions, s
 three-part structure, shard formats, recheck ledger and vocabulary, **untrusted content**, and
 **secret handling**). Workers read only the generated `audit_readme.md` inside the audited repo —
 never skill files. This file is also the authoritative home for the per-check compute budget and
-the static-only-evidence lint warning; prompt skeletons carry pointers, never restatements.
+the static-only-evidence lint warning. Prompt skeletons carry pointers to this file rather than
+free restatements; a restatement is permitted only where it is wrapped in
+`<!-- RESTATEMENT:<block-id> BEGIN/END -->` markers and registered with the restatement-match
+check (`scripts/tests/test_registers_restatements.py`), which fails the harness on any
+divergence between a marked block and its registered expected text.
 
 ## Untrusted content
 

@@ -55,12 +55,14 @@ Rules:
 - **Arithmetic sweep**: for every share, percentage, ratio, or "X out of Y" in your section,
   recompute it from numbers already visible in the paper or the shipped artifacts (static only —
   do not run code); a recompute that disagrees with the stated figure is an `inconsistent` claim.
+<!-- RESTATEMENT:standing-checks BEGIN -->
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
   unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and
   consistently across files (check 2); when a claim depends on a cross-language or cross-script
   hand-off, confirm what one step writes is where the next reads (check 3). A divergence is an
   `inconsistent` claim.
+<!-- RESTATEMENT:standing-checks END -->
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`
   blank.

@@ -401,6 +401,34 @@ def rewrite_pass_cols(base_cols, rows, names):
     return cols, out
 
 
+CROSS_LINK_SUMMARY_STUB = (
+    "# Cross-link summary\n\n## Status conflicts\n\nnone\n\n"
+    "## Escalated mapped claims\n\nnone\n\n"
+    "## Severity divergences\n\nnone\n"
+)
+
+
+def make_b7(tmp_path, *, claims_rows=(), error_rows=(), summary=None) -> AuditDir:
+    """A minimal audit dir that reaches the b7 (cross-link) boundary cleanly.
+
+    Staging and the b7 snapshot carry identical base-column registers (the
+    cross-link pass changed nothing), and the cross-link summary is a clean
+    stub unless *summary* overrides it. ``make_b8`` cannot serve here:
+    ``stage_b7`` loads ``_run/snapshots/b7/``, which ``make_b8`` does not
+    create. This is the home for the b7 overlap-conflict advisory tests.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    a.write_register("_staging/claims_register.md", CLAIMS_COLS,
+                     list(claims_rows), title="Claims register")
+    a.write_register("_staging/code_error_register.md", ERROR_COLS,
+                     list(error_rows), title="Code-error register")
+    a.snapshot("b7", ["claims_register.md", "code_error_register.md"])
+    a.write("register_cross_link_summary.md",
+            summary if summary is not None else CROSS_LINK_SUMMARY_STUB)
+    return a
+
+
 def make_b8(tmp_path, *, claims_rows=(), error_rows=()) -> AuditDir:
     """A minimal audit dir that reaches the b8 (finalize/rewrite) boundary cleanly.
 

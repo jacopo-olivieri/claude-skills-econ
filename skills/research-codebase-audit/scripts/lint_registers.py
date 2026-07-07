@@ -1530,6 +1530,79 @@ def confirmed_conflict_links(claim_rows, error_rows, claim_cols=None, error_cols
     return pairs
 
 
+# SC-01 overlap-conflict advisory (plan 2026-07-07-001, U5). Code-line citation
+# forms observed in real registers: the documented colon form (`path:21-23`,
+# `path:11,16-20`) plus the space-L form (`path L21-23`) seen as worker drift.
+# RANGE_RE above matches identifier ranges (C-0001–C-0005), not code lines.
+CODE_LOC_RE = re.compile(
+    r"([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9_]+)"  # repo-relative path with extension
+    r"(?::(?=\d)|\s+L\s*)"  # colon form (digit must follow — 'path: 3 vars' is prose) or space-L
+    r"(\d+(?:\s*[–—-]\s*\d+)?(?:\s*,\s*\d+(?:\s*[–—-]\s*\d+)?)*)"
+)
+_SPAN_RE = re.compile(r"(\d+)(?:\s*[–—-]\s*(\d+))?")
+
+
+def code_line_ranges(cell):
+    """Extract ``(path, (lo, hi))`` tuples from a citation cell.
+
+    Handles the colon form (``path:21-23``, ``path:11,16-20``) and the space-L
+    form (``path L21-23``), comma-separated multi-ranges, hyphen/en-dash/
+    em-dash, and backticked paths. Ranged-only matching (KTD-4): a bare file
+    with no line spec contributes no range and never overlaps — whole-file
+    coverage belongs to the b7 worker rule, not this parser. Single lines
+    yield ``(n, n)``; reversed bounds are normalized.
+    """
+    out = []
+    # strip (not blank) backticks so `path`:21-23 keeps the colon abutting the path
+    for m in CODE_LOC_RE.finditer((cell or "").replace("`", "")):
+        path = m.group(1)
+        for span in _SPAN_RE.finditer(m.group(2)):
+            lo = int(span.group(1))
+            hi = int(span.group(2)) if span.group(2) else lo
+            out.append((path, (min(lo, hi), max(lo, hi))))
+    return out
+
+
+def overlapping_confirmed_pairs(claim_rows, error_rows, claim_cols=None, error_cols=None):
+    """Confirmed-claim↔confirmed-error pairs whose cited code lines overlap.
+
+    The claim side parses the claims register's Code/Data Source cell; the
+    error side parses the code-error register's Code Location cell (the ranged
+    column — the error Code/Data Source carries bare script paths that parse
+    to no ranges). Example rows are skipped. Pairs already linked via Related
+    Error IDs are the hard check's territory (``confirmed_conflict_links``);
+    callers subtract that set before advising.
+    """
+    ccols = claim_cols or CLAIMS_COLS
+    ecols = error_cols or ERROR_COLS
+    err_ranges = []
+    for r in error_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ecols, r))
+        if d.get("Status") != "confirmed" or not d.get("Error ID"):
+            continue
+        spans = code_line_ranges(d.get("Code Location", ""))
+        if spans:
+            err_ranges.append((d["Error ID"], spans))
+    pairs = []
+    for r in claim_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ccols, r))
+        if d.get("Status") != "confirmed" or not d.get("Claim ID"):
+            continue
+        cspans = code_line_ranges(d.get("Code/Data Source", ""))
+        if not cspans:
+            continue
+        for eid, espans in err_ranges:
+            if any(cp == ep and clo <= ehi and elo <= chi
+                   for cp, (clo, chi) in cspans
+                   for ep, (elo, ehi) in espans):
+                pairs.append((d["Claim ID"], eid))
+    return pairs
+
+
 # NOTE (U6/U7 open question): the "downstream-use severities must cite a search" rule is NOT
 # mechanized here. Detecting that a severity "rests on downstream use" requires interpreting free
 # text (Issue/Error Description), which is not cleanly lintable; it stays review guidance
@@ -1637,6 +1710,20 @@ def stage_b7(lint, audit):
         severity_divergence_links(c_rows, e_rows, c_headers, e_headers),
         "b7", "linked pair with differing severities",
     )
+    # SC-01 overlap-conflict advisory (U5): warn on confirmed-vs-confirmed pairs
+    # whose cited code lines overlap but that no one linked — the case the hard
+    # checks above cannot see (they only inspect links a worker already created).
+    # Advisory only; the exit code is driven by lint.errors alone.
+    linked = set(confirmed_conflict_links(c_rows, e_rows, c_headers, e_headers))
+    for cid, eid in overlapping_confirmed_pairs(c_rows, e_rows, c_headers, e_headers):
+        if (cid, eid) in linked:
+            continue
+        lint.warn(
+            f"overlap-conflict: confirmed claim {cid} cites code lines overlapping "
+            f"confirmed error {eid}, but the pair is not linked and listed under "
+            f"'## Status conflicts' — adjudicate against the b7 status-conflict rule "
+            f"(registers.md, Cross-link consistency); overlap alone is not proof of conflict"
+        )
 
 
 REWRITE_PAIRS = {

@@ -74,7 +74,8 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    Findings` lists the E-IDs and one-line mechanism already logged in that script.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
    fire-and-forget. At `deep` depth dispatch a second pass per script with a different
-   `{MANDATE_LENS}` and its own disjoint range. Completion = shard exists; retry-once →
+   `{MANDATE_LENS}` and its own disjoint range. A worker is complete when its shard exists at the
+   planned path **and** passes `lint_registers.py --stage b3b-code --shard <path>`; retry-once →
    blocked-continue.
 4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
    `prompts/merge-first-pass.md` filled for the code stream with `{SHARD_DIR}` =
@@ -93,14 +94,40 @@ Inventory, mechanically:
 
 - every `candidate` row (recheck resolves them all — none may survive b6), plus
 - every `confirmed` row with Severity ≥ 3, plus
-- a ~10% random sample of the remaining `confirmed` rows, stratified by Error Type (bounds
-  total across strata: min 3 or all available if fewer, max 15).
+- a ~10% **deterministic** sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by
+  Error Type (bounds total across strata: min 3 or all available if fewer, max 15). The sample is
+  drawn by a fixed rule so a resume or a fixture re-run selects exactly the same rows: for each
+  stratum, sort its eligible `confirmed` Error IDs ascending by the lowercase hex `sha256` digest
+  of the salted string `"b4-code:" + ID` (e.g. `sha256("b4-code:E-0044")`), and take from the top
+  of that sorted list until the stratum's ~10% quota is filled (round to nearest, at least 1 per
+  non-empty stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`).
+  Ties are impossible (digests are unique per ID); the salt keeps the code and claims samples
+  independent.
 
-Cluster by Error Type, ≤ 8 IDs per cluster, shard files under `audit/_code_error_recheck/`.
+Cluster per `review_depth` (manifest). At `shallow`/`standard`: cluster by Error Type, ≤ 8 IDs
+per cluster. At `deep`: every **substantive ID** gets its own single-ID cluster — a substantive
+ID is any inventory row that is `candidate`, or `confirmed` with Severity ≥ 3; the sampled
+remaining `confirmed` rows are not substantive and may still be grouped by Error Type into
+clusters of ≤ 8 IDs. Shard files under `audit/_code_error_recheck/`.
 Write `audit/plans/code_error_recheck_plan.md` yourself with the same table formats as the
 claims recheck plan (inventory `| ID | Reason | Likely Evidence |`; clusters
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; vocabulary pointer to
 `audit_readme.md`). `lint_registers.py --stage b4-code`. One recheck pass — no looping.
+
+**Shared-conventions grep (consumes the b3c artifact; adds candidates before the plan is frozen).**
+If `audit/_run/conventions.md` exists and lists any convention, then before writing the recheck
+plan, for each listed convention grep the codebase for its definition sites — search the code for
+the boundary literal, sentinel, unit/scale factor, path separator, date mask, or ID/merge key the
+`Stated Definition` column records (e.g. a fiscal-year boundary "July" → grep for month/quarter
+literals and cutoff comparisons in the date-construction scripts; a missing-value sentinel → grep
+for the sentinel value and the replace/recode calls that set it). Any site whose definition
+disagrees with the stated one becomes a new `candidate` code-error row, typed by its mechanism per
+the taxonomy (a boundary literal mismatch is `treatment_or_event_timing_error`, a sentinel or
+scale mismatch is `aggregation_or_unit_error`, a divergent merge key is
+`merge_key_or_cardinality_error`, and so on), minted from an unused error-ID range and folded into
+the b4 inventory so the recheck resolves it. If the artifact is absent or lists no convention,
+skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
+the claims side reaches the code side as a concrete grep target.
 
 ## b5 — Recheck cluster workers (parallel)
 

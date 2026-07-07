@@ -9,7 +9,8 @@ Usage:
 
 Stages: b0, b1-claims, b1-code, b2-claims, b2-code, b3-claims, b3-code,
         b4-claims, b4-code, b5-claims, b5-code, b6-claims, b6-code, b7, b8, b9
-(b2/b5 lint one worker shard, passed with --shard).
+(b2/b5 lint one worker shard, passed with --shard; b3b-claims/b3b-code lint a
+second-read shard with --shard, or the second-read merge without it).
 """
 
 import argparse
@@ -70,6 +71,29 @@ EVIDENCE_LEVELS = {
     "static_source_verified", "artifact_verified", "data_inspected_verified",
     "parser_or_runtime_verified", "synthetic_test_verified",
     "targeted_rerun_verified", "blocked_documented",
+}
+# U8 (c): the evidence-level → minimum-ladder table (registers.md, section
+# "Evidence levels (tied to the review ladder)"), mirrored as a dict. An
+# evidence level whose minimum ladder EXCEEDS the manifest's `ladder_level`
+# cannot have been produced at this run's ladder and FAILS. `targeted_rerun_
+# verified` is 2 for small reruns / 3 for expensive ones; the linter mirrors the
+# floor (2) it can enforce statically. `blocked_documented` is valid at any level.
+EVIDENCE_MIN_LADDER = {
+    "static_source_verified": 1,
+    "artifact_verified": 1,
+    "data_inspected_verified": 1,
+    "parser_or_runtime_verified": 2,
+    "synthetic_test_verified": 2,
+    "targeted_rerun_verified": 2,
+    "blocked_documented": 0,
+}
+
+# b3c shared-conventions artifact (advisory; consumed by the b4-code recheck grep).
+CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition", "Sites Already Seen"]
+CONVENTION_CATEGORIES = {
+    "fiscal_year_or_sample_window_boundary", "date_parse_mask",
+    "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
+    "id_or_merge_key",
 }
 
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
@@ -245,6 +269,81 @@ def check_claims_rows(lint, path, rows, final=False):
             lint.fail(f"{path}: {cid} Used in Text=FALSE cannot carry Severity > 1")
 
 
+# --- U1 advisory adjudication heuristic (KTD-1: advisory, never a hard fail) --
+#
+# A closed claims row (`confirmed`/`blocked`) whose OWN recorded evidence — its
+# Issue Description or Blocked Check — describes a paper-vs-code discrepancy is
+# very likely mis-adjudicated: the escalation rule in registers.md would push it
+# to `inconsistent` (or `confirmation_needed`). This lexical proxy surfaces such
+# rows for human review. It is deliberately advisory (a WARNING, exit code
+# unchanged): the token set both over- and under-matches, so a hard fail would
+# false-block legitimate closures whose prose merely contains a contradiction
+# word. The reasoning gate lives in the recheck-worker checklist; this is the
+# safety net.
+#
+# Token set — a small, inline, documented list of contradiction phrases:
+ADJUDICATION_TOKENS = (
+    "whereas", "but the code", "instead", "does not match",
+    "should be", "contradicts",
+)
+# Negation guard — phrases that, when they immediately precede a token, mark it
+# as a NEUTRAL/NEGATED mention that must NOT fire (e.g. "nothing visible confirms
+# or contradicts the claim"). Matched case-insensitively against the text right
+# before the token's start offset.
+ADJUDICATION_NEGATORS = (
+    "confirms or ", "confirm or ", "confirmed or ", "nor ", "neither ",
+    "no ", "not ", "nothing ",
+)
+
+
+def adjudication_flag(text):
+    """Return the first contradiction token *actively* present in *text*, or None.
+
+    A token is skipped when it is immediately preceded (ignoring surrounding
+    whitespace) by any negator phrase — so a neutral clause such as "nothing
+    visible confirms or contradicts the claim" stays silent.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    for tok in ADJUDICATION_TOKENS:
+        start = 0
+        while True:
+            i = low.find(tok, start)
+            if i == -1:
+                break
+            before = low[:i].rstrip()
+            if not any(before.endswith(neg.rstrip()) for neg in ADJUDICATION_NEGATORS):
+                return tok
+            start = i + len(tok)
+    return None
+
+
+def check_adjudication_advisory(lint, path, rows, cols=None):
+    """Advisory-only scan of FINAL claims registers (b6-claims, b8): flag every
+    `confirmed`/`blocked` row whose own Issue Description or Blocked Check carries
+    contradiction language. One WARNING per flagged row; never a hard fail.
+
+    *cols* is the actual header order of *rows* (defaults to the canonical
+    ``CLAIMS_COLS``); at b8 the staging register carries extra ``*Original``
+    columns, so the caller passes those headers to keep field lookup aligned."""
+    cols = cols or CLAIMS_COLS
+    for r in rows:
+        d = dict(zip(cols, r))
+        st = d.get("Status", "")
+        if st not in {"confirmed", "blocked"}:
+            continue
+        for field in ("Issue Description", "Blocked Check"):
+            tok = adjudication_flag(d.get(field, ""))
+            if tok:
+                lint.warn(
+                    f"adjudication: {d['Claim ID']} ({st}) — {field} contains "
+                    f"contradiction language ('{tok}'); review against the "
+                    f"escalation rule (registers.md)"
+                )
+                break
+
+
 def check_output_rows(lint, path, rows, final=False):
     statuses = OUTPUT_STATUS_FINAL if final else OUTPUT_STATUS_FIRST
     for r in rows:
@@ -277,6 +376,17 @@ def check_error_rows(lint, path, rows, final=False):
             lint.fail(f"{path}: {eid} Severity must be filled iff status is candidate/confirmed/confirmation_needed/blocked (status='{st}')")
         if sev and sev not in {"1", "2", "3", "4"}:
             lint.fail(f"{path}: {eid} Severity '{sev}' not in 1-4")
+        # U8 (c): completeness of the author-facing / anchoring columns on an
+        # ACTIVE code-error row (candidate or confirmed). An empty description or
+        # source is a dead row that reaches the author with no content; an empty
+        # Code Location loses the anchor. On `blocked`, the anchor may be genuinely
+        # absent (restricted material), so an empty Code Location only WARNS there.
+        if st in {"candidate", "confirmed"}:
+            for c in ("Code/Data Source", "Error Description", "Why It Matters", "Code Location"):
+                if not d.get(c, "").strip():
+                    lint.fail(f"{path}: {eid} ({st}) has an empty '{c}'")
+        elif st == "blocked" and not d.get("Code Location", "").strip():
+            lint.warn(f"{path}: {eid} (blocked) has an empty 'Code Location' (anchor missing)")
 
 
 def check_unique(lint, path, ids, label):
@@ -735,6 +845,89 @@ def stage_b3b(lint, audit, stream):
         lint.fail(f"{report_path}: added total {added_total} != {total_new} new row(s) in staging")
 
 
+# --- U8 (b): b3b second-read shard boundary check ----------------------------
+#
+# Mirrors the b2 first-pass shard check but against the second-read allocation
+# plan (`claims_second_read_plan.md` / `code_error_second_read_plan.md`, keyed by
+# `Worker ID`). A b3b shard is a first-pass-shaped shard (canonical columns, a
+# footer) whose new rows are all UNVERIFIED: code rows are `candidate`; claims
+# rows are `inconsistent`/`unclear`; output rows use the permitted output set
+# (`mapped`/`orphan`/`unclear`/`inconsistent`, never `listed`/`confirmed`). These
+# match the second-read-worker skeleton and the b3b merge check in stage_b3b.
+
+B3B_CLAIM_STATUSES = {"inconsistent", "unclear"}
+B3B_OUTPUT_STATUSES = {"mapped", "orphan", "unclear", "inconsistent"}
+
+
+def second_read_plan_path(audit, stream):
+    return audit / "plans" / (
+        "claims_second_read_plan.md" if stream == "claims"
+        else "code_error_second_read_plan.md")
+
+
+def stage_b3b_shard(lint, audit, stream, shard):
+    plan = second_read_plan_path(audit, stream)
+    alloc, _ = parse_plan(lint, plan, "Worker ID")
+    text = read_text(lint, shard)
+    if text is None:
+        return
+    a = find_alloc_for_shard(alloc, shard)
+    if a is None:
+        lint.fail(f"{shard}: not found in the second-read plan's allocation table")
+        return
+    if stream == "claims":
+        ranges = [r for r in (parse_range(a.get("Claim ID Range", "")),
+                              parse_range(a.get("Output ID Range", ""))) if r]
+        c_rows = table_by_cols(lint, shard, text, CLAIMS_COLS, "claims")
+        o_rows = table_by_cols(lint, shard, text, OUTPUT_COLS, "outputs")
+        if c_rows is None or o_rows is None:
+            return
+        check_claims_rows(lint, shard, c_rows)
+        check_output_rows(lint, shard, o_rows)
+        cids = col(c_rows, CLAIMS_COLS, "Claim ID")
+        oids = col(o_rows, OUTPUT_COLS, "Output ID")
+        check_unique(lint, shard, cids + oids, "ID")
+        for i in cids + oids:
+            if not in_ranges(i, ranges):
+                lint.fail(f"{shard}: {i} outside the second-read-allocated ranges")
+        for r in c_rows:
+            d = dict(zip(CLAIMS_COLS, r))
+            if d["Status"] not in B3B_CLAIM_STATUSES:
+                lint.fail(f"{shard}: second-read claim {d['Claim ID']} status "
+                          f"'{d['Status']}' (must be 'inconsistent' or 'unclear')")
+        for r in o_rows:
+            d = dict(zip(OUTPUT_COLS, r))
+            if d["Status"] not in B3B_OUTPUT_STATUSES:
+                lint.fail(f"{shard}: second-read output {d['Output ID']} status "
+                          f"'{d['Status']}' (must be mapped/orphan/unclear/inconsistent)")
+        for v in col(c_rows, CLAIMS_COLS, "Related Error IDs"):
+            if v:
+                lint.fail(f"{shard}: Related Error IDs must be blank at b3b (cross-link is a later stage)")
+        check_abs_paths(lint, shard, c_rows, CLAIMS_COLS, ["Code/Data Source"])
+        check_abs_paths(lint, shard, o_rows, OUTPUT_COLS, ["Output Path/Pattern", "Producing Script"])
+    else:
+        ranges = [r for r in (parse_range(a.get("Error ID Range", "")),) if r]
+        e_rows = table_by_cols(lint, shard, text, ERROR_COLS, "code errors")
+        if e_rows is None:
+            return
+        check_error_rows(lint, shard, e_rows)
+        eids = col(e_rows, ERROR_COLS, "Error ID")
+        check_unique(lint, shard, eids, "Error ID")
+        for i in eids:
+            if not in_ranges(i, ranges):
+                lint.fail(f"{shard}: {i} outside the second-read-allocated range")
+        for r in e_rows:
+            d = dict(zip(ERROR_COLS, r))
+            if d["Status"] != "candidate":
+                lint.fail(f"{shard}: second-read code row {d['Error ID']} status "
+                          f"'{d['Status']}' (must be 'candidate')")
+        for v in col(e_rows, ERROR_COLS, "Related Claim IDs"):
+            if v:
+                lint.fail(f"{shard}: Related Claim IDs must be blank at b3b (cross-link is a later stage)")
+        check_abs_paths(lint, shard, e_rows, ERROR_COLS, ["Code/Data Source", "Code Location"])
+    shard_footer(lint, shard, text)
+
+
 def recheck_plan_path(audit, stream):
     return audit / "plans" / ("claims_recheck_plan.md" if stream == "claims" else "code_error_recheck_plan.md")
 
@@ -773,23 +966,144 @@ def canon_ids(lint, audit, stream):
     return ids
 
 
-def stage_b4(lint, audit, stream):
+# --- U8 (a): the b4 mandatory-recheck inventory computed from canon ----------
+#
+# A recall guarantee upstream of everything U1 fixes: the recheck can only
+# adjudicate rows that actually entered it. The REQUIRED inventory (rows that
+# MUST be rechecked) mirrors the pipeline's mechanical inventory rule exactly:
+#   * claims  (pipeline-claims.md b4): every severity-bearing row OR every
+#     `unclear` row — `Severity != "" OR status == unclear`.
+#   * code (pipeline-code-errors.md b4): every `candidate`, plus every
+#     `confirmed` with Severity >= 3 — `status == candidate OR (status ==
+#     confirmed AND severity >= 3)`.
+# The SUBSTANTIVE subset (used only by the `deep` single-ID-cluster rule) is a
+# subset of the required set with the SAME predicate on the code side and, on
+# the claims side, the U7 definition (issue-flagged OR `unclear`, i.e. exactly
+# the required predicate — sampled clean `confirmed` rows are never required and
+# never substantive). Sampled clean `confirmed` rows are neither required nor
+# substantive here: they may be added to the inventory by the conductor and may
+# be grouped, so this check does not fail on their presence, only on the absence
+# of a REQUIRED id and on wrong-typed / over-clustered ids.
+
+
+def _sev_int(sev):
+    try:
+        return int(sev)
+    except (TypeError, ValueError):
+        return 0
+
+
+def required_recheck_ids(lint, audit, stream):
+    """Return (required_ids: set, substantive_ids: set) for the b4 inventory.
+
+    `required` = rows the inventory MUST contain (a recall floor).
+    `substantive` = the subset that must sit in its own single-ID cluster at
+    `deep` depth (U7 definition, mirrored exactly)."""
+    required, substantive = set(), set()
+    if stream == "claims":
+        reg = load_register(lint, audit / "claims_register.md", CLAIMS_COLS)
+        if reg:
+            for r in reg[1]:
+                d = dict(zip(CLAIMS_COLS, r))
+                cid, sev, st = d["Claim ID"], d["Severity"], d["Status"]
+                if sev or st == "unclear":
+                    required.add(cid)
+                    substantive.add(cid)  # issue-flagged OR unclear == U7 substantive
+    else:
+        reg = load_register(lint, audit / "code_error_register.md", ERROR_COLS)
+        if reg:
+            for r in reg[1]:
+                d = dict(zip(ERROR_COLS, r))
+                eid, sev, st = d["Error ID"], d["Severity"], d["Status"]
+                is_candidate = st == "candidate"
+                is_conf_high = st == "confirmed" and _sev_int(sev) >= 3
+                if is_candidate or is_conf_high:
+                    required.add(eid)
+                    substantive.add(eid)  # candidate OR confirmed>=3 == U7 substantive
+    return required, substantive
+
+
+def check_conventions_artifact(lint, audit):
+    """Advisory well-formedness check on the optional b3c shared-conventions
+    artifact `audit/_run/conventions.md`, consumed by the b4-code recheck grep.
+
+    Non-blocking by design: absent → silent (a package with no multi-site
+    convention correctly produces no artifact); present → warn (never fail) if it
+    is not a table with the expected header or carries an out-of-vocabulary
+    Category. The verdicts come from the code-stream grep, not from lint."""
+    path = audit / "_run" / "conventions.md"
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        lint.warn(f"{path}: could not read the conventions artifact (unreadable)")
+        return
+    table = None
+    for headers, rows, _ in parse_tables(text):
+        if headers == CONVENTIONS_COLS:
+            table = rows
+            break
+    if table is None:
+        lint.warn(
+            f"{path}: no table with the expected header "
+            f"{' | '.join(CONVENTIONS_COLS)} (conventions grep may skip it)"
+        )
+        return
+    for r in table:
+        d = dict(zip(CONVENTIONS_COLS, r))
+        cat = d.get("Category", "")
+        if cat and cat not in CONVENTION_CATEGORIES:
+            lint.warn(
+                f"{path}: convention '{d.get('Convention', '')}' has "
+                f"out-of-vocabulary Category '{cat}'"
+            )
+
+
+def stage_b4(lint, audit, stream, manifest=None):
+    if stream == "code":
+        check_conventions_artifact(lint, audit)  # U2 (preserved — must run first, code only)
     parsed = parse_recheck_plan(lint, audit, stream)
     if parsed is None:
         return
     plan, inventory, clusters = parsed
     canon = canon_ids(lint, audit, stream)
+    # U8 (a): the required inventory computed from canon (a recall floor).
+    required, substantive = required_recheck_ids(lint, audit, stream)
+    id_letter = "C" if stream == "claims" else "E"  # the inventory's own ID letter
+    inv_ids = {row.get("ID", "") for row in inventory}
     assignments = {}
     for c in clusters:
         for i in re.findall(r"[CEO]-\d{4}", c["Assigned IDs"]):
             assignments.setdefault(i, []).append(c["Cluster ID"])
+    # (a1) every REQUIRED id must actually be in the inventory (recall guarantee).
+    for i in sorted(required - inv_ids):
+        lint.fail(f"{plan}: required recheck ID {i} absent from the b4 inventory "
+                  f"(a mandatory row would silently skip the recheck)")
     for row in inventory:
         i = row.get("ID", "")
+        # (a2) wrong-typed inventory IDs: a claims recheck inventory carries only
+        #      C- ids (outputs are never rechecked directly); a code inventory only E-.
+        if i and i[0] != id_letter:
+            lint.fail(f"{plan}: wrong-typed inventory ID {i} in the {stream} recheck plan "
+                      f"(expected a {id_letter}- ID)")
         if i not in canon:
             lint.fail(f"{plan}: inventory ID {i} not found in canonical registers")
         n = len(assignments.get(i, []))
         if n != 1:
             lint.fail(f"{plan}: inventory ID {i} assigned to {n} clusters (expected exactly 1)")
+    # (a3) cluster size ceiling, at every depth.
+    depth = (manifest or {}).get("review_depth", "standard")
+    for c in clusters:
+        ids = re.findall(r"[CEO]-\d{4}", c["Assigned IDs"])
+        if len(ids) > 8:
+            lint.fail(f"{plan}: cluster {c['Cluster ID']} groups {len(ids)} IDs (max 8)")
+        # (a4) at deep, a cluster may hold at most one SUBSTANTIVE id.
+        if depth == "deep":
+            n_sub = sum(1 for i in ids if i in substantive)
+            if n_sub > 1:
+                lint.fail(f"{plan}: cluster {c['Cluster ID']} groups {n_sub} substantive IDs "
+                          f"at deep depth (each substantive ID needs its own cluster)")
     check_unique(lint, plan, [c["Shard File"] for c in clusters], "cluster Shard File")
 
 
@@ -817,6 +1131,9 @@ def stage_b5(lint, audit, stream, shard, manifest):
     if rows is None:
         return
     verdicts = CLAIMS_VERDICTS if stream == "claims" else ERROR_VERDICTS
+    ladder = int(manifest.get("ladder_level", 1)) if manifest else 1
+    # U8 (c): verdicts whose ledger row must carry blocker text in a proposal column.
+    BLOCKER_VERDICTS = {"blocked", "confirmation_needed", "deferred"}
     seen = []
     evidence_levels = set()
     for r in rows:
@@ -826,14 +1143,33 @@ def stage_b5(lint, audit, stream, shard, manifest):
             lint.fail(f"{shard}: ledger contains unassigned/new ID {d['ID']} (no new IDs at recheck)")
         if d["Verdict"] not in verdicts:
             lint.fail(f"{shard}: {d['ID']} invalid verdict '{d['Verdict']}'")
-        if d["Evidence Level"] not in EVIDENCE_LEVELS:
-            lint.fail(f"{shard}: {d['ID']} invalid evidence level '{d['Evidence Level']}'")
-        evidence_levels.add(d["Evidence Level"])
+        level = d["Evidence Level"]
+        if level not in EVIDENCE_LEVELS:
+            lint.fail(f"{shard}: {d['ID']} invalid evidence level '{level}'")
+        else:
+            # U8 (c): an evidence level whose minimum ladder exceeds the run's
+            # ladder cannot have been produced — fail it.
+            min_ladder = EVIDENCE_MIN_LADDER[level]
+            if min_ladder > ladder:
+                lint.fail(f"{shard}: {d['ID']} evidence level '{level}' needs ladder "
+                          f">= {min_ladder} but the run is at ladder {ladder}")
+        evidence_levels.add(level)
+        # U8 (c): Evidence Checked must be non-empty on every ledger row.
+        if not d["Evidence Checked"].strip():
+            lint.fail(f"{shard}: {d['ID']} has an empty 'Evidence Checked' "
+                      f"(every rechecked row must record what was inspected)")
+        # U8 (c): a blocked/confirmation_needed/deferred verdict must name the
+        # blocker in either proposal column (Proposed Register Change / Proposed Note).
+        if d["Verdict"] in BLOCKER_VERDICTS:
+            blocker = (d["Proposed Register Change"].strip()
+                       or d["Proposed Note"].strip())
+            if not blocker:
+                lint.fail(f"{shard}: {d['ID']} verdict '{d['Verdict']}' but neither "
+                          f"'Proposed Register Change' nor 'Proposed Note' records a blocker")
     check_unique(lint, shard, seen, "ledger ID")
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")
-    ladder = int(manifest.get("ladder_level", 1)) if manifest else 1
     if ladder >= 2 and evidence_levels == {"static_source_verified"}:
         lint.warn(f"{shard}: ladder level {ladder} but every check is static_source_verified")
 
@@ -887,6 +1223,8 @@ def stage_b6(lint, audit, stream, manifest):
                 lint.fail(f"{staging / f}: duplicate_of target {m_dup.group(1)} not in register")
         if f == "claims_register.md":
             check_claims_rows(lint, staging / f, st_rows, final=True)
+            # U1 advisory: this is a FINAL claims register (recheck merge).
+            check_adjudication_advisory(lint, staging / f, st_rows)
         elif f == "output_register.md":
             check_output_rows(lint, staging / f, st_rows, final=True)
         else:
@@ -1086,6 +1424,10 @@ def stage_b8(lint, audit, manifest):
         st_headers, st_rows = st
         st_rows = [r for r in st_rows if not is_example_row(r)]
         _, sn_rows = sn
+        if f == "claims_register.md":
+            # U1 advisory: b8 also lints a FINAL claims register. Read under the
+            # staging header order (extra `*Original` cols) so field lookup aligns.
+            check_adjudication_advisory(lint, staging / f, st_rows, list(st_headers))
         if any(h in ("Notes", "Notes Original") for h in st_headers):
             lint.fail(f"{staging / f}: Notes columns are forbidden")
         for new_col, orig_col in REWRITE_PAIRS[f]:
@@ -1136,6 +1478,33 @@ def stage_b8(lint, audit, manifest):
             )
 
 
+def export_expected_headers(reg_headers, add_potential_issue):
+    """The header row export_xlsx.py writes for a sheet, from the register's own
+    headers. Mirrors export_xlsx.drop_and_augment: drop every `*Original` column
+    (order preserved), then — on Paper Claims — insert `Potential Issue` right
+    after `Status`."""
+    keep = [h for h in reg_headers if not h.endswith("Original")]
+    if add_potential_issue and "Status" in keep:
+        keep = list(keep)
+        keep.insert(keep.index("Status") + 1, "Potential Issue")
+    return keep
+
+
+def check_staging_frozen(lint, audit, mode):
+    """U8 (d): a `done` b8 leaves `_staging/` populated as the frozen b8 state.
+    Export must not precede b8 — so the frozen registers must exist and be
+    non-empty at b9."""
+    staging = audit / "_staging"
+    files = ["code_error_register.md"]
+    if mode != "code_errors_only":
+        files.insert(0, "claims_register.md")
+    for f in files:
+        p = staging / f
+        if not p.is_file() or p.stat().st_size == 0:
+            lint.fail(f"{p}: b8 must leave a non-empty frozen register in _staging/ "
+                      f"(else export precedes b8 — rerun b8 before b9)")
+
+
 def stage_b9(lint, audit, manifest):
     try:
         from openpyxl import load_workbook
@@ -1151,6 +1520,8 @@ def stage_b9(lint, audit, manifest):
     expect = {"Overview", "Code Errors"} | ({"Paper Claims"} if mode == "replication" else set())
     if set(wb.sheetnames) != expect:
         lint.fail(f"workbook sheets {wb.sheetnames} != expected {sorted(expect)}")
+    # U8 (d): the frozen b8 staging registers must still be present and non-empty.
+    check_staging_frozen(lint, audit, mode)
     checks = [("Code Errors", "code_error_register.md", ERROR_COLS, "Error ID", ["Error Description", "Why It Matters"])]
     if mode == "replication":
         checks.append(("Paper Claims", "claims_register.md", CLAIMS_COLS, "Claim ID", ["Issue Description", "Potential Issue"]))
@@ -1176,6 +1547,12 @@ def stage_b9(lint, audit, manifest):
             continue
         reg_headers, reg_rows = reg
         reg_rows = [r for r in reg_rows if not is_example_row(r)]
+        # U8 (d): exact header parity with the register minus `*Original` (+
+        # `Potential Issue` after `Status` on Paper Claims).
+        expected_headers = export_expected_headers(
+            list(reg_headers), add_potential_issue=(sheet == "Paper Claims"))
+        if headers != expected_headers:
+            lint.fail(f"{sheet}: export header parity failure — {headers} != {expected_headers}")
         reg_ids = set(col(reg_rows, list(reg_headers), idc)) if idc in reg_headers else set()
         id_i = headers.index(idc)
         sheet_rows = [r for r in data[1:] if r[id_i] is not None]
@@ -1184,6 +1561,18 @@ def stage_b9(lint, audit, manifest):
             lint.fail(f"{sheet}: ID set differs from {f} ({len(sheet_ids)} vs {len(reg_ids)})")
         if len(sheet_rows) != len(reg_rows):
             lint.fail(f"{sheet}: {len(sheet_rows)} rows vs {len(reg_rows)} register rows")
+        # U8 (d): Potential Issue = TRUE iff Severity non-empty, per row.
+        if sheet == "Paper Claims" and "Potential Issue" in headers and "Severity" in headers:
+            pi_i, sev_i = headers.index("Potential Issue"), headers.index("Severity")
+            id_j = headers.index(idc)
+            for r in sheet_rows:
+                sev = str(r[sev_i]).strip() if r[sev_i] is not None else ""
+                pi = str(r[pi_i]).strip() if r[pi_i] is not None else ""
+                expected = "TRUE" if sev else "FALSE"
+                if pi != expected:
+                    lint.fail(f"{sheet}: {r[id_j]} Potential Issue '{pi}' disagrees with "
+                              f"Severity ('{sev}'): must be '{expected}' "
+                              f"(Potential Issue = TRUE iff Severity non-empty)")
 
 
 # --------------------------------------------------------------- main
@@ -1225,9 +1614,12 @@ def main() -> int:
     elif n == "b3":
         stage_b3(lint, audit, stream)
     elif n == "b3b":
-        stage_b3b(lint, audit, stream)
+        if args.shard is not None:
+            stage_b3b_shard(lint, audit, stream, args.shard)
+        else:
+            stage_b3b(lint, audit, stream)
     elif n == "b4":
-        stage_b4(lint, audit, stream)
+        stage_b4(lint, audit, stream, manifest)
     elif n == "b5":
         stage_b5(lint, audit, stream, args.shard, manifest)
     elif n == "b6":

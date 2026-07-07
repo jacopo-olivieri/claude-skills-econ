@@ -31,7 +31,14 @@ canon exists.
 4. **Status-conflict resolution** (only when the summary lists conflicts): dispatch one
    recheck-cluster-worker over the conflicted claim rows, with the linked error rows named as
    evidence to check. Apply the standard verdict→register mapping (registers.md) to the
-   claims register mechanically. If a verdict leaves the claim `confirmed` (the error does
+   claims register mechanically. Whenever the recheck chooses between `inconsistent` and
+   `confirmation_needed`, apply the **visibility test**: escalate to `inconsistent` only when
+   both halves of the contradiction are visible in files that ship; when shipped files
+   establish only that a contradiction *could* occur — a value only absent data would reveal —
+   the row stops at `confirmation_needed`. Paper text versus a shipped filename is fully
+   visible and escalates; "these two identifier codes might collide when multiplied" depends
+   on absent data and stops at `confirmation_needed`. If a verdict leaves the claim
+   `confirmed` (the error does
    not actually contradict it), the link itself was wrong: remove it from both rows and note
    the removal in the summary. No confirmed-claim↔confirmed-error link may survive into b8
    (lint b8 enforces).
@@ -40,7 +47,8 @@ canon exists.
    linked error named as evidence and returns a verdict; the conductor applies the
    verdict→register mapping mechanically. The outcome is open — the claim may become
    `inconsistent` (the error settles it) or legitimately stay `mapped` (the error does not
-   settle it). Unlike a status conflict, a `mapped`-and-linked pair may survive to b8: b8
+   settle it); an escalation to `inconsistent` must pass the visibility test (step 4).
+   Unlike a status conflict, a `mapped`-and-linked pair may survive to b8: b8
    requires only that the second look happened (a recheck ledger entry for the claim), not a
    particular status. Record the second look in the summary line.
 6. **Severity-divergence resolution** (only when the summary lists divergences; may share
@@ -48,7 +56,9 @@ canon exists.
    conductor then either aligns the two severities (verdict→register mapping, mechanically
    applied) or appends a one-line justification for the gap — taken from the ledger's
    `Proposed Note` — to the pair's line in the summary. The recheck worker writes only its
-   shard, never the summary. Legitimate gaps exist (a claim row may assert something
+   shard, never the summary. Where the verdict also moves a status, the
+   `inconsistent`/`confirmation_needed` choice follows the visibility test (step 4).
+   Legitimate gaps exist (a claim row may assert something
    narrower than the error breaks) but are never left silent. Pairs still divergent at b8
    must remain listed in the section (lint b8 enforces listing; the justification is a
    prose obligation on the conductor).
@@ -66,8 +76,9 @@ canon exists.
 3. `lint_registers.py --stage b8`: counts/IDs/statuses/paths byte-identical; `*_Original`
    columns preserve prior text; blankness pairing both directions; no `Notes` columns; any
    linked pair with differing severities listed under `## Severity divergences`.
-4. **Promote by copy, not move**: copy the staging registers over canon (write via temp
-   file + atomic rename on the canon side) and leave the copies in `_staging/` untouched as
+4. **Promote by copy, not move**: copy the staging registers over canon — each register
+   written via temp file + atomic rename on the canon side, so a crash mid-promotion cannot
+   leave canon half-updated — and leave the copies in `_staging/` untouched as
    the frozen b8 boundary state, so `lint_registers.py --stage b8` stays replayable after
    the run. Add one line to `audit_readme.md`: `_staging/` holds the frozen b8 registers,
    superseded by the root registers.

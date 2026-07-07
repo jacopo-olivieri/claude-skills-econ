@@ -1,6 +1,14 @@
 # Last fixture run score
 
-**Latest run:** 2026-07-06 — see [`score-2026-07-06-rca-improvements.md`](score-2026-07-06-rca-improvements.md)
+> **⚠️ Re-score pending.** The `feat/rca-adjudication-recall-v2` refactor (units
+> U1–U8, plan `2026-07-06-003`) landed on 2026-07-07 and changed skeletons,
+> pipelines, `registers.md`, and the scripts. The **automated harness is GREEN
+> (58 passed)** but the **end-to-end LLM fixture re-score has not been run** and
+> is required before merging to `main` — see
+> [`score-2026-07-07-adjudication-recall-refactor.md`](score-2026-07-07-adjudication-recall-refactor.md).
+> The GREEN result below is the last completed end-to-end run and predates the refactor.
+
+**Latest completed end-to-end run:** 2026-07-06 — see [`score-2026-07-06-rca-improvements.md`](score-2026-07-06-rca-improvements.md)
 
 | Metric | Result |
 | --- | --- |

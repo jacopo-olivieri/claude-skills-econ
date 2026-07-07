@@ -1,0 +1,412 @@
+"""Builders for synthetic registers, plans, and audit directories.
+
+Shared by every test module in this harness. The goal is that a later unit
+(U1, U6, U8) can write a failing-first negative test in a few lines:
+
+    a = regbuild.make_b6_claims(tmp_path, [regbuild.claims_row("C-0101", ...)])
+    res = regbuild.lint(a, "b6-claims")
+    assert res.returncode == 1
+
+Column vocabularies are imported from ``lint_registers.py`` itself so the
+builders can never drift from the linter's schema.
+"""
+
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+TESTS_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = TESTS_DIR.parent
+SKILL_DIR = SCRIPTS_DIR.parent
+FIXTURE_DIR = SKILL_DIR / "fixture"
+
+
+def load_script(name):
+    """Import a scripts/ module by path (the scripts dir is not a package)."""
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_lint_mod = load_script("lint_registers")
+CLAIMS_COLS = _lint_mod.CLAIMS_COLS
+OUTPUT_COLS = _lint_mod.OUTPUT_COLS
+ERROR_COLS = _lint_mod.ERROR_COLS
+LEDGER_COLS = _lint_mod.LEDGER_COLS
+
+
+def run_script(name, *args, cwd=None):
+    """Run a scripts/ CLI as a subprocess; returns CompletedProcess (text mode)."""
+    cmd = [sys.executable, str(SCRIPTS_DIR / name)] + [str(a) for a in args]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+
+
+# --------------------------------------------------------------- md builders
+
+
+def md_table(cols, rows):
+    lines = ["| " + " | ".join(cols) + " |",
+             "| " + " | ".join(["---"] * len(cols)) + " |"]
+    for r in rows:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def register_text(title, cols, rows):
+    return f"# {title}\n\n" + md_table(cols, rows)
+
+
+def claims_row(cid, *, context="Sec. 1 > para 2", quote="a claimed fact",
+               used="TRUE", ctype="quantitative_result",
+               text="the paper asserts a value", source="`do/analysis.do`",
+               outputs="", status="confirmed", severity="", issue="",
+               blocked_check="", related=""):
+    return [cid, context, quote, used, ctype, text, source, outputs,
+            status, severity, issue, blocked_check, related]
+
+
+def output_row(oid, *, obj="Table 1", context="Sec. 3 > Table 1",
+               location="`paper/paper.tex:10`", pattern="`artifacts/tab1.tex`",
+               script="`do/analysis.do`", inputs="`output/panel.csv`",
+               spec="baseline", claims="", status="mapped"):
+    return [oid, obj, context, location, pattern, script, inputs, spec,
+            claims, status]
+
+
+def error_row(eid, *, etype="stale_or_wrong_path",
+              source="`py/make_figures.py`",
+              location="`py/make_figures.py:5`", status="confirmed",
+              severity="2", desc="a description of what appears wrong",
+              why="a consequence for the outputs", related=""):
+    return [eid, etype, source, location, status, severity, desc, why, related]
+
+
+# --------------------------------------------------------------- audit dirs
+
+
+class AuditDir:
+    """A synthetic ``audit/`` directory under a tmp root."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.audit = self.root / "audit"
+        for sub in ("_run/snapshots", "_staging", "plans"):
+            (self.audit / sub).mkdir(parents=True, exist_ok=True)
+
+    def write(self, rel, text):
+        p = self.audit / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def write_manifest(self, **kv):
+        manifest = {"mode": "replication", "ladder_level": 1, "warnings": []}
+        manifest.update(kv)
+        return self.write("_run/manifest.json", json.dumps(manifest, indent=2))
+
+    def write_register(self, rel, cols, rows, title=None):
+        title = title or Path(rel).stem.replace("_", " ").title()
+        return self.write(rel, register_text(title, cols, rows))
+
+    def write_claims_plan(self):
+        """Minimal b1 claims plan: one worker allocation + coordinator ranges."""
+        text = (
+            "# Claims review plan\n\n"
+            "| Worker ID | Worker Scope | Claim ID Range | Output ID Range | Shard File |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| W1 | full paper | C-0100–C-0999 | O-1000–O-1999 | `audit/_work/w1.md` |\n\n"
+            "Merge-coordinator range: C-9000–C-9099\n"
+            "Merge-coordinator range: O-9000–O-9099\n"
+        )
+        return self.write("plans/claims_review_plan.md", text)
+
+    def write_recheck_summary(self, stream, splits=0, merges=0):
+        name = ("claims_recheck_summary.md" if stream == "claims"
+                else "code_error_recheck_summary.md")
+        return self.write(
+            name,
+            f"# {stream} recheck summary\n\n"
+            f"Splits declared: {splits}\nMerges declared: {merges}\n",
+        )
+
+    def snapshot(self, key, files):
+        """Copy the named staging files into ``_run/snapshots/<key>/``."""
+        snap = self.audit / "_run" / "snapshots" / key
+        snap.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            shutil.copy2(self.audit / "_staging" / f, snap / f)
+        return snap
+
+
+def lint(auditdir: AuditDir, stage, shard=None):
+    args = ["--stage", stage, "--audit-dir", auditdir.audit]
+    if shard is not None:
+        args += ["--shard", shard]
+    return run_script("lint_registers.py", *args)
+
+
+def make_b0(tmp_path) -> AuditDir:
+    """A minimal audit dir that lints green at b0 (all registers empty)."""
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    a.write_register("claims_register.md", CLAIMS_COLS, [])
+    a.write_register("output_register.md", OUTPUT_COLS, [])
+    a.write_register("code_error_register.md", ERROR_COLS, [])
+    a.write("audit_readme.md", "# Audit readme\n\nVocabulary and rules.\n")
+    a.write("CODEMAP.md",
+            "# CODEMAP\n\nS-0001 do/analysis.do\nD-0001 data/households.csv\n"
+            "B-0001 build step\n\nPRECONDITIONS: 5/5\n")
+    return a
+
+
+CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition",
+                    "Sites Already Seen"]
+
+
+def conventions_row(name, *, category="fiscal_year_or_sample_window_boundary",
+                    definition="fiscal year begins in July (C-0142)",
+                    sites="`do/build_panel.do`; C-0142; C-0181"):
+    return [name, category, definition, sites]
+
+
+def make_conventions_b4_code(tmp_path, convention_rows=None,
+                             include_artifact=True) -> AuditDir:
+    """A minimal audit dir carrying the optional b3c conventions artifact.
+
+    Exercises ``check_conventions_artifact`` (advisory) via ``--stage b4-code``.
+    The recheck plan is intentionally absent, so the *overall* stage fails; the
+    conventions check runs first and independently, and its WARNING/ silence is
+    what these tests assert on. Pass ``include_artifact=False`` to omit the file.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    if include_artifact:
+        rows = [] if convention_rows is None else list(convention_rows)
+        a.write("_run/conventions.md",
+                register_text("Shared conventions", CONVENTIONS_COLS, rows))
+    return a
+
+
+def make_b6_claims(tmp_path, claims_rows, output_rows=()) -> AuditDir:
+    """A minimal audit dir that reaches the b6-claims boundary cleanly.
+
+    The staging registers equal the b6 snapshot (no splits/merges), so the
+    boundary lints green as long as *claims_rows* themselves are valid.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    a.write_claims_plan()
+    a.write_register("_staging/claims_register.md", CLAIMS_COLS,
+                     list(claims_rows), title="Claims register")
+    a.write_register("_staging/output_register.md", OUTPUT_COLS,
+                     list(output_rows), title="Output register")
+    a.snapshot("claims_b6", ["claims_register.md", "output_register.md"])
+    a.write_recheck_summary("claims")
+    return a
+
+
+# --------------------------------------------------------------- U8 builders
+#
+# b4 recheck plans, b3b second-read shards, b5 recheck ledgers, and b9
+# workbooks — the negative/positive homes for the four U8 lint checks.
+
+LEDGER_COLS_ = LEDGER_COLS  # re-export for callers importing from regbuild
+
+
+def ledger_row(rid, *, status="candidate", severity="3",
+               evidence="`py/make_figures.py:5` reads a stale path",
+               level="static_source_verified", verdict="confirmed_error",
+               change="set status=confirmed", impact="figure 2 mislabelled",
+               note="author-facing note"):
+    return [rid, status, severity, evidence, level, verdict, change,
+            impact, note]
+
+
+def recheck_plan_text(stream, inventory, clusters):
+    """A recheck plan (b4 output): inventory table + cluster table + vocab pointer.
+
+    *inventory* is a list of (ID, Reason, Likely Evidence) tuples; *clusters* is a
+    list of (Cluster ID, Cluster Name, Assigned IDs, Shard File) tuples.
+    """
+    inv = md_table(["ID", "Reason", "Likely Evidence"],
+                   [list(r) for r in inventory])
+    clu = md_table(["Cluster ID", "Cluster Name", "Assigned IDs", "Shard File"],
+                   [list(r) for r in clusters])
+    return (f"# {stream} recheck plan\n\n"
+            "## Inventory\n\n" + inv + "\n"
+            "## Clusters\n\n" + clu + "\n"
+            "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
+
+
+def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
+            canon_errors=(), inventory=None, clusters=None,
+            review_depth="standard") -> AuditDir:
+    """A minimal audit dir that reaches the b4-<stream> boundary.
+
+    Canonical registers sit at ``audit/`` (b4 reads them via canon_ids). The
+    recheck plan is written from *inventory* / *clusters*; if either is None it
+    is derived automatically to cover every substantive canon ID in one cluster.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(review_depth=review_depth)
+    if stream == "claims":
+        a.write_register("claims_register.md", CLAIMS_COLS,
+                         list(canon_claims), title="Claims register")
+        a.write_register("output_register.md", OUTPUT_COLS,
+                         list(canon_outputs), title="Output register")
+        plan_name = "plans/claims_recheck_plan.md"
+    else:
+        a.write_register("code_error_register.md", ERROR_COLS,
+                         list(canon_errors), title="Code-error register")
+        plan_name = "plans/code_error_recheck_plan.md"
+    if inventory is None or clusters is None:
+        auto_inv, auto_clu = _auto_recheck(stream, canon_claims, canon_errors)
+        inventory = auto_inv if inventory is None else inventory
+        clusters = auto_clu if clusters is None else clusters
+    a.write(plan_name, recheck_plan_text(stream, inventory, clusters))
+    return a
+
+
+def _substantive_claim(row):
+    d = dict(zip(CLAIMS_COLS, row))
+    return bool(d["Severity"]) or d["Status"] == "unclear"
+
+
+def _substantive_error(row):
+    d = dict(zip(ERROR_COLS, row))
+    return d["Status"] == "candidate" or (
+        d["Status"] == "confirmed" and d["Severity"] in {"3", "4"})
+
+
+def _auto_recheck(stream, canon_claims, canon_errors):
+    """Derive a well-formed inventory + single cluster covering every required ID."""
+    if stream == "claims":
+        req = [dict(zip(CLAIMS_COLS, r))["Claim ID"]
+               for r in canon_claims if _substantive_claim(r)]
+    else:
+        req = [dict(zip(ERROR_COLS, r))["Error ID"]
+               for r in canon_errors if _substantive_error(r)]
+    inv = [(i, "issue-flagged", "static") for i in req]
+    clu = [("K1", "cluster one", "; ".join(req), "`audit/_recheck/k1.md`")] if req else []
+    return inv, clu
+
+
+def _shard_footer_text():
+    return ("\n### Coverage\n\nEvery item in scope has a row or a skip note.\n\n"
+            "### Coordinator notes\n\nNo blockers.\n")
+
+
+def make_b3b_shard(tmp_path, stream, *, claims_rows=(), output_rows=(),
+                   error_rows=(), claim_range="C-2000–C-2099",
+                   output_range="O-2000–O-2099", error_range="E-2000–E-2099",
+                   shard_rel=None, omit_output_table=False) -> tuple:
+    """Build a b3b second-read shard plus the second-read plan referencing it.
+
+    Returns (AuditDir, shard_path). The shard uses canonical columns, carries a
+    footer, and its worker allocation range is disjoint from the default b1 plan.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    if stream == "claims":
+        shard_rel = shard_rel or "_work_second_read/w1.md"
+        plan = (
+            "# Claims second-read plan\n\n"
+            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | "
+            "Output ID Range | Known Findings |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            f"| W1 | sec 4 | `audit/{shard_rel}` | {claim_range} | "
+            f"{output_range} | C-0142 |\n"
+        )
+        a.write("plans/claims_second_read_plan.md", plan)
+        # a b1 plan is also read for range-disjointness
+        a.write_claims_plan()
+        body = register_text("Claims", CLAIMS_COLS, list(claims_rows))
+        if not omit_output_table:
+            body += "\n" + register_text("Outputs", OUTPUT_COLS, list(output_rows))
+    else:
+        shard_rel = shard_rel or "_code_errors_second_read/w1.md"
+        plan = (
+            "# Code-error second-read plan\n\n"
+            "| Worker ID | Script Scope | Shard File | Error ID Range | "
+            "Known Findings |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            f"| W1 | `py/x.py` | `audit/{shard_rel}` | {error_range} | E-0001 |\n"
+        )
+        a.write("plans/code_error_second_read_plan.md", plan)
+        a.write("plans/code_error_review_plan.md", _code_b1_plan())
+        body = register_text("Code errors", ERROR_COLS, list(error_rows))
+    shard = a.write(shard_rel, body + _shard_footer_text())
+    return a, shard
+
+
+def _code_b1_plan():
+    return (
+        "# Code-error review plan\n\n"
+        "| Chunk ID | Script Scope | Error ID Range | Shard File |\n"
+        "| --- | --- | --- | --- |\n"
+        "| K1 | `py/x.py` | E-0100–E-0999 | `audit/_code_errors/k1.md` |\n\n"
+        "Merge-coordinator range: E-9000–E-9099\n\n"
+        "| Script | Chunk |\n"
+        "| --- | --- |\n"
+        "| `py/x.py` | K1 |\n"
+    )
+
+
+def make_b5(tmp_path, stream, *, ledger_rows, assigned_ids=None,
+            ladder_level=1, shard_rel=None) -> tuple:
+    """Build a b5 recheck ledger shard plus the recheck plan that assigns it.
+
+    Returns (AuditDir, shard_path). *ledger_rows* are LEDGER_COLS rows; the
+    recheck plan's single cluster is assigned every ledger ID (or *assigned_ids*).
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(ladder_level=ladder_level)
+    ids = assigned_ids if assigned_ids is not None else [r[0] for r in ledger_rows]
+    shard_rel = shard_rel or (
+        "_recheck/k1.md" if stream == "claims" else "_code_error_recheck/k1.md")
+    inv = [(i, "issue-flagged", "static") for i in ids]
+    clu = [("K1", "cluster one", "; ".join(ids), f"`audit/{shard_rel}`")]
+    plan_name = ("plans/claims_recheck_plan.md" if stream == "claims"
+                 else "plans/code_error_recheck_plan.md")
+    a.write(plan_name, recheck_plan_text(stream, inv, clu))
+    shard = a.write(shard_rel, register_text("Recheck ledger", LEDGER_COLS,
+                                             list(ledger_rows)))
+    return a, shard
+
+
+def make_b9(tmp_path, *, claims_rows=(), error_rows=(), mode="replication",
+            populate_staging=True) -> AuditDir:
+    """A minimal audit dir that reaches the b9 boundary.
+
+    Writes the canonical registers, populates ``_staging/`` with the same
+    (frozen b8) registers, and runs the *real* ``export_xlsx.py`` to build
+    ``code_review.xlsx`` — so a b9 test starts from a workbook the exporter
+    actually produced, then a test corrupts one cell to prove the check fires.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(mode=mode)
+    a.write_register("code_error_register.md", ERROR_COLS,
+                     list(error_rows), title="Code-error register")
+    if mode == "replication":
+        a.write_register("claims_register.md", CLAIMS_COLS,
+                         list(claims_rows), title="Claims register")
+        a.write_register("output_register.md", OUTPUT_COLS, [],
+                         title="Output register")
+    if populate_staging:
+        # b8 leaves _staging/ populated as the frozen b8 state; the b9 check
+        # requires the non-empty frozen registers to still be there.
+        a.write_register("_staging/code_error_register.md", ERROR_COLS,
+                         list(error_rows), title="Code-error register")
+        if mode == "replication":
+            a.write_register("_staging/claims_register.md", CLAIMS_COLS,
+                             list(claims_rows), title="Claims register")
+    out = a.audit / "code_review.xlsx"
+    res = run_script("export_xlsx.py", "--audit-dir", a.audit,
+                     "--mode", mode, "-o", out)
+    if res.returncode != 0:  # pragma: no cover - surfaces a builder misuse
+        raise AssertionError(f"export_xlsx failed in make_b9:\n{res.stdout}\n{res.stderr}")
+    return a

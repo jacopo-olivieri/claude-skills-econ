@@ -35,6 +35,38 @@ see this folder's other files.
    - **Precision**: nothing about the placebo figure / `fig_placebo.pdf` (`must_not_find`),
      and the `expected_confirmed_examples` come out clean rather than flagged.
 
+### Automated scoring
+
+`scripts/score_fixture.py` automates the recall/precision core of the scorecard
+(mechanism-signature matching, the P-14 dual-accept branch logic, the D-01 decoy
+grep, and an SC-01 unresolved-conflict check). Point it at the finished run's
+final registers:
+
+```
+python scripts/score_fixture.py --audit-dir /path/to/pkg/audit
+```
+
+Exit 0 = GATE GREEN, 1 = GATE RED. Type adjudication and the
+`expected_confirmed_examples` cleanliness checks remain hand-scored; record the
+scorer output in the dated scorecard either way.
+
+## Test harness
+
+The scripts' committed pytest suite (linter contract tests, scorer self-tests,
+export and comment-blanking smoke tests, and a plant-drift hash check that
+catches an accidental "fix" to a planted bug) runs green with one command from
+the skill folder:
+
+```
+uv run --no-project --with pytest --with openpyxl -- pytest scripts/tests/
+```
+
+(or `python -m pytest scripts/tests/` if pytest and openpyxl are installed).
+Builders for synthetic registers, plans, and audit directories live in
+`scripts/tests/regbuild.py` — new lint checks should land with failing-first
+negative tests there. If you edit anything under `planted/`, regenerate
+`scripts/tests/data/planted_sha256.json` (see `scripts/tests/test_plant_drift.py`).
+
 ## When to re-score
 
 Re-run this fixture after **any** edit to a prompt skeleton, pipeline file, `registers.md`,

@@ -31,7 +31,9 @@ Invariants you never break:
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
-  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>`). On failure, re-dispatch the producing agent once
+  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
+  `b2`, `b5`, and now `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, mark that shard/stage
   `blocked` in the manifest and continue everything that does not depend on it. **Merges
   proceed over the non-blocked shards** and document blocked ones in the merge report.
@@ -63,12 +65,14 @@ defaults and let the user correct.
 4. **Review depth.** How much redundancy the run spends on thoroughness — propose `standard`
    (the default) and let the user pick `shallow` or `deep`, same style as the ladder/budget.
    Depth is **orthogonal to the review ladder**: the ladder governs *what techniques are
-   allowed*; depth governs *how much redundancy is spent*. The chosen level sets three
-   conductor knobs — the second-read trigger threshold, how many independent reading passes a
-   first-pass worker gets, and whether the recheck runs per-finding — per the depth-knob table
-   below.
+   allowed*; depth governs *how much redundancy is spent*. The chosen depth sets two
+   conductor knobs — the second-read trigger threshold and whether the recheck runs
+   per-finding — per the depth-knob table below.
 5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
-   exploratory folders); the user corrects. Record the final exclusion list.
+   exploratory folders); the user corrects. Propose by default: `audit/` itself, `.git/`, caches
+   (`__pycache__`, `.ipynb_checkpoints`, `.Rproj.user`, and similar), package-manager directories
+   (`node_modules`, `renv/library`, `.venv`, `packrat`), and archived or import-only mirror
+   folders. Record the final exclusion list.
 6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
    data, quirks (e.g. mirror folders that are import-only).
 7. **Output preferences and worker model tier** (default: inherit the session model).
@@ -100,6 +104,9 @@ Write `audit/_run/manifest.json`:
 }
 ```
 
+Every manifest write — this initial one and every later status update — goes to a temp file in
+the same directory followed by an atomic rename over `manifest.json`; never edit it in place.
+
 Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
 exist only where the mode runs them). `shards` appears on worker stages only; a worker stage is
@@ -108,16 +115,18 @@ exist only where the mode runs them). `shards` appears on worker stages only; a 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
 receives — compose it once from mode + ladder + budget + off-limits.
 
-**Depth-knob table.** `review_depth` (default `standard`) resolves to three conductor knobs the
+**Depth-knob table.** `review_depth` (default `standard`) resolves to two conductor knobs the
 downstream stages read. This table is authoritative for those knobs; it lives here — beside the
 manifest schema — and NOT in `references/registers.md`, because these are conductor behaviours,
-not register semantics pasted into worker contexts.
+not register semantics pasted into worker contexts. (A third knob — 2 independent first-pass
+passes per b2 worker at `deep` — was deleted: it was never implemented, and pair-allocating
+scopes would break the b1 exactly-one-scope lints. Extra `deep` redundancy comes from the b3b
+second-lens pass instead.)
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |
 | **Second-read trigger** (U2 sweep after b3) | serious findings only: re-read a file only if it carries a first-pass finding at Severity ≥ 3 | any first-pass finding: re-read a file that carries at least one first-pass finding of any severity | any first-pass finding, **and** the second-read worker runs a second independent pass with a different mandate lens |
-| **Independent first-pass passes** per chunk/section worker (b2) | 1 | 1 | 2 (the extra pass carries a distinct mandate) |
-| **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one recheck cluster per issue-flagged/candidate finding |
+| **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one single-ID cluster per substantive ID (issue-flagged/`unclear` claim; `candidate` or Severity ≥ 3 code row); only sampled clean `confirmed` rows may still be grouped |
 
 Depth never changes *which* techniques are permitted (that is the ladder) — only how much
 redundancy is spent. The trigger is per-file, not per-finding, so a file with five findings is
@@ -171,6 +180,10 @@ Mechanics:
   stage run in parallel (one subagent per worker/cluster, single fire-and-forget message each).
 - Update the manifest at every transition; a worker is complete only when **its shard exists AND
   lints** at the stage's boundary.
+- **Progress ledger.** At each transition, regenerate `audit/_run/progress.md` from the manifest:
+  one line per boundary giving its status, shards done/blocked, and last lint result. It is a
+  human-readable mirror of the manifest, not a second source of truth — rewrite it whole from the
+  manifest each time so an unsupervised run stays legible without reading the pipeline files.
 - Dispatch with the user's `worker_model` if set. Skeletons for judgment-heavy stages (recheck,
   merge conflicts, claims logic) carry their own thinking cues — do not add more.
 - Blocked work never stalls the run: merges run over the non-blocked shards (documenting the
@@ -193,6 +206,14 @@ user approval.
 
 If `audit/_run/manifest.json` exists at intake, offer to resume:
 
+0. **Replay the last green boundary before trusting the manifest.** Take the most recent boundary
+   the manifest marks `done` whose artifacts exist on disk, and re-run its lint
+   (`lint_registers.py --stage <that boundary>`, with `--shard` for a shard stage). If it **fails**,
+   the recorded `done` is stale: mark that boundary `pending` in the manifest, discard only *its*
+   stale staging files (never another boundary's), and resume from it rather than from a later
+   point. In particular, a `done` b8 must still have `_staging/` populated with the non-empty
+   frozen b8 registers (the b9 lint requires them); if `_staging/` is empty, b8 reruns before
+   export. Only after this replay passes do you choose the resume point below.
 1. Re-hash `paper_source_path` and compare to `paper_sha256`. **If the manuscript changed,
    warn and offer a scoped register-update pass** (re-run only claims workers whose sections
    changed) instead of silently continuing.

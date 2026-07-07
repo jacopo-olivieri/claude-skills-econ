@@ -149,6 +149,45 @@ def unescape(cell):
     return cell.replace("\\|", "|").replace("\\\\", "\\")
 
 
+# Characters that make a spreadsheet treat a cell's text as a formula/command when
+# it leads the value: the classic CSV/formula-injection set. This workbook is sent to
+# paper authors, so a leading ``=HYPERLINK(...)`` (or ``+``/``-``/``@``/tab/CR) must
+# export as inert text, not execute. Prefixing a single apostrophe forces Excel/Sheets
+# to treat the whole cell as literal text.
+_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def excel_safe(value):
+    """Neutralise formula/command injection in a string cell.
+
+    Returns *value* unchanged unless it is a string beginning with a formula-leader
+    character, in which case a leading ``'`` is prepended so the cell is inert text.
+    Non-string values (ints, floats, None) pass through untouched — only text cells
+    can be interpreted as formulas.
+    """
+    if isinstance(value, str) and value.startswith(_FORMULA_LEADERS):
+        return "'" + value
+    return value
+
+
+def coerce_warnings(value):
+    """Normalise a manifest ``warnings`` value to a list of strings.
+
+    The schema expects a list, but a hand-edited or partial manifest can carry a
+    bare string, ``None``, or some other type. Rather than crash on the Overview
+    sheet, coerce defensively:
+
+    - a list  -> each element stringified (already the common case);
+    - a string -> a one-element list (treated as a single warning);
+    - anything else (``None``, dict, number) -> an empty list (no warnings shown).
+    """
+    if isinstance(value, list):
+        return [str(w) for w in value]
+    if isinstance(value, str):
+        return [value] if value else []
+    return []
+
+
 def drop_and_augment(headers, rows, drop_originals=True, add_potential_issue=False):
     rows = [r for r in rows if not (r and re.fullmatch(r"[CEO]-0000", r[0]))]  # schema example rows
     keep = [i for i, h in enumerate(headers) if not (drop_originals and h.endswith("Original"))]
@@ -165,13 +204,13 @@ def drop_and_augment(headers, rows, drop_originals=True, add_potential_issue=Fal
 
 def write_data_sheet(wb, title, headers, rows):
     ws = wb.create_sheet(title)
-    ws.append(headers)
+    ws.append([excel_safe(h) for h in headers])
     for c in ws[1]:
         c.fill = HEADER_FILL
         c.font = HEADER_FONT
         c.alignment = WRAP
     for row in rows:
-        ws.append(row)
+        ws.append([excel_safe(v) for v in row])
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.alignment = WRAP
@@ -197,12 +236,12 @@ def write_overview(wb, sheets_present, status_usage, warnings):
     def table(pairs, head=("", "")):
         nonlocal r
         if head[0]:
-            ws.cell(row=r, column=1, value=head[0]).font = Font(bold=True)
-            ws.cell(row=r, column=2, value=head[1]).font = Font(bold=True)
+            ws.cell(row=r, column=1, value=excel_safe(head[0])).font = Font(bold=True)
+            ws.cell(row=r, column=2, value=excel_safe(head[1])).font = Font(bold=True)
             r += 1
         for k, v in pairs:
-            ws.cell(row=r, column=1, value=k).alignment = WRAP
-            ws.cell(row=r, column=2, value=v).alignment = WRAP
+            ws.cell(row=r, column=1, value=excel_safe(k)).alignment = WRAP
+            ws.cell(row=r, column=2, value=excel_safe(v)).alignment = WRAP
             r += 1
         r += 1
 
@@ -258,7 +297,12 @@ def main() -> int:
     manifest_path = args.manifest or audit / "_run" / "manifest.json"
     warnings = []
     if manifest_path.is_file():
-        warnings = json.loads(manifest_path.read_text(encoding="utf-8")).get("warnings", [])
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: invalid manifest JSON in {manifest_path}: {exc}", file=sys.stderr)
+            return 1
+        warnings = coerce_warnings(manifest.get("warnings", []))
 
     errors_md = (audit / "code_error_register.md").read_text(encoding="utf-8")
     e_headers, e_rows = parse_md_table(errors_md)
@@ -291,6 +335,7 @@ def main() -> int:
     write_data_sheet(wb, "Code Errors", eh, er)
 
     out = args.output or audit / "code_review.xlsx"
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     print(f"OK: wrote {out} ({', '.join(sheets_present)})")
     return 0

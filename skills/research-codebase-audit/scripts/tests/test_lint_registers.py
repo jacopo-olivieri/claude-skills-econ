@@ -162,6 +162,20 @@ def test_conventions_artifact_wellformed_is_silent(tmp_path):
     assert not warning_lines(res, "conventions.md"), res.stdout
 
 
+def test_conventions_artifact_enumerated_member_list_is_silent(tmp_path):
+    """The U1 category `enumerated_member_list` is in-vocabulary: a row using
+    it (even single-site, per the U1 carve-out) draws no warning."""
+    rows = [
+        rb.conventions_row(
+            "income components list", category="enumerated_member_list",
+            definition='members "crop sales; livestock sales; wages" (C-0310)',
+            sites="C-0310"),
+    ]
+    a = rb.make_conventions_b4_code(tmp_path, rows)
+    res = rb.lint(a, "b4-code")
+    assert not warning_lines(res, "conventions.md"), res.stdout
+
+
 def test_conventions_artifact_bad_category_warns(tmp_path):
     """An out-of-vocabulary Category draws an advisory warning, never a fail."""
     rows = [rb.conventions_row("mystery thing", category="not_a_real_category")]

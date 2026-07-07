@@ -93,7 +93,7 @@ CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition", "Sites Alread
 CONVENTION_CATEGORIES = {
     "fiscal_year_or_sample_window_boundary", "date_parse_mask",
     "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
-    "id_or_merge_key",
+    "id_or_merge_key", "enumerated_member_list",
 }
 
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}

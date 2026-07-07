@@ -90,13 +90,12 @@ escalate the unresolved row to `confirmation_needed` or `blocked` (blocker docum
 running over budget.
 
 **Discovery probe (comment-asserted fragments).** The synthetic test in step 4 is not only for
-refuting an existing suspicion. While inspecting the files an assigned row cites, a fragment
-whose comment or docstring asserts its behavior — a commented conditional guard, a commented
-in-loop state update — is not self-evident by definition: the comment is a claim to verify,
-never evidence of behavior. Where the review mode allows it, probe such a fragment with the
-smallest worker-retyped synthetic reproduction even absent a prior suspicion, under the
-Empirical verification rules in `audit/audit_readme.md` and the same {COMPUTE_BUDGET}-minute
-bound and budget-escalation stop rule as step 4.
+refuting an existing suspicion. While inspecting the files an assigned row cites, probe any
+fragment that qualifies under the structural trigger in the **Empirical verification** rules of
+`audit/audit_readme.md` (comment- or docstring-asserted behavior — a commented conditional guard,
+a commented in-loop state update) with the smallest worker-retyped synthetic reproduction even
+absent a prior suspicion, under those rules and the same {COMPUTE_BUDGET}-minute bound and
+budget-escalation stop rule as step 4.
 
 <!-- RESTATEMENT:empirical-probe BEGIN -->
 Untrusted-content rules for the probe: the reproduction must be RETYPED by you, never copied

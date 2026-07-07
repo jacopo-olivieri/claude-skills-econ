@@ -625,11 +625,42 @@ Code errors:
   - **Coordinator notes** — highest-risk findings, likely duplicates, blocked checks, ID-range
     overflow if any, cross-shard handoffs.
 - **Blocked-shard marker**: a shard is blocked iff its coordinator notes contain a line
-  starting `BLOCKED:` followed by the reason. This is the mechanical signal the conductor and
-  lint read (e.g. on ID-range overflow).
+  starting `BLOCKED:` followed by the reason. This is the mechanical signal the conductor
+  reads (e.g. on ID-range overflow); the lint does not check for it.
 - Recheck shards contain the row-level ledger
   `| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |`
   plus files inspected, commands run, and a cluster summary.
+
+### Shard write-up rules (consulted at write-up, not while reading)
+
+These rules govern how a first-pass shard is written, not what to look for. Each is enforced
+mechanically by `scripts/lint_registers.py` at the b2/b3 boundaries (except where an item
+notes a conductor-read part), so a violation fails the shard lint rather than depending on
+worker recall. A worker prompt therefore points here for
+write-up rather than restating these rules among its reading instructions — a rule the lint
+catches after the fact does not need to occupy a worker's attention while reading. (The
+first-pass code-worker skeleton carries that single pointer; other skeletons still restate
+some of these rules and migrate as they are next touched.)
+
+1. **Exact canonical columns** — each table uses its target register's exact column set (first
+   bullet above); the b2 shard lint fails any other header or a row with the wrong cell count.
+2. **Vocabulary used exactly** — ID formats, statuses, claim/error types, and severities come
+   from this file's vocabularies and rubric; the lint fails unknown values and issue-flagging
+   violations.
+3. **IDs from the assigned range only** — an out-of-range ID fails the shard lint. On
+   exhaustion, apply the Overflow rule (ID conventions): stop adding rows and put
+   `BLOCKED: ID range exhausted` in coordinator notes (the blocked-shard marker above —
+   conductor-read, not lint-checked).
+4. **Active rows complete** — a `candidate` or `confirmed` code-error row fills
+   `Code/Data Source`, `Code Location`, `Error Description`, and `Why It Matters`; the lint
+   fails an active row with any of these empty.
+5. **Cross-link columns stay blank** — `Related Claim IDs` / `Related Error IDs` are filled
+   only at the cross-link stage; the b2 lint fails a non-empty cell.
+6. **Repo-relative paths** in every path column; the lint fails absolute paths.
+7. **Two-part footer** — coverage table (code shards: `| Script | Outcome |`, one row per
+   script in scope), then coordinator notes (the footer bullets above); the b2 lint requires
+   both parts, and the b3 merge lint fails any inventory script with no coverage row in any
+   shard.
 
 ## Rewrite-pass columns
 

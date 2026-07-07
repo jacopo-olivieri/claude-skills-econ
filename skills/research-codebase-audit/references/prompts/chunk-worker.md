@@ -29,9 +29,6 @@ Read first, in order: the plan; `audit/CODEMAP.md` (start with its Materials Inv
 `audit/audit_readme.md`; then all scripts in your scope and any central docs/config the plan
 names for this chunk.
 
-Register schema, error taxonomy, status vocabulary, and severity rubric:
-`audit/audit_readme.md`. Use them exactly.
-
 ## ERROR SCOPE
 
 Look for visible source-level or pipeline-contract errors, including:
@@ -118,15 +115,12 @@ Exclude:
 - **Off-limits**: never open, run, or audit anything listed in {OFF_LIMITS}; a script that falls in
   your scope but is off-limits is recorded `deferred` (or `blocked`) with that reason, not skipped
   silently.
-- Write findings ONLY to `{SHARD_FILE}`: one table with the code-error register's exact
-  canonical columns. Do not edit canonical registers, source code, data, paper text, or
-  generated outputs. Do not run the pipeline or execute repository scripts; the one narrow
-  exception is the empirical probe above — at review-ladder levels where the review mode allows
+- Write findings ONLY to `{SHARD_FILE}`. Do not edit canonical registers, source code, data,
+  paper text, or generated outputs. Do not run the pipeline or execute repository scripts; the
+  one narrow exception is the empirical probe above — at review-ladder levels where the review mode allows
   a probe within budget, you may execute a worker-retyped synthetic reproduction of a fragment,
   never a repository script, never a documented setup command, never the audited package's
   data.
-- Use IDs only from your assigned range; if it runs out, stop adding rows and put
-  `BLOCKED: ID range exhausted` in your coordinator notes.
 - **Complete the cheap static checks** (see the cheap-check-completion rule in
   `audit/audit_readme.md`): when a concern reduces to comparing an enumerable list, a single
   constant, or a closed-form arithmetic implication against the code you have located, do the
@@ -134,14 +128,12 @@ Exclude:
   candidate. A check that would need the package's own code actually run is not for you (the
   empirical probe above runs only your retyped reproduction, never repository code); flag it
   clearly so the recheck's runtime probe can settle it.
-- Leave `Related Claim IDs` blank; never consult the claim register to judge whether a
-  finding matters.
-- **Every `candidate` row is complete**: fill `Code/Data Source`, `Code Location`,
-  `Error Description`, and `Why It Matters` — a row missing any of these fails the shard lint.
-  Only `Related Claim IDs` stays blank (cross-link is a later stage).
-- Repo-relative paths everywhere.
+- Never consult the claim register to judge whether a finding matters.
 
-Completion criterion — exhaustive: every script in your scope appears in the coverage table.
-End the shard with the two-part footer specified in `audit/audit_readme.md` (coverage table
-with one row per script in scope + coordinator notes).
+Completion criterion — exhaustive: every script in your scope appears in the shard's coverage
+table. At write-up, follow the **Shard write-up rules** checklist in `audit/audit_readme.md`
+(Shard format section) — exact canonical columns and vocabulary, IDs from your assigned range,
+row completeness, blank cross-link column, repo-relative paths, two-part footer (coverage
+table + coordinator notes) — each enforced by the shard lint, so it needs your attention when
+writing up findings, not while reading.
 ```

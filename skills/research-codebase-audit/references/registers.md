@@ -285,7 +285,7 @@ parameter then reconciles independently against the code and the shipped filenam
 
 | Status | Meaning |
 | --- | --- |
-| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** **Identifier-anchoring rule: a claim that names specific identifiers — variables, files, parameters — cannot close `confirmed` until each named identifier has been located in the code at the role the claim assigns it, anchored to a code line showing that identifier receiving the described treatment. Verifying that the described operation exists and covers *some* variables anchors the operation, not the claim. A named identifier that cannot be anchored keeps the row out of `confirmed`: escalate per the evidence — `inconsistent` if the code visibly applies the behavior to a different identifier, otherwise `confirmation_needed`.** |
+| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** **Identifier-anchoring rule: a claim that names specific identifiers — variables, files, parameters — cannot close `confirmed` until each named identifier has been located in the code at the role the claim assigns it, anchored to a code line showing that identifier receiving the described treatment. Verifying that the described operation exists and covers *some* variables anchors the operation, not the claim. A named identifier that cannot be anchored keeps the row out of `confirmed`: escalate per the evidence — `inconsistent` if the code visibly applies the behavior to a different identifier, otherwise `confirmation_needed`.** **Quote-qualifier rule: the `confirmed` test is judged against the row's own verbatim Paper Quote, not only its paraphrased Claim Text — a paraphrase that omits a qualifier present in the quote never narrows what must be verified. A qualifier the quote attaches to the claimed operation or definition — a baseline period or reference window (e.g. "long-run", "historical", "1991–2020", "climate normal"), a radius or distance, a threshold, a ratio, a unit, a named population — blocks `confirmed` unless the cited code implements that qualifier. Escalate as under identifier anchoring: code implementing the operation against a different qualifier is `inconsistent`; a qualifier that cannot be located is `confirmation_needed`. Bare transcription counts (e.g. N = 4,832) carry no operation-attached qualifier and are not swept in.** |
 | `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
@@ -504,6 +504,18 @@ examples:
   level" links to a confirmed clustering error (paper says clustered at the group level,
   code clusters at the unit level) — the error breaks exactly the inference the claim
   asserts.
+
+**Code-location-overlap candidates and sibling scoping.** For every `confirmed` code error, the
+cross-linker enumerates — before any mechanism reasoning — every claim row whose cited
+`Code/Data Source` overlaps the error's cited `Code Location` (the ranged column, not the
+error's bare `Code/Data Source` path; same script, overlapping line ranges; a citation with no
+line range covers the whole file). The conductor supplies the b7 lint's deterministically
+computed overlap pair list as the floor of this enumeration; that floor is ranged-only (a
+bare-file citation never appears in it), so whole-file overlap candidates are the
+cross-linker's own addition. Each candidate is adjudicated
+individually, and a documented "left unlinked" judgment call on one row is scoped to that row
+alone — it never clears sibling claims citing the same lines. A `confirmed` claim surfaced only
+by this enumeration is treated on the same terms as any other confirmed-versus-confirmed link.
 
 A claim must not
 remain `confirmed` while linked to a `confirmed` code error: under the link semantics such a

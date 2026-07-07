@@ -50,7 +50,16 @@ code, output, or artifact locations only when needed to decide whether a link is
    when the error breaks them; only magnitude/R²/interpretation claims stay unlinked
    (full rule and worked examples in `audit/audit_readme.md`). When you deliberately leave
    such a dependent claim unlinked, cite this rule in the summary rather than stating that
-   no error affects it.
+   no error affects it. **Code-location-overlap candidates**: before any mechanism
+   reasoning, enumerate every claim row whose cited `Code/Data Source` overlaps this
+   error's cited `Code Location` — the ranged column, not the error's bare
+   `Code/Data Source` path — (same script, overlapping line ranges; a citation with no
+   line range covers the whole file). The conductor supplies a deterministically computed
+   overlap pair list (the b7 lint's overlap-conflict advisory); treat it as the floor of
+   this enumeration — the floor is ranged-only, so whole-file overlap candidates are yours
+   to add — then adjudicate each candidate individually. **Sibling scoping**: a
+   documented "left unlinked" decision on one row is scoped to that row alone — it never
+   clears sibling claims citing the same lines; each sibling gets its own adjudication.
 3. **Matching rule**: match by script path, line range, output path, table/figure object,
    variable names, sample restrictions, and described mechanism — never by loose keyword
    overlap alone.
@@ -63,9 +72,11 @@ code, output, or artifact locations only when needed to decide whether a link is
    status is `confirmed` is a status conflict — the registers currently assert both that
    the claim holds and that a verified error breaks it. List each such pair under a
    `## Status conflicts` section of the summary, one line per pair
-   (`C-xxxx <-> E-xxxx — one-line reason`). Do NOT change any status yourself; the
-   conductor resolves listed conflicts with a targeted recheck. Omit the section if there
-   are none.
+   (`C-xxxx <-> E-xxxx — one-line reason`). A confirmed claim surfaced only by the
+   code-location-overlap enumeration in step 2 is listed here on the same terms as any
+   other confirmed-versus-confirmed link once you link it. Do NOT change any status
+   yourself; the conductor resolves listed conflicts with a targeted recheck. Omit the
+   section if there are none.
 7. **Escalated mapped claims**: every link that pairs a `confirmed` code error with a claim
    whose status is `mapped`, where the error contradicts what the claim asserts, is an
    escalated mapped claim — the error suggests the located-but-unverified claim is actually

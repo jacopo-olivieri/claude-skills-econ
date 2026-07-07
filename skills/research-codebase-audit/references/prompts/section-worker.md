@@ -51,6 +51,13 @@ Rules:
   the operation exists and covers *some* variables anchors the operation, not the claim; a named
   identifier you cannot anchor keeps the row out of `confirmed` (identifier-anchoring rule,
   `audit/audit_readme.md`).
+- **Quote qualifiers**: judge `confirmed` against the row's own verbatim `Paper Quote`, not only
+  your paraphrased `Claim Text` — a paraphrase that drops a qualifier never narrows what must be
+  verified. A qualifier the quote attaches to the claimed operation or definition (a baseline
+  period or reference window, radius, threshold, ratio, unit, or named population) blocks
+  `confirmed` unless the cited code implements it; escalate as under identifier anchoring —
+  a different qualifier in the code is `inconsistent`, an unlocatable one is
+  `confirmation_needed` (quote-qualifier rule, `audit/audit_readme.md`).
 - **Complete cheap checks; do not park them at `mapped`** (see the cheap-check-completion rule in
   `audit/audit_readme.md`). When a claim reduces to comparing an enumerable list, a single
   constant, or a closed-form arithmetic implication against located code, settle it now and set

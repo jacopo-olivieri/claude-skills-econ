@@ -163,6 +163,34 @@ def make_b0(tmp_path) -> AuditDir:
     return a
 
 
+CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition",
+                    "Sites Already Seen"]
+
+
+def conventions_row(name, *, category="fiscal_year_or_sample_window_boundary",
+                    definition="fiscal year begins in July (C-0142)",
+                    sites="`do/build_panel.do`; C-0142; C-0181"):
+    return [name, category, definition, sites]
+
+
+def make_conventions_b4_code(tmp_path, convention_rows=None,
+                             include_artifact=True) -> AuditDir:
+    """A minimal audit dir carrying the optional b3c conventions artifact.
+
+    Exercises ``check_conventions_artifact`` (advisory) via ``--stage b4-code``.
+    The recheck plan is intentionally absent, so the *overall* stage fails; the
+    conventions check runs first and independently, and its WARNING/ silence is
+    what these tests assert on. Pass ``include_artifact=False`` to omit the file.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    if include_artifact:
+        rows = [] if convention_rows is None else list(convention_rows)
+        a.write("_run/conventions.md",
+                register_text("Shared conventions", CONVENTIONS_COLS, rows))
+    return a
+
+
 def make_b6_claims(tmp_path, claims_rows, output_rows=()) -> AuditDir:
     """A minimal audit dir that reaches the b6-claims boundary cleanly.
 

@@ -106,6 +106,21 @@ claims recheck plan (inventory `| ID | Reason | Likely Evidence |`; clusters
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; vocabulary pointer to
 `audit_readme.md`). `lint_registers.py --stage b4-code`. One recheck pass — no looping.
 
+**Shared-conventions grep (consumes the b3c artifact; adds candidates before the plan is frozen).**
+If `audit/_run/conventions.md` exists and lists any convention, then before writing the recheck
+plan, for each listed convention grep the codebase for its definition sites — search the code for
+the boundary literal, sentinel, unit/scale factor, path separator, date mask, or ID/merge key the
+`Stated Definition` column records (e.g. a fiscal-year boundary "July" → grep for month/quarter
+literals and cutoff comparisons in the date-construction scripts; a missing-value sentinel → grep
+for the sentinel value and the replace/recode calls that set it). Any site whose definition
+disagrees with the stated one becomes a new `candidate` code-error row, typed by its mechanism per
+the taxonomy (a boundary literal mismatch is `treatment_or_event_timing_error`, a sentinel or
+scale mismatch is `aggregation_or_unit_error`, a divergent merge key is
+`merge_key_or_cardinality_error`, and so on), minted from an unused error-ID range and folded into
+the b4 inventory so the recheck resolves it. If the artifact is absent or lists no convention,
+skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
+the claims side reaches the code side as a concrete grep target.
+
 ## b5 — Recheck cluster workers (parallel)
 
 `prompts/recheck-cluster-worker.md` with stream = code. Same completion/lint/retry rules

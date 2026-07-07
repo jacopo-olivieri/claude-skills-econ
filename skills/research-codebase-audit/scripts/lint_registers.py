@@ -72,6 +72,14 @@ EVIDENCE_LEVELS = {
     "targeted_rerun_verified", "blocked_documented",
 }
 
+# b3c shared-conventions artifact (advisory; consumed by the b4-code recheck grep).
+CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition", "Sites Already Seen"]
+CONVENTION_CATEGORIES = {
+    "fiscal_year_or_sample_window_boundary", "date_parse_mask",
+    "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
+    "id_or_merge_key",
+}
+
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
 RANGE_RE = re.compile(r"([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
 COORD_RE = re.compile(r"Merge-coordinator range:\s*([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
@@ -848,7 +856,46 @@ def canon_ids(lint, audit, stream):
     return ids
 
 
+def check_conventions_artifact(lint, audit):
+    """Advisory well-formedness check on the optional b3c shared-conventions
+    artifact `audit/_run/conventions.md`, consumed by the b4-code recheck grep.
+
+    Non-blocking by design: absent → silent (a package with no multi-site
+    convention correctly produces no artifact); present → warn (never fail) if it
+    is not a table with the expected header or carries an out-of-vocabulary
+    Category. The verdicts come from the code-stream grep, not from lint."""
+    path = audit / "_run" / "conventions.md"
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        lint.warn(f"{path}: could not read the conventions artifact (unreadable)")
+        return
+    table = None
+    for headers, rows, _ in parse_tables(text):
+        if headers == CONVENTIONS_COLS:
+            table = rows
+            break
+    if table is None:
+        lint.warn(
+            f"{path}: no table with the expected header "
+            f"{' | '.join(CONVENTIONS_COLS)} (conventions grep may skip it)"
+        )
+        return
+    for r in table:
+        d = dict(zip(CONVENTIONS_COLS, r))
+        cat = d.get("Category", "")
+        if cat and cat not in CONVENTION_CATEGORIES:
+            lint.warn(
+                f"{path}: convention '{d.get('Convention', '')}' has "
+                f"out-of-vocabulary Category '{cat}'"
+            )
+
+
 def stage_b4(lint, audit, stream):
+    if stream == "code":
+        check_conventions_artifact(lint, audit)
     parsed = parse_recheck_plan(lint, audit, stream)
     if parsed is None:
         return

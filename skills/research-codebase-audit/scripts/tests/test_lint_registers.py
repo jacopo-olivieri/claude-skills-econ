@@ -134,3 +134,50 @@ def test_adjudication_advisory_warning_contract(tmp_path):
         f"spurious adjudication warning for clean confirmed row C-0102:\n{res.stdout}"
     assert not any("C-0104" in ln for ln in warns), \
         f"spurious adjudication warning for clean blocked row C-0104:\n{res.stdout}"
+
+
+# ------------------------------- U2 conventions artifact (advisory, b4-code)
+
+
+def test_conventions_artifact_absent_is_silent(tmp_path):
+    """No b3c artifact (a package with no multi-site convention) -> no
+    conventions warning, and the check never contributes an error."""
+    a = rb.make_conventions_b4_code(tmp_path, include_artifact=False)
+    res = rb.lint(a, "b4-code")
+    assert not warning_lines(res, "conventions.md"), res.stdout
+
+
+def test_conventions_artifact_wellformed_is_silent(tmp_path):
+    """A well-formed artifact with in-vocabulary categories warns about
+    nothing."""
+    rows = [
+        rb.conventions_row("fiscal-year boundary"),
+        rb.conventions_row(
+            "household ID key", category="id_or_merge_key",
+            definition="merge on hhid (C-0210)",
+            sites="`do/merge.do`; C-0210; C-0233"),
+    ]
+    a = rb.make_conventions_b4_code(tmp_path, rows)
+    res = rb.lint(a, "b4-code")
+    assert not warning_lines(res, "conventions.md"), res.stdout
+
+
+def test_conventions_artifact_bad_category_warns(tmp_path):
+    """An out-of-vocabulary Category draws an advisory warning, never a fail."""
+    rows = [rb.conventions_row("mystery thing", category="not_a_real_category")]
+    a = rb.make_conventions_b4_code(tmp_path, rows)
+    res = rb.lint(a, "b4-code")
+    warns = warning_lines(res, "conventions.md")
+    assert any("out-of-vocabulary Category" in ln for ln in warns), res.stdout
+    assert any("mystery thing" in ln for ln in warns), res.stdout
+
+
+def test_conventions_artifact_wrong_header_warns(tmp_path):
+    """A file present but not the expected table warns (advisory) so the grep
+    step knows it may be skipped; still never a hard fail from this check."""
+    a = rb.make_conventions_b4_code(tmp_path, include_artifact=False)
+    a.write("_run/conventions.md",
+            "# Conventions\n\n| Foo | Bar |\n| --- | --- |\n| x | y |\n")
+    res = rb.lint(a, "b4-code")
+    assert any("expected header" in ln for ln in warning_lines(res, "conventions.md")), \
+        res.stdout

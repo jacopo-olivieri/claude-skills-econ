@@ -366,6 +366,11 @@ def check_artifact_manifest(audit):
         return "FAIL", f"artifact not found: {path} (run check_manifests.py at b4)"
     text = path.read_text(encoding="utf-8", errors="replace")
     _, _, findings = text.partition("## Candidate findings")
+    # Bound the search to the Candidate-findings section body only: render_artifact
+    # writes a `## Warnings` section AFTER the candidate findings, and a run that
+    # could not parse the plant emits a warning line naming pyproject.toml with
+    # ZERO candidate findings — so the plant must appear in the findings proper.
+    findings = findings.split("\n## ")[0]
     if MANIFEST_PLANT.lower() in findings.lower():
         return "PASS", f"_run/manifest_check.md names {MANIFEST_PLANT}"
     return "FAIL", (f"_run/manifest_check.md does not name {MANIFEST_PLANT} "

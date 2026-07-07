@@ -41,6 +41,22 @@ MANIFEST_ARTIFACT_CLEAN = (
     "No candidate findings: every recognized manifest parsed clean.\n"
 )
 
+# The plant's name appears ONLY in the `## Warnings` section that render_artifact
+# writes AFTER the Candidate-findings section, with ZERO candidate findings —
+# the shape a run leaves when the parser could not read the manifest (e.g. a
+# permission error). The plant was never actually flagged, so the U2 check must
+# FAIL: bounding the search to the Candidate-findings body is what catches it.
+MANIFEST_ARTIFACT_PLANT_ONLY_IN_WARNINGS = (
+    "# Manifest parseability check\n\n"
+    "## Manifests checked\n\n"
+    "| Manifest | Format | Problem lines |\n| --- | --- | --- |\n"
+    "| `pyproject.toml` | toml | 0 |\n\n"
+    "## Candidate findings\n\n"
+    "No candidate findings: every recognized manifest parsed clean.\n\n"
+    "## Warnings\n\n"
+    "- could not read pyproject.toml: [Errno 13] Permission denied\n"
+)
+
 
 def hit_claims_rows(p14_branch="inconsistent", p19_branch="inconsistent",
                     p20_branch="inconsistent"):
@@ -198,11 +214,22 @@ def hit_error_rows():
 def write_final_registers(tmp_path, claims_rows, error_rows,
                           summary=CLEAN_SUMMARY,
                           manifest_artifact=MANIFEST_ARTIFACT,
-                          conventions=None, ledger_rows=None):
+                          conventions=None, ledger_rows=None,
+                          claims_original_cols=False):
     audit = tmp_path / "audit"
     audit.mkdir(parents=True)
-    (audit / "claims_register.md").write_text(
-        rb.register_text("Claims register", rb.CLAIMS_COLS, claims_rows))
+    if claims_original_cols:
+        # Post-b8 finalize promotes the rewriter's staging register, appending
+        # an `Issue Description Original` column — the real shape of a scored
+        # run's final claims register (mirrors regbuild.make_b8).
+        c_cols = rb.CLAIMS_COLS + ["Issue Description Original"]
+        c_rows = [list(r) + [r[rb.CLAIMS_COLS.index("Issue Description")]]
+                  for r in claims_rows]
+        (audit / "claims_register.md").write_text(
+            rb.register_text("Claims register", c_cols, c_rows))
+    else:
+        (audit / "claims_register.md").write_text(
+            rb.register_text("Claims register", rb.CLAIMS_COLS, claims_rows))
     (audit / "code_error_register.md").write_text(
         rb.register_text("Code-error register", rb.ERROR_COLS, error_rows))
     (audit / "output_register.md").write_text(
@@ -498,3 +525,81 @@ def test_u1_conventions_check_is_informative_only(tmp_path):
     res = run_scorer(without_artifact)
     assert res.returncode == 0  # absence never reds the gate
     assert "U1 conventions artifact: INFO" in res.stdout
+
+
+def test_manifest_plant_only_in_warnings_turns_gate_red(tmp_path):
+    """Finding-5 regression: the plant's name appears only in the `## Warnings`
+    section (zero candidate findings) — it was never actually flagged, so the
+    U2 check must FAIL and red the gate rather than falsely pass on the warning
+    line that names pyproject.toml outside the Candidate-findings body."""
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(),
+        manifest_artifact=MANIFEST_ARTIFACT_PLANT_ONLY_IN_WARNINGS)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "U2 manifest artifact: FAIL" in res.stdout
+    assert "GATE RED" in res.stdout
+
+
+def test_u4_advisory_tolerates_post_b8_original_columns(tmp_path):
+    """Finding-1 regression: the finalized claims register carries the post-b8
+    `Issue Description Original` extra column (the rewriter's staging register is
+    promoted at finalize). The U4 anchoring advisory must still locate the claims
+    table and fire on a confirmed-but-unanchored P-19 close. Fails before the
+    header-tolerance fix (the advisory silently no-ops against the exact-header
+    match -> U4 reports FAIL); passes after (the tripwire fires -> PASS)."""
+    ledger = [rb.ledger_row(
+        "C-0019", status="confirmed", severity="",
+        evidence=("`py/build_income.py:18` applies a 99th-percentile "
+                  "winsorisation via clip"),
+        verdict="substantiated", change="set status=confirmed")]
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p19_branch="confirmed"), hit_error_rows(),
+        ledger_rows=ledger, claims_original_cols=True)
+    res = run_scorer(audit)
+    assert "U4 anchoring advisory: PASS" in res.stdout, res.stdout
+    assert "tripwire fired" in res.stdout
+
+
+def test_u4_anchoring_not_covered_when_confirmed_close_has_no_ledger_row(tmp_path):
+    """NOT COVERED branch: the P-19 claim is closed confirmed but no recheck
+    ledger row covers it, so the tripwire never saw it. The line reads NOT
+    COVERED and contributes no red reason of its own (the register layer's P-19
+    MISS is what reds the gate)."""
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p19_branch="confirmed"), hit_error_rows())
+    res = run_scorer(audit)
+    assert "U4 anchoring advisory: NOT COVERED" in res.stdout
+    assert "U4 anchoring advisory check failed" not in res.stdout
+    assert re.match(r"P-19: MISS", plant_line(res, "P-19"))
+
+
+def test_u5_filename_parameter_not_covered_when_row_misses_locator(tmp_path):
+    """NOT COVERED branch: a blocked P-20-family row whose text does not match
+    the U5 claim locator leaves the advisory with nothing to key on. The line
+    reads NOT COVERED and adds no red reason of its own."""
+    claims = [r for r in hit_claims_rows() if r[0] != "C-0020"]
+    claims.append(rb.claims_row(
+        "C-0020", status="blocked", ctype="data_construction",
+        text="each village is matched to nearby rain gauges by centroid",
+        source="`data/village_rain.csv`",
+        blocked_check="Gauge coordinates are not shipped, so the match cannot "
+                      "be re-run."))
+    audit = write_final_registers(tmp_path, claims, hit_error_rows())
+    res = run_scorer(audit)
+    assert "U5 filename-parameter advisory: NOT COVERED" in res.stdout
+    assert "U5 filename-parameter advisory check failed" not in res.stdout
+
+
+def test_artifact_checks_fail_when_claims_register_unparsable(tmp_path):
+    """FAIL branch: the claims register exists but carries no parsable claims
+    table, so both conditional artifact checks report FAIL and red the gate."""
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    (audit / "claims_register.md").write_text(
+        "# Claims register\n\n| Foo | Bar |\n| --- | --- |\n| a | b |\n")
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert ("U4 anchoring advisory: FAIL — claims register missing or "
+            "unparsable") in res.stdout
+    assert ("U5 filename-parameter advisory: FAIL — claims register missing or "
+            "unparsable") in res.stdout

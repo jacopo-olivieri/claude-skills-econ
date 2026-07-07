@@ -403,9 +403,17 @@ def check_anchoring_advisory(lint, audit, ledger_rows):
         return
     claim_text_by_id = {}
     for headers, rows, _ in parse_tables(reg_text):
-        if headers == CLAIMS_COLS:
+        # Tolerate extra trailing columns: the post-b8 finalize step promotes
+        # the rewriter's staging register, appending `*Original` columns, so
+        # the real final `claims_register.md` header is CLAIMS_COLS PLUS extras.
+        # Mirror load_register(..., allow_extra=True) / score_fixture's
+        # _find_claims_table, and zip each row against the ACTUAL headers so the
+        # claim columns are read by name, not position.
+        if set(CLAIMS_COLS) <= set(headers):
             for r in rows:
-                d = dict(zip(CLAIMS_COLS, r))
+                if len(r) != len(headers):
+                    continue
+                d = dict(zip(headers, r))
                 claim_text_by_id[d["Claim ID"]] = d["Claim Text"]
             break
     if not claim_text_by_id:

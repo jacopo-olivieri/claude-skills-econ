@@ -8,6 +8,9 @@ cap mkdir output
 
 import delimited "data/households.csv", clear
 
+* Backfill missing household size with the household's wave-1 value.
+bysort household_id (wave): replace hhsize = hhsize[1] if hhsize < .
+
 * Income arrives in raw currency units; the paper reports thousands.
 * Convert income to thousands of local currency units.
 replace income = income / 100

@@ -1,7 +1,7 @@
 {
   "fixture": "planted",
   "audited_scope": "fixture/planted/ only — this answer key and fixture/README.md sit outside the repo root handed to the skill and must never be visible to any worker",
-  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoy; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit. Behavior tests added 2026-07-06: P-12 exercises the second-read recall sweep (a second independent error in a file already flagged by P-06 — recovery requires re-reading the flagged file), P-13 exercises cheap-check arithmetic recompute (must be flagged inconsistent, not left mapped), and P-14 exercises the blocked-visible-metadata discipline. P-14 dual-accept: satisfied by an inconsistent claim (severity >= 2) OR by a blocked claim whose Blocked Check records the 1-in-20 vs one-in-ten contradiction (in that branch the severity floor is waived); a silently-blocked row with no such note fails P-14.",
+  "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoys; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit. Behavior tests added 2026-07-06: P-12 exercises the second-read recall sweep (a second independent error in a file already flagged by P-06 — recovery requires re-reading the flagged file), P-13 exercises cheap-check arithmetic recompute (must be flagged inconsistent, not left mapped), and P-14 exercises the blocked-visible-metadata discipline. P-14 dual-accept: satisfied by an inconsistent claim (severity >= 2) OR by a blocked claim whose Blocked Check records the 1-in-20 vs one-in-ten contradiction (in that branch the severity floor is waived); a silently-blocked row with no such note fails P-14. Failure-class plants added 2026-07-07 (P-15 through P-20, one per new mechanism, each in a domain fresh relative to the Floods package): each carries a failure_class tag the scorer reports per class. P-20 uses the same dual-accept branch logic as P-14 (inconsistent at severity >= 2, OR blocked with a Blocked Check that itself records the 15-km vs 25 km contradiction, severity floor waived). Artifact-layer checks (single-re-score layer per KTD-8, run by the scorer alongside the register score): the U2 parser artifact audit/_run/manifest_check.md must name pyproject.toml as a candidate finding; if the P-19 claim closes confirmed, the U4 anchoring advisory must have warned on its recheck-ledger row; if the P-20 row rests blocked, the U5 filename-parameter advisory must warn on it; the U1 conventions-artifact/b4-candidate check is INFORMATIVE only, never gate-settling (the b3c consolidation and grep are worker-dependent).",
   "must_find": [
     {
       "id": "P-01",
@@ -114,6 +114,61 @@
       "where": "paper/paper.tex Data section ('public one-in-ten subsample') vs planted/README.md households.csv description ('public 1-in-20 subsample')",
       "mechanism": "The paper says estimates use a one-in-ten subsample and that the complete enumeration is restricted-access, so a naive check marks the claim blocked (the full census cannot be inspected). But the visible package metadata already contradicts it: the README describes data/households.csv as a '1-in-20 subsample'. BLOCKED-VISIBLE TEST: a visible-metadata check on a blocked claim (filenames, headers, README descriptions) catches the one-in-ten vs 1-in-20 contradiction. Dual-accept: recovered as an inconsistent claim (preferred), OR as a blocked claim whose Blocked Check explicitly records the 1-in-20 contradiction. A silently-blocked row with no Blocked Check note is a FAILURE of this test. Behavior-shaped (blocked claim whose visible metadata contradicts it), not floods-specific.",
       "min_severity": 2
+    },
+    {
+      "id": "P-15",
+      "kind": "claim_or_code_error",
+      "expected_type": "aggregation_or_unit_error (data_construction claim also accepted)",
+      "where": "paper Data section four-component income list vs py/build_income.py components",
+      "mechanism": "The paper enumerates the four income components (crop sales, livestock sales, wage earnings, remittances); build_income.py hand-retypes the list as three, omitting remittances, so the component aggregate silently drops a stated member. U1 TEST (enumerated_member_list): the paper-stated list is claims-visible and qualifies for b3c consolidation under the single-row carve-out; the divergent re-materialization is the b4 set-difference grep's target. Fresh domain (income components), no Floods category list.",
+      "min_severity": 2,
+      "failure_class": "enumerated_member_list",
+      "recovery_path": "b3c enumerated_member_list consolidation (single-row carve-out) -> b4 conventions grep set-difference -> candidate resolved at recheck; the conventions-artifact check in the scorer is INFORMATIVE only (worker-dependent per KTD-8)"
+    },
+    {
+      "id": "P-16",
+      "kind": "code_error",
+      "expected_type": "version_or_dependency_error (syntax_or_parse_error or readme_or_package_mismatch also accepted)",
+      "where": "pyproject.toml (version = 0.4.1, unquoted)",
+      "mechanism": "pyproject.toml is invalid TOML — `version = 0.4.1` is an unquoted value every real TOML parser rejects — so the README's documented `pip install -e .` cannot parse the manifest. U2 TEST (manifest parseability): a different format and ecosystem from the Floods requirements-operator defect; check_manifests.py must reject it and name it in audit/_run/manifest_check.md, and the b4 fold-in must mint the candidate.",
+      "min_severity": 2,
+      "failure_class": "manifest_parseability"
+    },
+    {
+      "id": "P-17",
+      "kind": "code_error",
+      "expected_type": "sample_filter_or_flag_error (aggregation_or_unit_error also accepted)",
+      "where": "do/build_panel.do hhsize backfill guard",
+      "mechanism": "The comment says the line backfills MISSING household size, but `if hhsize < .` is Stata's NON-missing test, so the replace acts only where hhsize is already present and the planted missing value (household 105, wave 2) is never filled. U3 TEST (empirical verification, repair-guard idiom): the comment primes a reader past the wrong condition; a two-row synthetic probe with one missing value settles it. Planted in a file already carrying unrelated plants (P-05, P-08, P-11). Fresh idiom and variable (hhsize, `< .`), not the Floods repair guard.",
+      "min_severity": 2,
+      "failure_class": "empirical_verification"
+    },
+    {
+      "id": "P-18",
+      "kind": "code_error",
+      "expected_type": "sample_filter_or_flag_error",
+      "where": "py/build_income.py has_wages loop",
+      "mechanism": "The comment says has_wages flags households reporting wage earnings in ANY wave, but the loop assigns (rather than accumulates) the column each iteration, so the wave-2 pass erases wave-1 matches and the final flag reflects the last iteration only. U3 TEST (loop-flag idiom): probing two iterations, one matching and one not, settles it. Planted in a file also carrying the unrelated P-15 and P-19 plants. Fresh variable and idiom, not the Floods match flag.",
+      "min_severity": 2,
+      "failure_class": "empirical_verification"
+    },
+    {
+      "id": "P-19",
+      "kind": "claim",
+      "expected_type": "estimation_specification or data_construction claim (code-side aggregation_or_unit_error also accepted)",
+      "where": "paper Sec. 2 wage_earnings winsorisation vs py/build_income.py",
+      "mechanism": "The paper says wage earnings (wage_earnings) are winsorised at the 99th percentile; build_income.py implements a 99th-percentile winsorisation on crop_sales instead — the described operation exists, on a DIFFERENT variable. U4 TEST (identifier anchoring): confirming the claim because a 99th-percentile winsorisation exists anchors the operation, not the named identifier; the claim must not close confirmed. Fresh domain (income-component winsorisation), not the Floods variable surface.",
+      "min_severity": 2,
+      "failure_class": "identifier_anchoring"
+    },
+    {
+      "id": "P-20",
+      "kind": "claim",
+      "expected_type": "data_construction",
+      "where": "paper Appendix A step 2 (15-km gauge radius) vs data/village_rain_radius_25km.csv",
+      "mechanism": "Appendix A enumerates a three-step rainfall construction; step 2 states gauges are matched within a 15-km radius, but the shipped village series is named village_rain_radius_25km.csv — the filename encodes 25 km. The match itself is upstream (gauge coordinates not shipped), so a naive check blocks the claim while the shipped FILENAME already contradicts it. U5 TEST (per-step extraction + filename-parameter reconciliation): the parameter lives in step 2 of an enumerated procedure, so a single-row extraction of the whole procedure loses it; extends the P-14 blocked-visible family. Dual-accept: inconsistent claim (severity >= 2) OR blocked claim whose Blocked Check records the 15-km vs 25 km contradiction (severity floor waived); a silently-blocked row fails. Fresh parameter kind (distance radius, not return periods).",
+      "min_severity": 2,
+      "failure_class": "step_parameter_filename"
     }
   ],
   "must_not_find": [
@@ -122,6 +177,12 @@
       "kind": "decoy",
       "where": "paper/paper.tex commented-out placebo figure block",
       "mechanism": "A fully commented-out figure references artifacts/fig_placebo.pdf, which no script produces. Comment-blanking removes it from the audited paper; any finding about the placebo figure or fig_placebo.pdf is a false positive."
+    },
+    {
+      "id": "D-02",
+      "kind": "decoy",
+      "where": "py/build_income.py farm_components block",
+      "mechanism": "farm_components = ['crop_sales', 'livestock_sales'] materializes a deliberate, locally-signposted SUBSET of the paper's four-component income list (the comment declares it a farm-only descriptive share). The U1 intentional-subset guard must record the site reviewed-not-divergent; any finding about the farm components or farm share is a false positive."
     }
   ],
   "expected_status_conflicts": [

@@ -16,8 +16,34 @@ CLEAN_SUMMARY = (
     "## Severity divergences\n\n(none)\n"
 )
 
+# Minimal U2 parser artifact (audit/_run/manifest_check.md) naming the planted
+# malformed manifest — what a real b4 run of check_manifests.py leaves behind.
+MANIFEST_ARTIFACT = (
+    "# Manifest parseability check\n\n"
+    "## Manifests checked\n\n"
+    "| Manifest | Format | Problem lines |\n| --- | --- | --- |\n"
+    "| `pyproject.toml` | toml | 1 |\n\n"
+    "## Candidate findings\n\n"
+    "| Manifest | Format | Line | Offending Text | Problem |\n"
+    "| --- | --- | --- | --- | --- |\n"
+    "| pyproject.toml | toml | 4 |  | invalid TOML: Expected newline or end "
+    "of document after a statement (at line 4, column 14) |\n"
+)
 
-def hit_claims_rows(p14_branch="inconsistent"):
+# Same artifact shape but with every manifest parsing clean — the U2 plant
+# missing from the candidate findings.
+MANIFEST_ARTIFACT_CLEAN = (
+    "# Manifest parseability check\n\n"
+    "## Manifests checked\n\n"
+    "| Manifest | Format | Problem lines |\n| --- | --- | --- |\n"
+    "| `pyproject.toml` | toml | 0 |\n\n"
+    "## Candidate findings\n\n"
+    "No candidate findings: every recognized manifest parsed clean.\n"
+)
+
+
+def hit_claims_rows(p14_branch="inconsistent", p19_branch="inconsistent",
+                    p20_branch="inconsistent"):
     rows = [
         rb.claims_row(
             "C-0001", status="inconsistent", severity="4",
@@ -32,6 +58,58 @@ def hit_claims_rows(p14_branch="inconsistent"):
                    "725/2,416 is 30 percent, an arithmetic slip."),
         ),
     ]
+    if p19_branch == "inconsistent":
+        rows.append(rb.claims_row(
+            "C-0019", status="inconsistent", severity="2",
+            ctype="estimation_specification",
+            text=("wage earnings (`wage_earnings`) are winsorised at the "
+                  "99th percentile before entering total income"),
+            source="`py/build_income.py`",
+            issue=("The paper says wage_earnings are winsorised at the 99th "
+                   "percentile; build_income.py winsorises crop_sales "
+                   "instead — the named variable is untouched."),
+        ))
+    elif p19_branch == "confirmed":
+        rows.append(rb.claims_row(
+            "C-0019", status="confirmed",
+            ctype="estimation_specification",
+            text=("wage earnings (`wage_earnings`) are winsorised at the "
+                  "99th percentile before entering total income"),
+            source="`py/build_income.py`",
+        ))
+    if p20_branch == "inconsistent":
+        rows.append(rb.claims_row(
+            "C-0020", status="inconsistent", severity="2",
+            ctype="data_construction",
+            text=("each village is matched to every rain gauge within a "
+                  "15-km radius of its centroid"),
+            source="`data/village_rain_radius_25km.csv`",
+            issue=("Appendix A step 2 states a 15-km gauge radius; the "
+                   "shipped file village_rain_radius_25km.csv encodes "
+                   "25 km."),
+        ))
+    elif p20_branch == "blocked_with_note":
+        rows.append(rb.claims_row(
+            "C-0020", status="blocked",
+            ctype="data_construction",
+            text=("each village is matched to every rain gauge within a "
+                  "15-km radius of its centroid"),
+            source="`data/village_rain_radius_25km.csv`",
+            blocked_check=("Gauge coordinates are not shipped, so the match "
+                           "cannot be re-run; but the paper's 15-km radius "
+                           "is contradicted by the shipped filename "
+                           "village_rain_radius_25km.csv (25 km)."),
+        ))
+    elif p20_branch == "silent_block":
+        rows.append(rb.claims_row(
+            "C-0020", status="blocked",
+            ctype="data_construction",
+            text=("each village is matched to every rain gauge within a "
+                  "15-km radius of its centroid; series shipped as "
+                  "village_rain_radius_25km.csv"),
+            source="`data/village_rain_radius_25km.csv`",
+            blocked_check="Gauge coordinates are not distributed.",
+        ))
     if p14_branch == "inconsistent":
         rows.append(rb.claims_row(
             "C-0014", status="inconsistent", severity="2",
@@ -98,13 +176,31 @@ def hit_error_rows():
         mk("E-0012", etype="output_label_or_path_mismatch", severity="1",
            desc=("The figure legend is reversed: ax.legend(['Shocked', "
                  "'Non-shocked']) against the unstacked column order.")),
+        mk("E-0015", etype="aggregation_or_unit_error", severity="2",
+           desc=("build_income.py sums only crop_sales, livestock_sales and "
+                 "wage_earnings, omitting the remittances component from the "
+                 "paper's four-component income list.")),
+        mk("E-0016", etype="version_or_dependency_error", severity="2",
+           desc=("pyproject.toml is invalid TOML (version = 0.4.1 is "
+                 "unquoted), so the documented pip install -e . cannot "
+                 "parse the manifest.")),
+        mk("E-0017", etype="sample_filter_or_flag_error", severity="2",
+           desc=("The backfill comment says missing hhsize is filled, but "
+                 "`if hhsize < .` acts only on non-missing rows, so the "
+                 "missing wave-2 value is never filled.")),
+        mk("E-0018", etype="sample_filter_or_flag_error", severity="2",
+           desc=("has_wages is overwritten on each loop iteration, so the "
+                 "wave-2 pass erases wave-1 matches and the flag reflects "
+                 "the last wave only.")),
     ]
 
 
 def write_final_registers(tmp_path, claims_rows, error_rows,
-                          summary=CLEAN_SUMMARY):
+                          summary=CLEAN_SUMMARY,
+                          manifest_artifact=MANIFEST_ARTIFACT,
+                          conventions=None, ledger_rows=None):
     audit = tmp_path / "audit"
-    audit.mkdir()
+    audit.mkdir(parents=True)
     (audit / "claims_register.md").write_text(
         rb.register_text("Claims register", rb.CLAIMS_COLS, claims_rows))
     (audit / "code_error_register.md").write_text(
@@ -112,6 +208,16 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
     (audit / "output_register.md").write_text(
         rb.register_text("Output register", rb.OUTPUT_COLS, []))
     (audit / "register_cross_link_summary.md").write_text(summary)
+    if manifest_artifact is not None:
+        (audit / "_run").mkdir(exist_ok=True)
+        (audit / "_run" / "manifest_check.md").write_text(manifest_artifact)
+    if conventions is not None:
+        (audit / "_run").mkdir(exist_ok=True)
+        (audit / "_run" / "conventions.md").write_text(conventions)
+    if ledger_rows is not None:
+        (audit / "_recheck").mkdir(exist_ok=True)
+        (audit / "_recheck" / "k1.md").write_text(
+            rb.register_text("Recheck ledger", rb.LEDGER_COLS, ledger_rows))
     return audit
 
 
@@ -131,8 +237,27 @@ def test_gate_green_on_full_hit_set(tmp_path):
     res = run_scorer(audit)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "GATE GREEN" in res.stdout
-    assert "Recall: 14/14" in res.stdout
+    assert "Recall: 20/20" in res.stdout
     assert "MISS" not in res.stdout
+
+
+def test_new_plants_present_and_hit(tmp_path):
+    """Each 2026-07-07 failure-class plant is in the key and scored must-find."""
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    res = run_scorer(audit)
+    for pid in ("P-15", "P-16", "P-17", "P-18", "P-19", "P-20"):
+        assert re.match(rf"{pid}: HIT", plant_line(res, pid)), plant_line(res, pid)
+
+
+def test_per_class_tags_reported(tmp_path):
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    res = run_scorer(audit)
+    assert "[class=enumerated_member_list]" in plant_line(res, "P-15")
+    assert "Per-class:" in res.stdout
+    for cls in ("enumerated_member_list", "manifest_parseability",
+                "empirical_verification", "identifier_anchoring",
+                "step_parameter_filename"):
+        assert cls in res.stdout
 
 
 def test_p14_blocked_with_note_branch_is_hit(tmp_path):
@@ -172,7 +297,22 @@ def test_decoy_presence_turns_gate_red(tmp_path):
     assert res.returncode == 1
     assert "D-01 decoy: PRESENT" in res.stdout
     assert "GATE RED" in res.stdout
-    assert "Recall: 14/14" in res.stdout  # decoy alone flips the gate
+    assert "Recall: 20/20" in res.stdout  # decoy alone flips the gate
+
+
+def test_intentional_subset_decoy_turns_gate_red(tmp_path):
+    """The U1 intentional-subset decoy (D-02): a finding about the
+    farm-components subset is a false positive and flips the gate."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0098", etype="sample_filter_or_flag_error", severity="2",
+        desc=("farm_components in build_income.py lists only crop_sales and "
+              "livestock_sales, diverging from the paper's four-component "
+              "income list."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "D-02 decoy: PRESENT" in res.stdout
+    assert "GATE RED" in res.stdout
 
 
 def test_decoy_in_summary_turns_gate_red(tmp_path):
@@ -215,3 +355,115 @@ def test_missing_register_is_usage_error(tmp_path):
     res = run_scorer(audit)
     assert res.returncode == 2
     assert "not found" in res.stderr
+
+
+# ------------------------------------------------- artifact-layer checks (U9)
+
+
+def test_missing_manifest_artifact_turns_gate_red(tmp_path):
+    audit = write_final_registers(tmp_path, hit_claims_rows(),
+                                  hit_error_rows(), manifest_artifact=None)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "U2 manifest artifact: FAIL" in res.stdout
+    assert "GATE RED" in res.stdout
+
+
+def test_manifest_artifact_without_plant_turns_gate_red(tmp_path):
+    audit = write_final_registers(tmp_path, hit_claims_rows(),
+                                  hit_error_rows(),
+                                  manifest_artifact=MANIFEST_ARTIFACT_CLEAN)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "U2 manifest artifact: FAIL" in res.stdout
+
+
+def test_u4_u5_artifact_checks_vacuous_when_claims_flagged(tmp_path):
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    res = run_scorer(audit)
+    assert res.returncode == 0
+    assert "U4 anchoring advisory: PASS" in res.stdout
+    assert "U5 filename-parameter advisory: PASS" in res.stdout
+
+
+def test_u4_advisory_fired_on_confirmed_unanchored_close(tmp_path):
+    """P-19 wrongly closed confirmed with evidence that never names
+    wage_earnings: register layer scores MISS, and the artifact layer records
+    that the U4 tripwire fired."""
+    ledger = [rb.ledger_row(
+        "C-0019", status="confirmed", severity="",
+        evidence=("`py/build_income.py:18` applies a 99th-percentile "
+                  "winsorisation via clip"),
+        verdict="substantiated", change="set status=confirmed")]
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p19_branch="confirmed"), hit_error_rows(),
+        ledger_rows=ledger)
+    res = run_scorer(audit)
+    assert res.returncode == 1  # P-19 register MISS reds the gate
+    assert re.match(r"P-19: MISS", plant_line(res, "P-19"))
+    assert "U4 anchoring advisory: PASS" in res.stdout
+    assert "tripwire fired" in res.stdout
+
+
+def test_u4_advisory_silent_on_confirmed_close_is_fail(tmp_path):
+    """P-19 closed confirmed with evidence that DOES name wage_earnings: the
+    lexical advisory stays silent, so the artifact check records FAIL."""
+    ledger = [rb.ledger_row(
+        "C-0019", status="confirmed", severity="",
+        evidence=("wage_earnings winsorisation verified at "
+                  "`py/build_income.py:18`"),
+        verdict="substantiated", change="set status=confirmed")]
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p19_branch="confirmed"), hit_error_rows(),
+        ledger_rows=ledger)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "U4 anchoring advisory: FAIL" in res.stdout
+
+
+def test_u5_blocked_with_note_branch_hit_and_advisory_fires(tmp_path):
+    """P-20 dual-accept blocked branch: register HIT, advisory fires, gate can
+    stay GREEN."""
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p20_branch="blocked_with_note"),
+        hit_error_rows())
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert re.match(r"P-20: HIT", plant_line(res, "P-20"))
+    assert "blocked branch" in plant_line(res, "P-20")
+    assert "U5 filename-parameter advisory: PASS" in res.stdout
+    assert "tripwire fired" in res.stdout
+
+
+def test_u5_silent_block_is_register_miss(tmp_path):
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(p20_branch="silent_block"), hit_error_rows())
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert re.match(r"P-20: MISS", plant_line(res, "P-20"))
+    assert "silently-blocked" in plant_line(res, "P-20")
+
+
+def test_u1_conventions_check_is_informative_only(tmp_path):
+    """The U1 conventions-artifact check reports INFO and never settles the
+    gate (worker-dependent per KTD-8) — the gate stays GREEN whether the
+    artifact is present or absent."""
+    conventions = (
+        "# Shared conventions\n\n"
+        "| Convention | Category | Stated Definition | Sites Already Seen |\n"
+        "| --- | --- | --- | --- |\n"
+        "| income components | enumerated_member_list | crop sales; "
+        "livestock sales; wage earnings; remittances (C-0015) | "
+        "`paper/paper.tex`; C-0015 |\n")
+    with_artifact = write_final_registers(
+        tmp_path / "a", hit_claims_rows(), hit_error_rows(),
+        conventions=conventions)
+    res = run_scorer(with_artifact)
+    assert res.returncode == 0
+    assert "U1 conventions artifact: INFO" in res.stdout
+    assert "enumerated_member_list convention PRESENT" in res.stdout
+    without_artifact = write_final_registers(
+        tmp_path / "b", hit_claims_rows(), hit_error_rows())
+    res = run_scorer(without_artifact)
+    assert res.returncode == 0  # absence never reds the gate
+    assert "U1 conventions artifact: INFO" in res.stdout

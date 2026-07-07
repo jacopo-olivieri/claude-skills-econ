@@ -1,10 +1,11 @@
 # Fixture — planted-error validation package
 
-`planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, one
-Python script, data, artifacts, README) with **14 planted findings** (`must_find` items P-01
-through P-14) spanning the error taxonomy — including the three classes added by the design
-(seed, SE specification, weights), a transcription mismatch against a shipped artifact,
-hygiene/PII findings, and **one decoy** (a commented-out figure) that must NOT be flagged.
+`planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, two
+Python scripts, data, a TOML manifest, artifacts, README) with **20 planted findings**
+(`must_find` items P-01 through P-20) spanning the error taxonomy — including the three
+classes added by the design (seed, SE specification, weights), a transcription mismatch
+against a shipped artifact, hygiene/PII findings, and **two decoys** that must NOT be
+flagged (a commented-out figure, and an intentional subset of a stated member list).
 
 **Behavior-test plants (added 2026-07-06)** — P-12/P-13/P-14 exist to predict the Floods
 failure mode, keyed to the behavior each tests:
@@ -18,6 +19,29 @@ failure mode, keyed to the behavior each tests:
   **blocked-visible-metadata discipline**: flagged inconsistent (or blocked with a Blocked Check
   note), never silently blocked.
 
+**Failure-class plants (added 2026-07-07)** — P-15 through P-20 plant one instance of each
+mechanism from the recall-determinism refactor (U1–U5), each in a domain fresh relative to
+the Floods package, each tagged with a `failure_class` the scorer reports per class:
+- **P-15** (`enumerated_member_list`, U1) — the paper states a four-component income list;
+  `py/build_income.py` hand-retypes it as three, omitting remittances. Recovery is attributed
+  to the b3c consolidation single-row carve-out plus the b4 set-difference grep.
+- **P-16** (`manifest_parseability`, U2) — `pyproject.toml` is invalid TOML (unquoted
+  `version = 0.4.1`), a different format/ecosystem from the Floods requirements defect;
+  `check_manifests.py` must name it in `audit/_run/manifest_check.md`.
+- **P-17 / P-18** (`empirical_verification`, U3) — a Stata backfill guard whose comment says
+  it fills missing `hhsize` but whose `if hhsize < .` condition excludes the missing case
+  (in `do/build_panel.do`, already carrying P-05/P-08/P-11), and a Python loop that
+  overwrites `has_wages` each iteration so the last wave erases earlier matches (in
+  `py/build_income.py`, alongside P-15/P-19) — each in a file with unrelated plants, the
+  shape of the real misses.
+- **P-19** (`identifier_anchoring`, U4) — the paper says `wage_earnings` is winsorised at
+  the 99th percentile; the code winsorises `crop_sales`. The claim must not close confirmed.
+- **P-20** (`step_parameter_filename`, U5) — Appendix A step 2 states a 15-km gauge radius;
+  the shipped file is `data/village_rain_radius_25km.csv`. Dual-accept like P-14.
+- **D-02 decoy** — `farm_components` in `py/build_income.py` keeps a deliberate,
+  comment-signposted subset of the stated income list; flagging it is a false positive
+  (exercises the U1 intentional-subset guard).
+
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
@@ -29,17 +53,23 @@ see this folder's other files.
    ladder level 1 (static), no exclusions.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 14 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 20 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
-     `min_severity` (see `expected_findings.json` `scoring` for P-14's dual-accept rule).
-   - **Precision**: nothing about the placebo figure / `fig_placebo.pdf` (`must_not_find`),
-     and the `expected_confirmed_examples` come out clean rather than flagged.
+     `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
+     rule).
+   - **Precision**: nothing about the placebo figure / `fig_placebo.pdf`, nothing about the
+     farm-components subset (`must_not_find`), and the `expected_confirmed_examples` come
+     out clean rather than flagged.
 
 ### Automated scoring
 
 `scripts/score_fixture.py` automates the recall/precision core of the scorecard
-(mechanism-signature matching, the P-14 dual-accept branch logic, the D-01 decoy
-grep, and an SC-01 unresolved-conflict check). Point it at the finished run's
+(mechanism-signature matching, the P-14/P-20 dual-accept branch logic, the decoy
+greps, an SC-01 unresolved-conflict check, per-failure-class tags, and the
+artifact-layer checks: the U2 parser artifact must name `pyproject.toml`; the U4
+and U5 advisory lints must have fired if the corresponding plant closed in the
+failure state; the U1 conventions-artifact check is informative only, never
+gate-settling — see KTD-8 in the 2026-07-07 plan). Point it at the finished run's
 final registers:
 
 ```

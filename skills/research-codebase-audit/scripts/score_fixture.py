@@ -28,6 +28,31 @@ Rules encoded here:
   still CONFIRMS the long-run-mean shock definition while a confirmed
   code-error row records the P-11 mechanism is an unresolved status
   conflict and turns the gate RED.
+- P-20 reuses the P-14 dual-accept branch logic (blocked-visible plant
+  family): inconsistent at qualifying severity, OR blocked with a Blocked
+  Check that itself records the 15-km vs 25 km contradiction.
+- Per-class tags (U9): a ``failure_class`` field on a must_find item is
+  echoed on its line and rolled up in a per-class summary (U10 finishes the
+  per-class reporting).
+- Artifact-layer checks (U9; Build Process gate, single-re-score layer per
+  KTD-8 — these outcomes are produced by committed scripts/lints, so one
+  re-score settles them; the gate scorecard records them separately from
+  the register-based two-run results):
+  * U2: ``AUDIT_DIR/_run/manifest_check.md`` must name ``pyproject.toml``
+    in its Candidate findings section (gate-settling; the parser emission
+    is deterministic given the plant).
+  * U4: if the P-19 claim closed ``confirmed``, the anchoring advisory
+    (``lint_registers.check_anchoring_advisory``) must have warned on its
+    recheck-ledger row (gate-settling when a ledger row exists; a confirmed
+    close outside the recheck sample is reported NOT COVERED, not FAIL —
+    the advisory is a tripwire over the recheck sample by design/KTD-3).
+  * U5: if the P-20 row rests ``blocked``, the filename-parameter advisory
+    (``lint_registers.check_filename_parameter_advisory``) must warn on it
+    (gate-settling).
+  * U1: a conventions-artifact/b4-candidate presence check, INFORMATIVE
+    only, never gate-settling — the b3c consolidation and grep-term choice
+    are worker-dependent (KTD-8), so this line feeds diagnosis, not the
+    verdict.
 
 Not enforced here (still scorecard/reviewer territory): expected_type
 adjudication and the ``expected_confirmed_examples`` cleanliness checks.
@@ -39,13 +64,27 @@ Exit codes: 0 = GATE GREEN, 1 = GATE RED, 2 = usage/IO error.
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
 DEFAULT_EXPECTED = SKILL_DIR / "fixture" / "expected_findings.json"
+
+
+def load_lint_module():
+    """Import scripts/lint_registers.py by path (scripts/ is not a package).
+
+    The artifact-layer checks reuse the committed advisory-check functions so
+    the scorer can never drift from the lint's actual behavior."""
+    spec = importlib.util.spec_from_file_location(
+        "lint_registers", SCRIPTS_DIR / "lint_registers.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 # Mechanism signatures: plant ID -> list of groups; a row matches when, for
 # EVERY group, at least one alternative substring appears in the row's text
@@ -74,8 +113,45 @@ SIGNATURES = {
     "P-13": [["725"], ["30"]],
     "P-14": [["one-in-ten", "one in ten", "1-in-10", "1 in 10"],
              ["1-in-20", "one-in-twenty", "1 in 20", "one in twenty"]],
+    "P-15": [["remittance"],
+             ["component", "crop", "income"],
+             ["omit", "miss", "excl", "without", "only", "left out",
+              "not includ", "drop", "three", "absent"]],
+    "P-16": [["pyproject"],
+             ["toml", "parse", "invalid", "version", "malformed", "reject"]],
+    "P-17": [["hhsize"], ["missing"],
+             ["never", "only", "already", "non-missing", "nonmissing",
+              "excl", "does not fill", "doesn't fill", "not fill", "< .",
+              "present"]],
+    "P-18": [["has_wages"],
+             ["overwrit", "overwrite", "erase", "clobber", "last", "reset",
+              "final", "each iteration", "replaces"]],
+    "P-19": [["winsor"],
+             ["wage_earnings", "wage earnings"],
+             ["crop_sales", "crop sales"]],
+    "P-20": [["15-km", "15 km", "15km", "fifteen"],
+             ["25km", "25-km", "25 km", "twenty-five"]],
 }
-DECOY_TERMS = ["placebo", "fig_placebo"]
+# Plants scored with the P-14 dual-accept branch logic (blocked-visible
+# family): inconsistent at qualifying severity OR blocked with a Blocked
+# Check that itself records the contradiction (severity floor waived).
+BLOCKED_VISIBLE_PLANTS = {"P-14", "P-20"}
+DECOYS = {
+    "D-01": ["placebo", "fig_placebo"],
+    "D-02": ["farm_income", "farm-income", "farm income", "farm_components",
+             "farm components", "farm_share", "farm share"],
+}
+# --- artifact-layer constants (U9) ----------------------------------------
+# the U2 plant: the malformed manifest the parser artifact must name
+MANIFEST_PLANT = "pyproject.toml"
+# locators for the plant CLAIM rows the conditional advisory checks key on
+# (looser than the full mechanism signatures: they must find the claim row
+# even when the run failed to record the contradiction)
+U4_CLAIM_LOCATOR = [["winsor"], ["wage_earnings", "wage earnings"]]
+U5_CLAIM_LOCATOR = [["15-km", "15 km", "15km", "fifteen"], ["radius", "km"]]
+# terms identifying the U1 member-list convention in the b3c artifact
+U1_CONVENTION_CATEGORY = "enumerated_member_list"
+U1_MEMBER_TERMS = ["remittance", "crop", "livestock", "wage"]
 # terms indicating a claims row asserts the long-run shock definition (SC-01)
 P11_DEFINITION_TERMS = ["long-run", "long run", "climate normal", "1991"]
 
@@ -203,9 +279,11 @@ def score_generic(item, tagged_rows):
     return "MISS", "no row matches the mechanism signature"
 
 
-def score_p14(item, tagged_rows):
-    """Dual-accept branch logic for P-14 (blocked-visible-metadata test)."""
-    sig = SIGNATURES["P-14"]
+def score_blocked_visible(item, tagged_rows):
+    """Dual-accept branch logic for the blocked-visible plant family
+    (P-14, P-20): mechanism found AND (a qualifying flagged row OR a blocked
+    claim whose non-empty Blocked Check itself records the contradiction)."""
+    sig = SIGNATURES[item["id"]]
     min_sev = int(item.get("min_severity", 2))
     silent, hits = [], []
     for kind, id_col, d in tagged_rows:
@@ -233,13 +311,13 @@ def score_p14(item, tagged_rows):
     return "MISS", "no row matches the mechanism signature"
 
 
-def check_decoy(tagged_rows, summary_text):
+def check_decoy(terms, tagged_rows, summary_text):
     found = []
     for kind, id_col, d in tagged_rows:
         text = row_text(d)
-        if any(t in text for t in DECOY_TERMS):
+        if any(t in text for t in terms):
             found.append(describe(kind, id_col, d))
-    if summary_text and any(t in summary_text.lower() for t in DECOY_TERMS):
+    if summary_text and any(t in summary_text.lower() for t in terms):
         found.append("register_cross_link_summary.md")
     return found
 
@@ -262,6 +340,151 @@ def check_sc01(tagged_rows):
                 "confirmed P-11 error: "
                 + "; ".join(confirmed_claim + confirmed_error))
     return None
+
+
+# ------------------------------------------------- artifact-layer checks (U9)
+#
+# The register score reads the FINAL registers, downstream of worker
+# disposition, so a candidate emitted and dispositioned away is
+# indistinguishable from no emission. These checks read the deterministic
+# layer directly (the U2 parser artifact; the U4/U5 advisory lints re-run on
+# the run's own tables), so the Build Process gate can record the
+# single-re-score outcomes separately from the register-based two-run
+# outcomes (KTD-8). Each returns (status, note): status "FAIL" adds a red
+# reason; "PASS"/"NOT COVERED" does not; the U1 check returns "INFO" always.
+
+
+def check_artifact_manifest(audit):
+    """U2 (gate-settling): the parser artifact names the malformed manifest."""
+    path = audit / "_run" / "manifest_check.md"
+    if not path.is_file():
+        return "FAIL", f"artifact not found: {path} (run check_manifests.py at b4)"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    _, _, findings = text.partition("## Candidate findings")
+    if MANIFEST_PLANT.lower() in findings.lower():
+        return "PASS", f"_run/manifest_check.md names {MANIFEST_PLANT}"
+    return "FAIL", (f"_run/manifest_check.md does not name {MANIFEST_PLANT} "
+                    "in its Candidate findings")
+
+
+def _find_claims_table(lint_mod, audit):
+    """(headers, rows) of the final claims register's table, tolerating the
+    post-b8 ``*_Original`` extra columns; (None, None) if unparsable."""
+    path = audit / "claims_register.md"
+    if not path.is_file():
+        return None, None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for headers, rows, _ in lint_mod.parse_tables(text):
+        if headers[:len(lint_mod.CLAIMS_COLS)] == lint_mod.CLAIMS_COLS:
+            return headers, [r for r in rows if len(r) == len(headers)]
+    return None, None
+
+
+def _locate_claim_rows(headers, rows, locator):
+    """Claim-row dicts whose full text matches *locator* (signature groups)."""
+    out = []
+    for r in rows:
+        d = dict(zip(headers, r))
+        if sig_match(row_text(d), locator):
+            out.append(d)
+    return out
+
+
+def check_artifact_anchoring(lint_mod, audit):
+    """U4 (conditional, gate-settling): if the P-19 claim closed confirmed,
+    the anchoring advisory must have warned on its recheck-ledger row."""
+    headers, rows = _find_claims_table(lint_mod, audit)
+    if headers is None:
+        return "FAIL", "claims register missing or unparsable"
+    matches = _locate_claim_rows(headers, rows, U4_CLAIM_LOCATOR)
+    if not matches:
+        return ("NOT COVERED",
+                "no claim row locates the P-19 plant (register layer scores it)")
+    confirmed = [d for d in matches
+                 if (d.get("Status") or "").strip() == "confirmed"]
+    if not confirmed:
+        return "PASS", ("vacuous — P-19 claim not confirmed "
+                        "(closed " + "/".join(sorted(
+                            (d.get("Status") or "?").strip() for d in matches))
+                        + ")")
+    ledger_rows = []
+    recheck_dir = audit / "_recheck"
+    if recheck_dir.is_dir():
+        for p in sorted(recheck_dir.rglob("*.md")):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            for h, rws, _ in lint_mod.parse_tables(text):
+                if h == lint_mod.LEDGER_COLS:
+                    ledger_rows.extend(r for r in rws if len(r) == len(h))
+    ids = {d.get("Claim ID", "") for d in confirmed}
+    covered = [r for r in ledger_rows
+               if dict(zip(lint_mod.LEDGER_COLS, r)).get("ID") in ids]
+    if not covered:
+        return ("NOT COVERED",
+                "P-19 claim closed confirmed with no recheck-ledger row — the "
+                "advisory is a tripwire over the recheck sample (KTD-3) and "
+                "never saw it; the register layer scores the miss")
+    lint = lint_mod.Lint()
+    lint_mod.check_anchoring_advisory(lint, audit, covered)
+    fired = [w for w in lint.warnings
+             if "anchoring:" in w and any(i in w for i in ids)]
+    if fired:
+        return "PASS", "tripwire fired — " + "; ".join(fired)
+    return "FAIL", ("P-19 claim closed confirmed but the anchoring advisory "
+                    "stayed silent on its ledger row(s): " + ", ".join(sorted(ids)))
+
+
+def check_artifact_filename_parameter(lint_mod, audit):
+    """U5 (conditional, gate-settling): if the P-20 row rests blocked, the
+    filename-parameter advisory must warn on it."""
+    headers, rows = _find_claims_table(lint_mod, audit)
+    if headers is None:
+        return "FAIL", "claims register missing or unparsable"
+    matches = _locate_claim_rows(headers, rows, U5_CLAIM_LOCATOR)
+    if not matches:
+        return ("NOT COVERED",
+                "no claim row locates the P-20 plant (register layer scores it)")
+    blocked = [d for d in matches
+               if (d.get("Status") or "").strip() == "blocked"]
+    if not blocked:
+        return "PASS", ("vacuous — P-20 row not blocked "
+                        "(closed " + "/".join(sorted(
+                            (d.get("Status") or "?").strip() for d in matches))
+                        + ")")
+    ids = {d.get("Claim ID", "") for d in blocked}
+    lint = lint_mod.Lint()
+    raw = [[d.get(c, "") for c in headers] for d in blocked]
+    lint_mod.check_filename_parameter_advisory(
+        lint, audit / "claims_register.md", raw, cols=headers)
+    fired = [w for w in lint.warnings
+             if "filename-parameter" in w and any(i in w for i in ids)]
+    if fired:
+        return "PASS", "tripwire fired — " + "; ".join(fired)
+    return "FAIL", ("P-20 row rests blocked but the filename-parameter "
+                    "advisory stayed silent on: " + ", ".join(sorted(ids)))
+
+
+def check_artifact_conventions(lint_mod, audit, tagged_rows):
+    """U1 (INFORMATIVE only, never gate-settling per KTD-8): is the
+    enumerated-member-list convention in the b3c artifact, and does any final
+    register row carry the P-15 mechanism?"""
+    path = audit / "_run" / "conventions.md"
+    conv = "artifact absent"
+    if path.is_file():
+        conv = f"{U1_CONVENTION_CATEGORY} convention ABSENT from the artifact"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for headers, rows, _ in lint_mod.parse_tables(text):
+            for r in rows:
+                joined = " | ".join(r).lower()
+                if (U1_CONVENTION_CATEGORY in joined
+                        and any(t in joined for t in U1_MEMBER_TERMS)):
+                    conv = f"{U1_CONVENTION_CATEGORY} convention PRESENT"
+                    break
+    reg = "no register row matches the P-15 mechanism"
+    for kind, id_col, d in tagged_rows:
+        if sig_match(row_text(d), SIGNATURES["P-15"]):
+            reg = f"P-15 mechanism row present ({describe(kind, id_col, d)})"
+            break
+    return "INFO", f"{conv}; {reg} (worker-dependent — informative, not gate-settling)"
 
 
 # --------------------------------------------------------------- main
@@ -312,25 +535,34 @@ def main() -> int:
 
     red_reasons = []
     n_hit = 0
+    class_totals, class_hits = {}, {}
     must_find = expected.get("must_find", [])
     for item in must_find:
-        scorer = score_p14 if item["id"] == "P-14" else score_generic
+        scorer = (score_blocked_visible if item["id"] in BLOCKED_VISIBLE_PLANTS
+                  else score_generic)
         verdict, note = scorer(item, tagged_rows)
+        cls = item.get("failure_class")
+        if cls:
+            class_totals[cls] = class_totals.get(cls, 0) + 1
         if verdict == "HIT":
             n_hit += 1
+            if cls:
+                class_hits[cls] = class_hits.get(cls, 0) + 1
         else:
             red_reasons.append(f"{item['id']} MISS")
-        print(f"{item['id']}: {verdict} — {note}")
+        tag = f" [class={cls}]" if cls else ""
+        print(f"{item['id']}: {verdict}{tag} — {note}")
 
     print()
-    decoy = check_decoy(tagged_rows, summary_text)
-    if decoy:
-        print(f"D-01 decoy: PRESENT — {'; '.join(decoy)}")
-        red_reasons.append("D-01 decoy present")
-    else:
-        note = "" if summary_text is not None else \
-            " (cross-link summary not found; registers only)"
-        print(f"D-01 decoy: ABSENT{note}")
+    for did, terms in DECOYS.items():
+        found = check_decoy(terms, tagged_rows, summary_text)
+        if found:
+            print(f"{did} decoy: PRESENT — {'; '.join(found)}")
+            red_reasons.append(f"{did} decoy present")
+        else:
+            note = "" if summary_text is not None else \
+                " (cross-link summary not found; registers only)"
+            print(f"{did} decoy: ABSENT{note}")
 
     sc01 = check_sc01(tagged_rows)
     if sc01:
@@ -339,8 +571,46 @@ def main() -> int:
     else:
         print("SC-01: PASS")
 
+    # artifact-layer checks (U9; single-re-score layer per KTD-8)
+    print()
+    print("Artifact-layer checks (single-re-score layer; record separately "
+          "from the register-based two-run results):")
+    lint_mod = None
+    try:
+        lint_mod = load_lint_module()
+    except Exception as exc:  # never crash the register score
+        print(f"WARNING: could not load lint_registers.py "
+              f"({exc.__class__.__name__}: {exc}); the gate-settling U4/U5 "
+              "artifact checks did not run (red), and the U1 INFO check is "
+              "skipped")
+        red_reasons.append("U4/U5 artifact checks unrun: lint_registers.py "
+                           "failed to load")
+    status, note = check_artifact_manifest(audit)
+    print(f"U2 manifest artifact: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U2 manifest artifact check failed")
+    if lint_mod is not None:
+        for label, fn, red in (
+            ("U4 anchoring advisory", check_artifact_anchoring,
+             "U4 anchoring advisory check failed"),
+            ("U5 filename-parameter advisory",
+             check_artifact_filename_parameter,
+             "U5 filename-parameter advisory check failed"),
+        ):
+            status, note = fn(lint_mod, audit)
+            print(f"{label}: {status} — {note}")
+            if status == "FAIL":
+                red_reasons.append(red)
+        status, note = check_artifact_conventions(lint_mod, audit, tagged_rows)
+        print(f"U1 conventions artifact: {status} — {note}")
+
     print()
     print(f"Recall: {n_hit}/{len(must_find)}")
+    if class_totals:
+        per_class = "; ".join(
+            f"{cls} {class_hits.get(cls, 0)}/{tot}"
+            for cls, tot in sorted(class_totals.items()))
+        print(f"Per-class: {per_class}")
     if red_reasons:
         print(f"GATE RED — {'; '.join(red_reasons)}")
         return 1

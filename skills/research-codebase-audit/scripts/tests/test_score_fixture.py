@@ -219,12 +219,15 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
     audit = tmp_path / "audit"
     audit.mkdir(parents=True)
     if claims_original_cols:
-        # Post-b8 finalize promotes the rewriter's staging register, appending
-        # an `Issue Description Original` column — the real shape of a scored
-        # run's final claims register (mirrors regbuild.make_b8).
-        c_cols = rb.CLAIMS_COLS + ["Issue Description Original"]
-        c_rows = [list(r) + [r[rb.CLAIMS_COLS.index("Issue Description")]]
-                  for r in claims_rows]
+        # Post-b8 finalize promotes the rewriter's staging register, which
+        # INSERTS an `Issue Description Original` column right after
+        # `Issue Description` (not appended at the end) — the real shape of a
+        # scored run's final claims register (mirrors regbuild.make_b8 via the
+        # shared rewrite_pass_cols helper). The interleaved order is what a
+        # prefix-match table finder trips on; the append-at-end shape used
+        # previously hid that bug.
+        c_cols, c_rows = rb.rewrite_pass_cols(
+            rb.CLAIMS_COLS, claims_rows, ["Issue Description"])
         (audit / "claims_register.md").write_text(
             rb.register_text("Claims register", c_cols, c_rows))
     else:

@@ -378,12 +378,36 @@ def make_b5(tmp_path, stream, *, ledger_rows, assigned_ids=None,
     return a, shard
 
 
+def rewrite_pass_cols(base_cols, rows, names):
+    """Return (cols, rows) in the faithful post-b8 rewrite shape.
+
+    The b8 rewrite pass (registers.md 'Rewrite-pass columns') keeps the
+    author-facing text under each source column's original name and INSERTS an
+    ``<name> Original`` column immediately after it — e.g.
+    ``Issue Description | Issue Description Original | Blocked Check``. It does
+    NOT append the ``*Original`` columns at the end; a builder that appends
+    produces a header that is still a superset of the canonical columns but in
+    the wrong order, which a prefix-match parser tolerates and an
+    order-independent (set-containment) parser handles identically — so append
+    hides ordering bugs the real interleaved header exposes.
+    """
+    cols = list(base_cols)
+    out = [list(r) for r in rows]
+    for name in names:
+        i = cols.index(name)
+        cols.insert(i + 1, f"{name} Original")
+        for r in out:
+            r.insert(i + 1, r[i])
+    return cols, out
+
+
 def make_b8(tmp_path, *, claims_rows=(), error_rows=()) -> AuditDir:
     """A minimal audit dir that reaches the b8 (finalize/rewrite) boundary cleanly.
 
-    Staging carries the post-rewrite registers with the ``*Original`` columns
-    appended and the rewrite a no-op (rewritten text equals the frozen
-    original); the b8 snapshot carries the pre-rewrite base-column registers;
+    Staging carries the post-rewrite registers with each ``*Original`` column
+    inserted after its source column (the faithful rewrite shape) and the
+    rewrite a no-op (rewritten text equals the frozen original); the b8
+    snapshot carries the pre-rewrite base-column registers;
     the output register and cross-link summary are clean stubs. As long as
     *claims_rows* carry no confirmed-claim↔confirmed-error links, the boundary
     lints green — the home for the finalize-stage advisory checks (U1
@@ -397,16 +421,12 @@ def make_b8(tmp_path, *, claims_rows=(), error_rows=()) -> AuditDir:
             "# Cross-link summary\n\n## Status conflicts\n\nnone\n\n"
             "## Escalated mapped claims\n\nnone\n\n"
             "## Severity divergences\n\nnone\n")
-    c_cols = CLAIMS_COLS + ["Issue Description Original"]
-    c_stage = [list(r) + [r[CLAIMS_COLS.index("Issue Description")]]
-               for r in claims_rows]
+    c_cols, c_stage = rewrite_pass_cols(
+        CLAIMS_COLS, claims_rows, ["Issue Description"])
     a.write_register("_staging/claims_register.md", c_cols, c_stage,
                      title="Claims register")
-    e_cols = ERROR_COLS + ["Error Description Original",
-                           "Why It Matters Original"]
-    e_stage = [list(r) + [r[ERROR_COLS.index("Error Description")],
-                          r[ERROR_COLS.index("Why It Matters")]]
-               for r in error_rows]
+    e_cols, e_stage = rewrite_pass_cols(
+        ERROR_COLS, error_rows, ["Error Description", "Why It Matters"])
     a.write_register("_staging/code_error_register.md", e_cols, e_stage,
                      title="Code-error register")
     a.write_register("_run/snapshots/b8/claims_register.md", CLAIMS_COLS,

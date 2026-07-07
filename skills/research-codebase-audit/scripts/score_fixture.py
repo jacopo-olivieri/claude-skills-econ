@@ -379,13 +379,20 @@ def check_artifact_manifest(audit):
 
 def _find_claims_table(lint_mod, audit):
     """(headers, rows) of the final claims register's table, tolerating the
-    post-b8 ``*_Original`` extra columns; (None, None) if unparsable."""
+    post-b8 ``*_Original`` extra columns; (None, None) if unparsable.
+
+    The b8 rewrite pass inserts each ``*_Original`` column immediately after
+    its source column (e.g. ``Issue Description | Issue Description Original``),
+    so the canonical columns are a subset of the header, NOT a prefix of it.
+    Match on set-containment and zip rows against the actual header, mirroring
+    ``lint_registers.load_register(allow_extra=True)`` and the containment fix
+    in ``check_anchoring_advisory``."""
     path = audit / "claims_register.md"
     if not path.is_file():
         return None, None
     text = path.read_text(encoding="utf-8", errors="replace")
     for headers, rows, _ in lint_mod.parse_tables(text):
-        if headers[:len(lint_mod.CLAIMS_COLS)] == lint_mod.CLAIMS_COLS:
+        if set(lint_mod.CLAIMS_COLS) <= set(headers):
             return headers, [r for r in rows if len(r) == len(headers)]
     return None, None
 

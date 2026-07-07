@@ -45,8 +45,16 @@ EXPECTED_BLOCKS = {
             "- (1) each documented install/setup command in scope parses to dependencies, paths, and versions\n"
             "  satisfiable from the package (static only — you do not execute it);\n"
             "- (2) every shared convention your scope defines (sample-window boundary, date-parse mask,\n"
-            "  missing-value sentinel, unit/scale factor, path separator, ID/merge key) agrees with the same\n"
-            "  convention wherever else it is defined;\n"
+            "  missing-value sentinel, unit/scale factor, path separator, ID/merge key, enumerated member\n"
+            "  list) agrees with the same convention wherever else it is defined. When your scope\n"
+            "  re-materializes an enumerated member list by hand (`enumerated_member_list`: a hand-written\n"
+            "  category or level list in a keep-or-drop condition, a value-label definition, a list or\n"
+            "  dictionary literal, a column-selection vector, a legend or axis label array), check the members\n"
+            "  it materializes against the stated set; a divergence is a finding row, and a non-divergent site\n"
+            "  needs no row. Your rows go to the code register, which the b3c consolidation does not read; the\n"
+            "  b4 shared-conventions grep independently locates re-materialization sites and compares each\n"
+            "  against the paper-stated set — this bullet exists so you recognize enumerated-list sites and\n"
+            "  catch divergences at first pass;\n"
             "- (3) every cross-language or cross-script hand-off your scope touches connects — what one step\n"
             "  writes is exactly where the next reads (path, name, shape).\n"
         ),
@@ -55,10 +63,13 @@ EXPECTED_BLOCKS = {
         "standing-checks": (
             "- Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section\n"
             "  makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,\n"
-            "  unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and\n"
-            "  consistently across files (check 2); when a claim depends on a cross-language or cross-script\n"
-            "  hand-off, confirm what one step writes is where the next reads (check 3). A divergence is an\n"
-            "  `inconsistent` claim.\n"
+            "  unit/scale, date mask, missing-value sentinel, or an enumerated member list —\n"
+            "  `enumerated_member_list`: the categories kept, a sample-defining enumerated set, the columns\n"
+            "  exported), confirm the code defines it the same way and consistently across files (check 2);\n"
+            "  for an enumerated member list, quote the full member set verbatim in the claim row — a single\n"
+            "  row naming the set is enough for the b3c consolidation to carry it to the code-side grep; when\n"
+            "  a claim depends on a cross-language or cross-script hand-off, confirm what one step writes is\n"
+            "  where the next reads (check 3). A divergence is an `inconsistent` claim.\n"
         ),
     },
 }

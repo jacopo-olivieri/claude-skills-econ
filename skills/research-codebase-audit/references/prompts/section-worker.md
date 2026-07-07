@@ -58,10 +58,13 @@ Rules:
 <!-- RESTATEMENT:standing-checks BEGIN -->
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
-  unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and
-  consistently across files (check 2); when a claim depends on a cross-language or cross-script
-  hand-off, confirm what one step writes is where the next reads (check 3). A divergence is an
-  `inconsistent` claim.
+  unit/scale, date mask, missing-value sentinel, or an enumerated member list —
+  `enumerated_member_list`: the categories kept, a sample-defining enumerated set, the columns
+  exported), confirm the code defines it the same way and consistently across files (check 2);
+  for an enumerated member list, quote the full member set verbatim in the claim row — a single
+  row naming the set is enough for the b3c consolidation to carry it to the code-side grep; when
+  a claim depends on a cross-language or cross-script hand-off, confirm what one step writes is
+  where the next reads (check 3). A divergence is an `inconsistent` claim.
 <!-- RESTATEMENT:standing-checks END -->
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`

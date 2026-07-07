@@ -120,7 +120,15 @@ plan, for each listed convention grep the codebase for its definition sites — 
 the boundary literal, sentinel, unit/scale factor, path separator, date mask, or ID/merge key the
 `Stated Definition` column records (e.g. a fiscal-year boundary "July" → grep for month/quarter
 literals and cutoff comparisons in the date-construction scripts; a missing-value sentinel → grep
-for the sentinel value and the replace/recode calls that set it). Any site whose definition
+for the sentinel value and the replace/recode calls that set it; an enumerated member list
+(`enumerated_member_list`) → locate each site that re-materializes the stated list by hand —
+hand-written category or level lists in keep-or-drop conditions, value-label definitions, list or
+dictionary literals in any language, column-selection vectors, legend or axis label arrays — and
+take the set difference between each materialized set and the stated set, typing any missing,
+extra, or renamed member by its mechanism). Guard for enumerated member lists: a site that
+materializes a strict subset of the stated list with explicit local subsetting intent — a named
+sub-sample, a figure- or table-specific filter, a commented restriction — is recorded as
+reviewed-not-divergent, not emitted as a candidate. Any site whose definition
 disagrees with the stated one becomes a new `candidate` code-error row, typed by its mechanism per
 the taxonomy (a boundary literal mismatch is `treatment_or_event_timing_error`, a sentinel or
 scale mismatch is `aggregation_or_unit_error`, a divergent merge key is

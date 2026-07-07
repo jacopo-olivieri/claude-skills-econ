@@ -58,8 +58,16 @@ Also run the three **standing self-consistency checks** defined in `audit/audit_
 - (1) each documented install/setup command in scope parses to dependencies, paths, and versions
   satisfiable from the package (static only — you do not execute it);
 - (2) every shared convention your scope defines (sample-window boundary, date-parse mask,
-  missing-value sentinel, unit/scale factor, path separator, ID/merge key) agrees with the same
-  convention wherever else it is defined;
+  missing-value sentinel, unit/scale factor, path separator, ID/merge key, enumerated member
+  list) agrees with the same convention wherever else it is defined. When your scope
+  re-materializes an enumerated member list by hand (`enumerated_member_list`: a hand-written
+  category or level list in a keep-or-drop condition, a value-label definition, a list or
+  dictionary literal, a column-selection vector, a legend or axis label array), check the members
+  it materializes against the stated set; a divergence is a finding row, and a non-divergent site
+  needs no row. Your rows go to the code register, which the b3c consolidation does not read; the
+  b4 shared-conventions grep independently locates re-materialization sites and compares each
+  against the paper-stated set — this bullet exists so you recognize enumerated-list sites and
+  catch divergences at first pass;
 - (3) every cross-language or cross-script hand-off your scope touches connects — what one step
   writes is exactly where the next reads (path, name, shape).
 <!-- RESTATEMENT:standing-checks END -->

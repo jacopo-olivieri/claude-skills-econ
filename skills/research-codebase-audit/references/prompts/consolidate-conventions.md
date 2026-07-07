@@ -26,7 +26,8 @@ verdicts come later from the code side.
 ## TASK
 
 Read `{CLAIMS_REGISTER}` and `audit/audit_readme.md`. Write `{CONVENTIONS_ARTIFACT}` — a single
-Markdown table, one row per stated convention the package uses in **more than one place**:
+Markdown table, one row per stated convention the package uses in **more than one place** (with a
+single-row exception for `enumerated_member_list` — see RULES):
 
 | Convention | Category | Stated Definition | Sites Already Seen |
 | --- | --- | --- | --- |
@@ -40,12 +41,18 @@ Markdown table, one row per stated convention the package uses in **more than on
   ever copied into the conventions artifact.
 - **Categories are fixed** — a convention belongs to exactly one of the standing-check-2 categories
   in `audit/audit_readme.md`: `fiscal_year_or_sample_window_boundary`, `date_parse_mask`,
-  `missing_value_sentinel`, `unit_or_scale_factor`, `path_separator`, `id_or_merge_key`. A
-  candidate that fits none of these is not a shared convention — do not invent a category and do
-  not list it.
-- **Multi-site only.** List a convention only when the register shows it stated or used in **more
-  than one place** (two or more rows, or one row that cites two or more sites). A convention that
-  appears in a single place is out of scope for this artifact — skip it.
+  `missing_value_sentinel`, `unit_or_scale_factor`, `path_separator`, `id_or_merge_key`,
+  `enumerated_member_list`. A candidate that fits none of these is not a shared convention — do
+  not invent a category and do not list it. For `enumerated_member_list` (a member set the paper
+  states — the categories kept, a sample-defining enumerated set, the columns exported), the
+  `Stated Definition` quotes the full member set verbatim, not a paraphrase or a count.
+- **Multi-site only — with one carve-out.** List a convention only when the register shows it
+  stated or used in **more than one place** (two or more rows, or one row that cites two or more
+  sites). A convention that appears in a single place is out of scope for this artifact — skip it.
+  **Exception:** for `enumerated_member_list`, a single register row naming the member set
+  qualifies the convention for consolidation. The second side of the comparison is supplied by the
+  code-side re-materialization sites, which the code stream locates at the b4 grep, not at
+  consolidation — so do not skip a member list for being single-site.
 - `Convention`: a short name for the thing being fixed (e.g. "fiscal-year boundary",
   "flood-return-period layer", "household ID key").
 - `Stated Definition`: what the paper states the convention to be, with the `C-ID` it came from
@@ -67,5 +74,6 @@ Markdown table, one row per stated convention the package uses in **more than on
 ## OUTPUT
 
 `{CONVENTIONS_ARTIFACT}` (the table, possibly header-only). Then report: how many conventions were
-listed, by category, and any convention you judged single-site and therefore omitted.
+listed, by category, and any convention you judged single-site and therefore omitted (an
+`enumerated_member_list` is never omitted on single-site grounds — see the carve-out above).
 ```

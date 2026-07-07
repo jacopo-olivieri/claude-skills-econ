@@ -130,11 +130,16 @@ ordinary worker observation, not one of these.
 2. **Shared conventions agree.** The package asserts one definition for each convention it uses in
    more than one place. Gather every site that defines a shared convention — fiscal-year or
    sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
-   separator, ID/merge key — and confirm the definitions agree across files. A divergence is the
+   separator, ID/merge key, enumerated member list (`enumerated_member_list`: a member set the
+   package states in one place — the categories kept, a sample-defining enumerated set, the
+   columns exported) — and confirm the definitions agree across files. A divergence is the
    error, typed by its mechanism per the error taxonomy below. Enforcement runs cross-stream: the
    b3c consolidation pass gathers every multi-site convention the merged claims register states
-   into `audit/_run/conventions.md`, and the code-stream recheck (b4) greps the codebase for each
-   listed convention's definition sites and flags any that disagree.
+   into `audit/_run/conventions.md` — for an enumerated member list, a single claims-register row
+   naming the member set already qualifies, because the second side of the comparison is supplied
+   by the code-side re-materialization sites the b4 grep locates — and the code-stream recheck
+   (b4) greps the codebase for each listed convention's definition sites and flags any that
+   disagree.
 3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each
    point where the pipeline hands off between languages or scripts, follow the inputs and outputs
    and confirm what one step writes is exactly where the next reads — same path, name, and shape.

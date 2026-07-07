@@ -260,6 +260,37 @@ def test_per_class_tags_reported(tmp_path):
         assert cls in res.stdout
 
 
+def test_per_class_breakdown_lists_every_planted_class(tmp_path):
+    """U10: the per-class breakdown alongside the aggregate lists EACH planted
+    class with hit/miss counts — including the pre-2026-07-07 plants
+    P-01..P-14, which carry no failure_class tag and roll up in an explicit
+    unclassified_legacy bucket."""
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "Per-class:" in res.stdout
+    for line in (
+        "enumerated_member_list: 1/1 hit, 0 miss",
+        "manifest_parseability: 1/1 hit, 0 miss",
+        "empirical_verification: 2/2 hit, 0 miss",
+        "identifier_anchoring: 1/1 hit, 0 miss",
+        "step_parameter_filename: 1/1 hit, 0 miss",
+        "unclassified_legacy: 14/14 hit, 0 miss",
+    ):
+        assert line in res.stdout, f"missing per-class line {line!r} in:\n{res.stdout}"
+
+
+def test_per_class_breakdown_counts_misses(tmp_path):
+    """U10: a miss shows up in its class's hit/miss counts, and the legacy
+    bucket is unaffected."""
+    errors = [r for r in hit_error_rows() if r[0] != "E-0015"]  # drop P-15 hit
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "enumerated_member_list: 0/1 hit, 1 miss" in res.stdout
+    assert "unclassified_legacy: 14/14 hit, 0 miss" in res.stdout
+
+
 def test_p14_blocked_with_note_branch_is_hit(tmp_path):
     audit = write_final_registers(
         tmp_path, hit_claims_rows("blocked_with_note"), hit_error_rows())

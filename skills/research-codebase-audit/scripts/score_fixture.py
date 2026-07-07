@@ -31,9 +31,14 @@ Rules encoded here:
 - P-20 reuses the P-14 dual-accept branch logic (blocked-visible plant
   family): inconsistent at qualifying severity, OR blocked with a Blocked
   Check that itself records the 15-km vs 25 km contradiction.
-- Per-class tags (U9): a ``failure_class`` field on a must_find item is
-  echoed on its line and rolled up in a per-class summary (U10 finishes the
-  per-class reporting).
+- Per-class breakdown (U9 tags, U10 reporting): a ``failure_class`` field on
+  a must_find item is echoed on its line, and the ``Per-class:`` block under
+  the aggregate recall lists EVERY planted class with hit/miss counts. The
+  pre-2026-07-07 plants P-01..P-14 carry no ``failure_class`` tag in the
+  answer key (they predate the class taxonomy and each tests a mechanism,
+  not one of the U1-U5 failure classes); rather than back-tag them, the
+  breakdown rolls them up in an explicit ``unclassified_legacy`` bucket so
+  the aggregate is always the sum of the per-class lines.
 - Artifact-layer checks (U9; Build Process gate, single-re-score layer per
   KTD-8 — these outcomes are produced by committed scripts/lints, so one
   re-score settles them; the gate scorecard records them separately from
@@ -542,12 +547,14 @@ def main() -> int:
                   else score_generic)
         verdict, note = scorer(item, tagged_rows)
         cls = item.get("failure_class")
-        if cls:
-            class_totals[cls] = class_totals.get(cls, 0) + 1
+        # untagged plants (the pre-2026-07-07 P-01..P-14) roll up in an
+        # explicit legacy bucket so every planted item appears in the
+        # per-class breakdown and the aggregate equals the per-class sum
+        bucket = cls or "unclassified_legacy"
+        class_totals[bucket] = class_totals.get(bucket, 0) + 1
         if verdict == "HIT":
             n_hit += 1
-            if cls:
-                class_hits[cls] = class_hits.get(cls, 0) + 1
+            class_hits[bucket] = class_hits.get(bucket, 0) + 1
         else:
             red_reasons.append(f"{item['id']} MISS")
         tag = f" [class={cls}]" if cls else ""
@@ -607,10 +614,10 @@ def main() -> int:
     print()
     print(f"Recall: {n_hit}/{len(must_find)}")
     if class_totals:
-        per_class = "; ".join(
-            f"{cls} {class_hits.get(cls, 0)}/{tot}"
-            for cls, tot in sorted(class_totals.items()))
-        print(f"Per-class: {per_class}")
+        print("Per-class:")
+        for bucket, tot in sorted(class_totals.items()):
+            hits = class_hits.get(bucket, 0)
+            print(f"  {bucket}: {hits}/{tot} hit, {tot - hits} miss")
     if red_reasons:
         print(f"GATE RED — {'; '.join(red_reasons)}")
         return 1

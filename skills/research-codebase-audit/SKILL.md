@@ -31,7 +31,9 @@ Invariants you never break:
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
-  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>`). On failure, re-dispatch the producing agent once
+  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
+  `b2`, `b5`, and now `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, mark that shard/stage
   `blocked` in the manifest and continue everything that does not depend on it. **Merges
   proceed over the non-blocked shards** and document blocked ones in the merge report.
@@ -204,6 +206,14 @@ user approval.
 
 If `audit/_run/manifest.json` exists at intake, offer to resume:
 
+0. **Replay the last green boundary before trusting the manifest.** Take the most recent boundary
+   the manifest marks `done` whose artifacts exist on disk, and re-run its lint
+   (`lint_registers.py --stage <that boundary>`, with `--shard` for a shard stage). If it **fails**,
+   the recorded `done` is stale: mark that boundary `pending` in the manifest, discard only *its*
+   stale staging files (never another boundary's), and resume from it rather than from a later
+   point. In particular, a `done` b8 must still have `_staging/` populated with the non-empty
+   frozen b8 registers (the b9 lint requires them); if `_staging/` is empty, b8 reruns before
+   export. Only after this replay passes do you choose the resume point below.
 1. Re-hash `paper_source_path` and compare to `paper_sha256`. **If the manuscript changed,
    warn and offer a scoped register-update pass** (re-run only claims workers whose sections
    changed) instead of silently continuing.

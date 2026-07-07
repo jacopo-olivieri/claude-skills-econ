@@ -207,3 +207,206 @@ def make_b6_claims(tmp_path, claims_rows, output_rows=()) -> AuditDir:
     a.snapshot("claims_b6", ["claims_register.md", "output_register.md"])
     a.write_recheck_summary("claims")
     return a
+
+
+# --------------------------------------------------------------- U8 builders
+#
+# b4 recheck plans, b3b second-read shards, b5 recheck ledgers, and b9
+# workbooks — the negative/positive homes for the four U8 lint checks.
+
+LEDGER_COLS_ = LEDGER_COLS  # re-export for callers importing from regbuild
+
+
+def ledger_row(rid, *, status="candidate", severity="3",
+               evidence="`py/make_figures.py:5` reads a stale path",
+               level="static_source_verified", verdict="confirmed_error",
+               change="set status=confirmed", impact="figure 2 mislabelled",
+               note="author-facing note"):
+    return [rid, status, severity, evidence, level, verdict, change,
+            impact, note]
+
+
+def recheck_plan_text(stream, inventory, clusters):
+    """A recheck plan (b4 output): inventory table + cluster table + vocab pointer.
+
+    *inventory* is a list of (ID, Reason, Likely Evidence) tuples; *clusters* is a
+    list of (Cluster ID, Cluster Name, Assigned IDs, Shard File) tuples.
+    """
+    inv = md_table(["ID", "Reason", "Likely Evidence"],
+                   [list(r) for r in inventory])
+    clu = md_table(["Cluster ID", "Cluster Name", "Assigned IDs", "Shard File"],
+                   [list(r) for r in clusters])
+    return (f"# {stream} recheck plan\n\n"
+            "## Inventory\n\n" + inv + "\n"
+            "## Clusters\n\n" + clu + "\n"
+            "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
+
+
+def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
+            canon_errors=(), inventory=None, clusters=None,
+            review_depth="standard") -> AuditDir:
+    """A minimal audit dir that reaches the b4-<stream> boundary.
+
+    Canonical registers sit at ``audit/`` (b4 reads them via canon_ids). The
+    recheck plan is written from *inventory* / *clusters*; if either is None it
+    is derived automatically to cover every substantive canon ID in one cluster.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(review_depth=review_depth)
+    if stream == "claims":
+        a.write_register("claims_register.md", CLAIMS_COLS,
+                         list(canon_claims), title="Claims register")
+        a.write_register("output_register.md", OUTPUT_COLS,
+                         list(canon_outputs), title="Output register")
+        plan_name = "plans/claims_recheck_plan.md"
+    else:
+        a.write_register("code_error_register.md", ERROR_COLS,
+                         list(canon_errors), title="Code-error register")
+        plan_name = "plans/code_error_recheck_plan.md"
+    if inventory is None or clusters is None:
+        auto_inv, auto_clu = _auto_recheck(stream, canon_claims, canon_errors)
+        inventory = auto_inv if inventory is None else inventory
+        clusters = auto_clu if clusters is None else clusters
+    a.write(plan_name, recheck_plan_text(stream, inventory, clusters))
+    return a
+
+
+def _substantive_claim(row):
+    d = dict(zip(CLAIMS_COLS, row))
+    return bool(d["Severity"]) or d["Status"] == "unclear"
+
+
+def _substantive_error(row):
+    d = dict(zip(ERROR_COLS, row))
+    return d["Status"] == "candidate" or (
+        d["Status"] == "confirmed" and d["Severity"] in {"3", "4"})
+
+
+def _auto_recheck(stream, canon_claims, canon_errors):
+    """Derive a well-formed inventory + single cluster covering every required ID."""
+    if stream == "claims":
+        req = [dict(zip(CLAIMS_COLS, r))["Claim ID"]
+               for r in canon_claims if _substantive_claim(r)]
+    else:
+        req = [dict(zip(ERROR_COLS, r))["Error ID"]
+               for r in canon_errors if _substantive_error(r)]
+    inv = [(i, "issue-flagged", "static") for i in req]
+    clu = [("K1", "cluster one", "; ".join(req), "`audit/_recheck/k1.md`")] if req else []
+    return inv, clu
+
+
+def _shard_footer_text():
+    return ("\n### Coverage\n\nEvery item in scope has a row or a skip note.\n\n"
+            "### Coordinator notes\n\nNo blockers.\n")
+
+
+def make_b3b_shard(tmp_path, stream, *, claims_rows=(), output_rows=(),
+                   error_rows=(), claim_range="C-2000–C-2099",
+                   output_range="O-2000–O-2099", error_range="E-2000–E-2099",
+                   shard_rel=None, omit_output_table=False) -> tuple:
+    """Build a b3b second-read shard plus the second-read plan referencing it.
+
+    Returns (AuditDir, shard_path). The shard uses canonical columns, carries a
+    footer, and its worker allocation range is disjoint from the default b1 plan.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    if stream == "claims":
+        shard_rel = shard_rel or "_work_second_read/w1.md"
+        plan = (
+            "# Claims second-read plan\n\n"
+            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | "
+            "Output ID Range | Known Findings |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            f"| W1 | sec 4 | `audit/{shard_rel}` | {claim_range} | "
+            f"{output_range} | C-0142 |\n"
+        )
+        a.write("plans/claims_second_read_plan.md", plan)
+        # a b1 plan is also read for range-disjointness
+        a.write_claims_plan()
+        body = register_text("Claims", CLAIMS_COLS, list(claims_rows))
+        if not omit_output_table:
+            body += "\n" + register_text("Outputs", OUTPUT_COLS, list(output_rows))
+    else:
+        shard_rel = shard_rel or "_code_errors_second_read/w1.md"
+        plan = (
+            "# Code-error second-read plan\n\n"
+            "| Worker ID | Script Scope | Shard File | Error ID Range | "
+            "Known Findings |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            f"| W1 | `py/x.py` | `audit/{shard_rel}` | {error_range} | E-0001 |\n"
+        )
+        a.write("plans/code_error_second_read_plan.md", plan)
+        a.write("plans/code_error_review_plan.md", _code_b1_plan())
+        body = register_text("Code errors", ERROR_COLS, list(error_rows))
+    shard = a.write(shard_rel, body + _shard_footer_text())
+    return a, shard
+
+
+def _code_b1_plan():
+    return (
+        "# Code-error review plan\n\n"
+        "| Chunk ID | Script Scope | Error ID Range | Shard File |\n"
+        "| --- | --- | --- | --- |\n"
+        "| K1 | `py/x.py` | E-0100–E-0999 | `audit/_code_errors/k1.md` |\n\n"
+        "Merge-coordinator range: E-9000–E-9099\n\n"
+        "| Script | Chunk |\n"
+        "| --- | --- |\n"
+        "| `py/x.py` | K1 |\n"
+    )
+
+
+def make_b5(tmp_path, stream, *, ledger_rows, assigned_ids=None,
+            ladder_level=1, shard_rel=None) -> tuple:
+    """Build a b5 recheck ledger shard plus the recheck plan that assigns it.
+
+    Returns (AuditDir, shard_path). *ledger_rows* are LEDGER_COLS rows; the
+    recheck plan's single cluster is assigned every ledger ID (or *assigned_ids*).
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(ladder_level=ladder_level)
+    ids = assigned_ids if assigned_ids is not None else [r[0] for r in ledger_rows]
+    shard_rel = shard_rel or (
+        "_recheck/k1.md" if stream == "claims" else "_code_error_recheck/k1.md")
+    inv = [(i, "issue-flagged", "static") for i in ids]
+    clu = [("K1", "cluster one", "; ".join(ids), f"`audit/{shard_rel}`")]
+    plan_name = ("plans/claims_recheck_plan.md" if stream == "claims"
+                 else "plans/code_error_recheck_plan.md")
+    a.write(plan_name, recheck_plan_text(stream, inv, clu))
+    shard = a.write(shard_rel, register_text("Recheck ledger", LEDGER_COLS,
+                                             list(ledger_rows)))
+    return a, shard
+
+
+def make_b9(tmp_path, *, claims_rows=(), error_rows=(), mode="replication",
+            populate_staging=True) -> AuditDir:
+    """A minimal audit dir that reaches the b9 boundary.
+
+    Writes the canonical registers, populates ``_staging/`` with the same
+    (frozen b8) registers, and runs the *real* ``export_xlsx.py`` to build
+    ``code_review.xlsx`` — so a b9 test starts from a workbook the exporter
+    actually produced, then a test corrupts one cell to prove the check fires.
+    """
+    a = AuditDir(tmp_path)
+    a.write_manifest(mode=mode)
+    a.write_register("code_error_register.md", ERROR_COLS,
+                     list(error_rows), title="Code-error register")
+    if mode == "replication":
+        a.write_register("claims_register.md", CLAIMS_COLS,
+                         list(claims_rows), title="Claims register")
+        a.write_register("output_register.md", OUTPUT_COLS, [],
+                         title="Output register")
+    if populate_staging:
+        # b8 leaves _staging/ populated as the frozen b8 state; the b9 check
+        # requires the non-empty frozen registers to still be there.
+        a.write_register("_staging/code_error_register.md", ERROR_COLS,
+                         list(error_rows), title="Code-error register")
+        if mode == "replication":
+            a.write_register("_staging/claims_register.md", CLAIMS_COLS,
+                             list(claims_rows), title="Claims register")
+    out = a.audit / "code_review.xlsx"
+    res = run_script("export_xlsx.py", "--audit-dir", a.audit,
+                     "--mode", mode, "-o", out)
+    if res.returncode != 0:  # pragma: no cover - surfaces a builder misuse
+        raise AssertionError(f"export_xlsx failed in make_b9:\n{res.stdout}\n{res.stderr}")
+    return a

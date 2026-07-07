@@ -74,7 +74,8 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    Findings` lists the E-IDs and one-line mechanism already logged in that script.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
    fire-and-forget. At `deep` depth dispatch a second pass per script with a different
-   `{MANDATE_LENS}` and its own disjoint range. Completion = shard exists; retry-once →
+   `{MANDATE_LENS}` and its own disjoint range. A worker is complete when its shard exists at the
+   planned path **and** passes `lint_registers.py --stage b3b-code --shard <path>`; retry-once →
    blocked-continue.
 4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
    `prompts/merge-first-pass.md` filled for the code stream with `{SHARD_DIR}` =
@@ -93,8 +94,15 @@ Inventory, mechanically:
 
 - every `candidate` row (recheck resolves them all — none may survive b6), plus
 - every `confirmed` row with Severity ≥ 3, plus
-- a ~10% random sample of the remaining `confirmed` rows, stratified by Error Type (bounds
-  total across strata: min 3 or all available if fewer, max 15).
+- a ~10% **deterministic** sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by
+  Error Type (bounds total across strata: min 3 or all available if fewer, max 15). The sample is
+  drawn by a fixed rule so a resume or a fixture re-run selects exactly the same rows: for each
+  stratum, sort its eligible `confirmed` Error IDs ascending by the lowercase hex `sha256` digest
+  of the salted string `"b4-code:" + ID` (e.g. `sha256("b4-code:E-0044")`), and take from the top
+  of that sorted list until the stratum's ~10% quota is filled (round to nearest, at least 1 per
+  non-empty stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`).
+  Ties are impossible (digests are unique per ID); the salt keeps the code and claims samples
+  independent.
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: cluster by Error Type, ≤ 8 IDs
 per cluster. At `deep`: every **substantive ID** gets its own single-ID cluster — a substantive

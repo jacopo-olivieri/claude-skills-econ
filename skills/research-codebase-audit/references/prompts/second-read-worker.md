@@ -64,6 +64,9 @@ findings above do NOT already cover.
   problem you cannot settle) — never `confirmed` or `mapped`. New output rows take `mapped`,
   `orphan`, `unclear`, or `inconsistent`, never `listed` or `confirmed`. The recheck stage
   verifies everything you add; do not pre-confirm.
+- **Every code-error `candidate` row is complete**: fill `Code/Data Source`, `Code Location`,
+  `Error Description`, and `Why It Matters` — a row missing any of these fails the shard lint.
+  Only the cross-link columns stay blank.
 - Do NOT re-log the known findings above, do not edit canonical registers, source code, data, or
   paper text, and do not run the pipeline unless the review mode allows a probe within budget.
 - Use IDs only from your assigned range; if it runs out, stop and put `BLOCKED: ID range
@@ -73,7 +76,10 @@ findings above do NOT already cover.
 
 ## OUTPUT
 
-The shard: the new-row table(s), then a two-part footer per `audit/audit_readme.md` — a coverage
+The shard, using the target register's exact canonical columns. For the **claims stream** always
+write **both** tables in order — the claims table first, then the outputs table — and use an
+empty (header-only) outputs table when you found no new output rows; for the **code stream** write
+the single code-error table. Then a two-part footer per `audit/audit_readme.md` — a coverage
 note stating what you re-read and whether you found a further defect (an explicit "no further
 defect found" is a valid outcome and must be stated), and coordinator notes (highest-risk new
 finding, any blocked check, ID-range overflow).

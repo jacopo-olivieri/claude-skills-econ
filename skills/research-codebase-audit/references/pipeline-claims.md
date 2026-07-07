@@ -85,7 +85,8 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    Findings` lists the C-IDs and one-line mechanism already logged there.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = claims), one subagent per row,
    fire-and-forget. At `deep` depth dispatch a second pass with a different `{MANDATE_LENS}` and
-   its own disjoint ranges. Completion = shard exists; retry-once → blocked-continue.
+   its own disjoint ranges. A worker is complete when its shard exists at the planned path **and**
+   passes `lint_registers.py --stage b3b-claims --shard <path>`; retry-once → blocked-continue.
 4. **Merge.** Snapshot `claims_register.md` + `output_register.md` to
    `audit/_run/snapshots/claims_b3b/`; dispatch `prompts/merge-first-pass.md` filled for the
    claims stream with `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b
@@ -106,8 +107,14 @@ merge):
 - every issue-flagged claim row (Severity non-empty — this subsumes all `inconsistent` rows
   and all severities), plus
 - every `unclear` row, plus
-- a ~10% random sample of `confirmed` rows, stratified by Claim Type (bounds total across
-  strata: min 3 or all available if fewer, max 15).
+- a ~10% **deterministic** sample of `confirmed` rows, stratified by Claim Type (bounds total
+  across strata: min 3 or all available if fewer, max 15). The sample is drawn by a fixed rule so
+  a resume or a fixture re-run selects exactly the same rows: for each stratum, sort its eligible
+  `confirmed` Claim IDs ascending by the lowercase hex `sha256` digest of the salted string
+  `"b4-claims:" + ID` (e.g. `sha256("b4-claims:C-0137")`), and take from the top of that sorted
+  list until the stratum's ~10% quota is filled (round to nearest, at least 1 per non-empty
+  stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`). Ties are
+  impossible (digests are unique per ID); the salt keeps the claims and code samples independent.
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: group the inventory by Claim
 Type into clusters of ≤ 8 IDs. At `deep`: every **substantive ID** gets its own single-ID

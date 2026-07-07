@@ -92,6 +92,9 @@ Exclude:
   clearly so the recheck's runtime probe can settle it.
 - Leave `Related Claim IDs` blank; never consult the claim register to judge whether a
   finding matters.
+- **Every `candidate` row is complete**: fill `Code/Data Source`, `Code Location`,
+  `Error Description`, and `Why It Matters` — a row missing any of these fails the shard lint.
+  Only `Related Claim IDs` stays blank (cross-link is a later stage).
 - Repo-relative paths everywhere.
 
 Completion criterion — exhaustive: every script in your scope appears in the coverage table.

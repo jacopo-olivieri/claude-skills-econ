@@ -61,6 +61,17 @@ Rules:
 - **Arithmetic sweep**: for every share, percentage, ratio, or "X out of Y" in your section,
   recompute it from numbers already visible in the paper or the shipped artifacts (static only —
   do not run code); a recompute that disagrees with the stated figure is an `inconsistent` claim.
+- **Filename-parameter reconciliation sweep**: for every numeric parameter your section's paper
+  text states — a return period, threshold, year or sample window, resolution, unit, sampling
+  ratio — compare the stated value against the parameters embedded in the names of the shipped
+  input and output files (`sample_1in20.csv`, `grid_10km.dta`, `panel_2005_2015.csv`). Apply the
+  claim-unit corollary from `audit/audit_readme.md` first: each parameter-bearing step of an
+  enumerated procedure is its own claim row, so each parameter reconciles on its own row. A
+  filename token of the same shape that disagrees with the paper-stated parameter is a visible
+  contradiction — both halves ship — so the row is `inconsistent`, never `blocked`; cite the
+  filename in the row's evidence. Run this sweep even on claims you cannot otherwise verify:
+  filenames are visible material, so on a row blocked for other reasons the comparison belongs
+  in `Blocked Check`.
 <!-- RESTATEMENT:standing-checks BEGIN -->
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,

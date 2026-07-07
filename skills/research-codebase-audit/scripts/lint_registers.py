@@ -431,6 +431,155 @@ def check_anchoring_advisory(lint, audit, ledger_rows):
             )
 
 
+# --- U5 advisory filename-parameter reconciliation (KTD-4: advisory, blocked
+#     rows only, same-syntactic-shape tokens only) --------------------------
+#
+# A `blocked` claims row whose claim text states a numeric parameter while a
+# filename the row itself cites encodes a DIFFERENT value of the same
+# syntactic shape has already transcribed a visible contradiction — the
+# blocked-row escalation rule in registers.md says such a row cannot rest at
+# `blocked`. This lint is the finalize-stage tripwire behind the reading-side
+# reconciliation sweep (section-worker.md); it attaches at b8 (the U1
+# adjudication advisory's finalize sibling; U4's anchoring advisory sits at
+# b5). Per KTD-4 the crude any-numeric-mismatch version is explicitly
+# rejected as too noisy — filenames carry incidental years, versions, and
+# resolutions, and claim text is dense with estimates and sample sizes — so
+# the check is restricted to blocked rows and compares only tokens of the
+# SAME syntactic shape:
+#   * ratio composites — "one-in-ten" / "1 in 10" in prose vs `1in10` /
+#     `1_in_10` / `1-in-10` in a filename stem; spelled-out number words in
+#     the claim are normalized to digits first (vocabulary mirrors the P-14
+#     signatures in scripts/score_fixture.py);
+#   * keyed parameter composites — an alpha key attached to a number
+#     (`rp100`, `10km`, `q99`) compared only against a filename token
+#     sharing the SAME alpha key. A key present on only one side is never a
+#     mismatch, so an incidental year (no key at all) or version (`v3` with
+#     no `v`-keyed claim token) stays silent.
+# Advisory only: one WARNING per flagged row carrying the literal token
+# ``filename-parameter``; exit status never changes.
+
+# Spelled-out number words normalized before comparison (mirrors the
+# score_fixture.py P-14 vocabulary: "one-in-ten", "one in twenty", ...).
+_FP_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100,
+    "thousand": 1000,
+}
+_FP_NUMBER_WORD_RE = re.compile(
+    r"\b(%s)\b" % "|".join(_FP_NUMBER_WORDS), re.IGNORECASE)
+# filenames cited in a register cell (same extension vocabulary as the U4
+# anchoring advisory above).
+_FP_FILENAME_RE = re.compile(
+    r"\b([\w./-]+\.(?:%s))\b" % _ANCHOR_EXTENSIONS, re.IGNORECASE)
+# ratio composite in prose (after number-word normalization): "1-in-10",
+# "1 in 10"; in a filename stem: "1in10", "1_in_10", "1-in-10".
+_FP_PROSE_RATIO_RE = re.compile(r"\b(\d+)[\s-]+in[\s-]+(\d+)\b", re.IGNORECASE)
+_FP_FNAME_RATIO_RE = re.compile(r"(\d+)[-_]?in[-_]?(\d+)", re.IGNORECASE)
+# keyed composite: alpha key attached (no whitespace) to a number, either
+# order — `rp100`, `rp-100`, `10km`, `q99`. Attachment (or a single
+# hyphen/underscore) is required so free-standing counts ("4,832
+# households") never form a token. Lookarounds rather than \b: an
+# underscore is a \w character, so \b would never fire inside a filename
+# stem like `grid_25km` — here `-`/`_` count as token separators.
+_FP_KEYED_RES = (
+    re.compile(r"(?<![A-Za-z0-9])([a-z]{1,10})[-_]?(\d+)(?![A-Za-z0-9])",
+               re.IGNORECASE),   # key-first
+    re.compile(r"(?<![A-Za-z0-9])(\d+)[-_]?([a-z]{1,10})(?![A-Za-z0-9])",
+               re.IGNORECASE),   # number-first
+)
+
+
+def _fp_normalize_number_words(text):
+    return _FP_NUMBER_WORD_RE.sub(
+        lambda m: str(_FP_NUMBER_WORDS[m.group(1).lower()]), text)
+
+
+def _fp_tokens(text, ratio_re):
+    """(ratios, keyed) parameter tokens of *text*: ratios as a set of
+    (numerator, denominator) int pairs; keyed composites as {key: {values}}.
+    Ratio matches are masked before keyed extraction so `1in20` never also
+    yields an `in`-keyed composite."""
+    ratios = set()
+
+    def mask(m):
+        ratios.add((int(m.group(1)), int(m.group(2))))
+        return " " * len(m.group(0))
+
+    masked = ratio_re.sub(mask, text)
+    keyed = {}
+    for rx in _FP_KEYED_RES:
+        for m in rx.finditer(masked):
+            a, b = m.group(1), m.group(2)
+            key, num = (a, b) if a[0].isalpha() else (b, a)
+            keyed.setdefault(key.lower(), set()).add(int(num))
+    return ratios, keyed
+
+
+def _fp_claim_params(claim_text):
+    """Parameter tokens the CLAIM states: cited filenames are masked out
+    first (their embedded tokens belong to the filename side), then
+    spelled-out number words are normalized to digits."""
+    prose = _FP_FILENAME_RE.sub(lambda m: " " * len(m.group(0)), claim_text or "")
+    return _fp_tokens(_fp_normalize_number_words(prose), _FP_PROSE_RATIO_RE)
+
+
+def _fp_filename_params(*cells):
+    """Parameter tokens embedded in every filename cited across *cells*,
+    extracted from each filename's stem (basename, extension stripped)."""
+    ratios, keyed = set(), {}
+    for cell in cells:
+        for m in _FP_FILENAME_RE.finditer(cell or ""):
+            stem = m.group(1).rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            r, k = _fp_tokens(stem, _FP_FNAME_RATIO_RE)
+            ratios |= r
+            for key, vals in k.items():
+                keyed.setdefault(key, set()).update(vals)
+    return ratios, keyed
+
+
+def check_filename_parameter_advisory(lint, path, rows, cols=None):
+    """Advisory-only scan of a FINAL claims register (b8): flag every
+    `blocked` row whose claim-stated parameter disagrees with a same-shape
+    token embedded in a filename the row cites (Code/Data Source, Blocked
+    Check, or the claim text itself). One WARNING per flagged row; never a
+    hard fail. *cols* is the actual header order of *rows* (defaults to the
+    canonical ``CLAIMS_COLS``; at b8 the staging register carries extra
+    ``*Original`` columns)."""
+    cols = cols or CLAIMS_COLS
+    for r in rows:
+        d = dict(zip(cols, r))
+        if d.get("Status") != "blocked":
+            continue
+        c_ratios, c_keyed = _fp_claim_params(d.get("Claim Text", ""))
+        f_ratios, f_keyed = _fp_filename_params(
+            d.get("Code/Data Source", ""), d.get("Blocked Check", ""),
+            d.get("Claim Text", ""))
+        mismatches = []
+        if c_ratios and f_ratios and not (c_ratios & f_ratios):
+            mismatches.append(
+                "ratio %s vs filename %s" % (
+                    "/".join(sorted("%d-in-%d" % p for p in c_ratios)),
+                    "/".join(sorted("%d-in-%d" % p for p in f_ratios))))
+        for key in sorted(set(c_keyed) & set(f_keyed)):
+            if not (c_keyed[key] & f_keyed[key]):
+                mismatches.append(
+                    "'%s' %s vs filename %s" % (
+                        key,
+                        "/".join(str(v) for v in sorted(c_keyed[key])),
+                        "/".join(str(v) for v in sorted(f_keyed[key]))))
+        if mismatches:
+            lint.warn(
+                f"filename-parameter: {d.get('Claim ID', '?')} (blocked) — "
+                f"claim-stated parameter disagrees with a same-shape token "
+                f"in a cited filename ({'; '.join(mismatches)}); reconcile "
+                f"per the blocked-row escalation rule (registers.md)"
+            )
+
+
 def check_output_rows(lint, path, rows, final=False):
     statuses = OUTPUT_STATUS_FINAL if final else OUTPUT_STATUS_FIRST
     for r in rows:
@@ -1518,6 +1667,9 @@ def stage_b8(lint, audit, manifest):
             # U1 advisory: b8 also lints a FINAL claims register. Read under the
             # staging header order (extra `*Original` cols) so field lookup aligns.
             check_adjudication_advisory(lint, staging / f, st_rows, list(st_headers))
+            # U5 advisory: filename-parameter reconciliation on blocked rows
+            # (attaches at finalize per KTD-4).
+            check_filename_parameter_advisory(lint, staging / f, st_rows, list(st_headers))
         if any(h in ("Notes", "Notes Original") for h in st_headers):
             lint.fail(f"{staging / f}: Notes columns are forbidden")
         for new_col, orig_col in REWRITE_PAIRS[f]:

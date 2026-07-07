@@ -262,6 +262,25 @@ Column meanings:
 three independently checkable facts gets up to three rows; several sentences restating one fact
 get one row.
 
+**Corollary — parameter-bearing steps of an enumerated procedure.** This is a clarification of
+the rule above, not a new rule: a step that states a checkable parameter is independently
+checkable, so it already should have been its own row. When the paper enumerates a procedure
+("first ..., second ..., third ..."), every step that states a numeric or categorical
+parameter — a threshold, a sampling ratio, a resolution, a window, a unit, an enumerated set —
+gets its own claim row; a further row may cover the procedure's overall description, but it
+never absorbs the steps. A single row for the whole procedure loses each step-level
+contradiction: the recheck adjudicates rows, and a parameter that never became a row is never
+adjudicated.
+
+WORKED EXAMPLE. An appendix describes a data-construction procedure in four steps: "(1) we grid
+the monitor readings at a 10-km resolution; (2) we drop monitors reporting fewer than 300 valid
+days; (3) we retain a one-in-four subsample of grid cells for the placebo panel; (4) we
+winsorize readings at the 99th percentile." That is four claim rows — one per parameter-bearing
+step (the 10-km resolution, the 300-valid-day floor, the one-in-four subsample, the 99th
+percentile) — not one row saying "the appendix describes the gridding procedure". Each
+parameter then reconciles independently against the code and the shipped filenames (a shipped
+`grid_cells_1in8.csv` contradicts step 3 even when steps 1, 2, and 4 all check out).
+
 ### Claims status vocabulary
 
 | Status | Meaning |

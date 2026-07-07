@@ -289,6 +289,139 @@ def test_anchoring_scoped_to_confirmed_closes_only(tmp_path):
     assert not warning_lines(res, "anchoring"), res.stdout
 
 
+# ------------- U5 filename-parameter advisory (b8 finalize, blocked rows)
+#
+# KTD-4: the reconciliation lint is advisory, blocked-rows-only, and
+# pattern-shaped, never magnitude-shaped — it compares only tokens of the
+# SAME syntactic shape (a ratio composite against a ratio composite, a
+# keyed parameter composite against one sharing the same alpha key). The
+# crude any-numeric-mismatch version is explicitly rejected: filenames carry
+# incidental years, versions, and resolutions, and claim text is dense with
+# estimates and sample sizes. It attaches at finalize (``--stage b8``),
+# alongside the U1 adjudication advisory; U4's anchoring advisory sits at
+# b5 — this one reads the final claims register. Advisory only: WARNING
+# lines carrying the literal token ``filename-parameter``, exit status
+# never changed. Fixture domain: a customs-records / pollution-grid package
+# (fresh, non-Floods surface).
+
+
+def _fp_b8(tmp_path, *, claim_text, source, status="blocked",
+           blocked_check=""):
+    """A b8 boundary with one claims row for the filename-parameter check."""
+    row = rb.claims_row("C-0101", status=status, text=claim_text,
+                        source=source, blocked_check=blocked_check)
+    a = rb.make_b8(tmp_path, claims_rows=[row])
+    return a
+
+
+def test_fp_builder_boundary_is_green(tmp_path):
+    """Sanity: the make_b8 boundary itself lints green (so any warning the
+    U5 scenarios observe comes from the advisory, not builder breakage)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text="the sample contains 4,832 registered importers",
+        source="`data/importers_panel.csv`",
+        status="confirmed",
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "LINT PASS [b8]" in res.stdout
+
+
+def test_fp_blocked_ratio_mismatch_warns(tmp_path):
+    """A blocked row whose claim states a ratio parameter (spelled out) and
+    whose cited filename encodes a DIFFERENT ratio of the same shape draws
+    exactly one filename-parameter warning naming the row — and the warning
+    is advisory (exit status unchanged)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_sample_1in20.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "filename-parameter")
+    assert len(warns) == 1, res.stdout
+    assert "C-0101" in warns[0], res.stdout
+
+
+def test_fp_blocked_ratio_agreement_is_silent(tmp_path):
+    """A blocked row whose claim and cited filename state the SAME ratio
+    (spelled-out words normalized to digits before comparison) draws no
+    warning — this also pins the number-word normalization."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one in twenty subsample "
+                    "of the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_sample_1in20.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_incidental_year_and_version_are_silent(tmp_path):
+    """GUARDS THE MAIN FALSE-POSITIVE PATH (KTD-4). A blocked row whose
+    cited filename carries an incidental year and a version token unrelated
+    to any claimed parameter draws no warning: a bare year has no syntactic
+    key to compare, and a `v3` composite has no `v`-keyed counterpart in the
+    claim — tokens of different shapes are never compared."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_2019_v3.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_2019_v3.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_non_blocked_row_is_never_examined(tmp_path):
+    """A NON-blocked row is out of scope even when its claim and cited
+    filename carry mismatching same-shape tokens (the sweep's reading-side
+    rule handles open rows; the lint is a blocked-row tripwire only)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        status="unclear",
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_keyed_composite_mismatch_warns(tmp_path):
+    """A blocked row whose claim states a keyed parameter composite (`10km`)
+    and whose cited filename encodes a different value under the SAME alpha
+    key (`25km`) warns; the shared key is what licenses the comparison."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("monitor readings are gridded at a 10km resolution "
+                    "before aggregation"),
+        source="`data/pollution_grid_25km.csv`",
+        blocked_check=("the gridding script is not shipped; the shipped "
+                       "filename `data/pollution_grid_25km.csv` remains "
+                       "visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "filename-parameter")
+    assert len(warns) == 1 and "C-0101" in warns[0], res.stdout
+
+
 def test_anchoring_silent_without_claims_register(tmp_path):
     """No canonical claims register in the audit dir (as in these synthetic
     boundaries): the advisory skips silently — it never fails the stage and

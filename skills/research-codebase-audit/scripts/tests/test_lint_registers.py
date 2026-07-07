@@ -181,3 +181,124 @@ def test_conventions_artifact_wrong_header_warns(tmp_path):
     res = rb.lint(a, "b4-code")
     assert any("expected header" in ln for ln in warning_lines(res, "conventions.md")), \
         res.stdout
+
+
+# --------------------- U4 identifier-anchoring advisory (b5-claims ledger)
+#
+# KTD-3: the advisory reads the recheck ledger's `Evidence Checked` column,
+# never the claims register's own row (a confirmed register row has no
+# evidence column — comparing identifiers against it would fire on nearly
+# every clean row). The claim's *text* comes from the canonical claims
+# register at ``audit/claims_register.md``, keyed by the ledger row's ID.
+# Advisory only: one WARNING per flagged row, exit status never changed.
+# Fixture domain: an education-panel package (fresh, non-Floods surface).
+
+
+def _anchoring_b5(tmp_path, *, claim_text, evidence,
+                  verdict="not_substantiated",
+                  change="set Status=confirmed",
+                  note="", with_register=True):
+    """A b5-claims boundary: one rechecked claim row closing `confirmed`."""
+    row = rb.ledger_row(
+        "C-0101", status="confirmed", severity="", evidence=evidence,
+        verdict=verdict, change=change, impact="none", note=note)
+    a, shard = rb.make_b5(tmp_path, "claims", ledger_rows=[row])
+    if with_register:
+        a.write_register(
+            "claims_register.md", rb.CLAIMS_COLS,
+            [rb.claims_row("C-0101", text=claim_text)],
+            title="Claims register")
+    return a, shard
+
+
+def test_anchoring_named_identifier_in_evidence_is_silent(tmp_path):
+    """A confirmed close whose evidence names the claimed identifier draws
+    no anchoring warning."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the score index `test_score_std` is standardized to "
+                    "mean zero within each cohort"),
+        evidence=("`code/build_scores.R:41-44` standardizes test_score_std "
+                  "within cohort; recomputed mean is 0 at shown precision"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout
+
+
+def test_anchoring_named_identifier_absent_warns(tmp_path):
+    """A confirmed close whose evidence never mentions the claimed identifier
+    draws exactly one anchoring warning naming the row — and the warning is
+    advisory (exit status unchanged)."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence=("verified the drop filter exists at `code/build_panel.R:88` "
+                  "and covers the tenure block"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    # advisory: never changes the stage exit status
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "anchoring")
+    assert len(warns) == 1, res.stdout
+    assert "C-0101" in warns[0], res.stdout
+    assert "teacher_tenure_yrs" in warns[0], res.stdout
+
+
+def test_anchoring_line_number_only_evidence_warns(tmp_path):
+    """PINNED DECISION — the main false-positive path.
+
+    Evidence that cites only a file:line range without repeating the named
+    identifier WARNS. Rationale: the evidence-discipline rule already
+    requires exact anchors, and the anchoring norm requires each named
+    identifier located *at its claimed role* — an anchor that names the
+    identifier is the compliant form, so a line-number-only citation is
+    exactly the case a human should re-read. Consistent with the U1 advisory
+    philosophy: the lexical proxy over-matches by design; advisory noise is
+    acceptable, a silent miss is not (the warning never fails the stage).
+    """
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence=("`code/build_panel.R:88-93` applies the described drop "
+                  "filter; output row count matches the paper"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "anchoring")
+    assert len(warns) == 1 and "C-0101" in warns[0], res.stdout
+
+
+def test_anchoring_scoped_to_confirmed_closes_only(tmp_path):
+    """A row NOT closing `confirmed` (here `confirmation_needed`) is out of
+    scope even when its evidence omits the named identifier — this also pins
+    that the 'confirmed' detector does not fire on 'confirmation_needed'."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence="static read of `code/build_panel.R:88` could not decide",
+        verdict="confirmation_needed",
+        change="set Status=confirmation_needed",
+        note="cannot decide statically; needs the shipped panel",
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout
+
+
+def test_anchoring_silent_without_claims_register(tmp_path):
+    """No canonical claims register in the audit dir (as in these synthetic
+    boundaries): the advisory skips silently — it never fails the stage and
+    never crashes the linter."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text="unused",
+        evidence="verified the drop filter exists at `code/build_panel.R:88`",
+        with_register=False,
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout

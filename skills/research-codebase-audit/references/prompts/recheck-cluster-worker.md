@@ -68,6 +68,17 @@ escalation / cheap-check caution default) and stating why it does not apply here
 justification, an unexplained numerical disagreement defaults to `inconsistent`; "probably
 rounding" is not a clearance (see the caution default in `audit/audit_readme.md`).
 
+**Identifier anchoring (claims stream — before any verdict that closes a row `confirmed`).**
+Mechanically: (1) extract every identifier the claim's text names — variables, files,
+parameters; (2) for each extracted identifier, confirm the evidence anchors it at the role the
+claim assigns it — a code line where *that* identifier receives the described treatment — and
+cite the anchor in `Evidence Checked`, naming the identifier; (3) only then may the row close
+`confirmed`. Verifying that the described operation exists and covers *some* variables anchors
+the operation, not the claim. A named identifier you cannot anchor keeps the row out of
+`confirmed`: if the code visibly applies the behavior to a different identifier, that is a
+paper-vs-code discrepancy (`substantiated` → `inconsistent`); otherwise return
+`confirmation_needed` (identifier-anchoring rule, `audit/audit_readme.md`).
+
 **Blocked-visible rule (claims stream).** Before returning `blocked` on a claims row, run the
 visible-material check from `audit/audit_readme.md` — filenames, README metadata, column headers,
 file shapes, and shipped artifacts. If any visible material contradicts the claim, the row is not

@@ -344,6 +344,93 @@ def check_adjudication_advisory(lint, path, rows, cols=None):
                 break
 
 
+# --- U4 advisory identifier-anchoring heuristic (KTD-3: advisory, ledger-only)
+#
+# A recheck ledger row that closes a claim `confirmed` while the claim names a
+# specific identifier (a variable, file, or parameter) that its own
+# `Evidence Checked` never mentions is a likely anchoring gap: the anchoring
+# rule in registers.md requires each named identifier located in the code at
+# the role the claim assigns it — verifying that the operation exists and
+# covers SOME variables anchors the operation, not the claim. Per KTD-3 the
+# check reads the LEDGER's `Evidence Checked` column, never the claims
+# register's own row (a confirmed register row has no evidence column, so
+# comparing against it would fire on nearly every clean row); the claims
+# register is read only to fetch each ledger ID's claim text. Like the U1
+# adjudication advisory, this is a lexical proxy that both over- and
+# under-matches, so it is a WARNING only — exit status never changes. Pinned
+# false-positive path (see test_lint_registers.py): evidence citing a
+# file:line anchor without repeating the identifier's name still warns —
+# advisory noise is acceptable, a silent miss is not. Coverage limit, stated
+# honestly: only rechecked rows have a ledger, so this is a tripwire over the
+# recheck sample, not a guarantee over every confirmed claim.
+#
+# Identifier extraction — narrowly code-shaped tokens in the claim text:
+#   * backtick-quoted tokens without internal whitespace (`test_score_std`);
+#   * bare snake_case tokens (an interior underscore);
+#   * bare dotted filenames with a code/data extension (build_panel.R).
+_ANCHOR_EXTENSIONS = (
+    r"do|ado|py|r|jl|m|sas|sps|csv|dta|tsv|txt|tex|md|json|ya?ml|xlsx?|rds|parquet"
+)
+_ANCHOR_IDENTIFIER_RE = re.compile(
+    r"`([^`\s]+)`"                                    # backticked, no spaces
+    r"|\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\b"  # snake_case
+    r"|\b([\w./-]+\.(?:%s))\b" % _ANCHOR_EXTENSIONS,  # filename.ext
+    re.IGNORECASE,
+)
+_ANCHOR_CONFIRMED_RE = re.compile(r"\bconfirmed\b", re.IGNORECASE)
+
+
+def claim_named_identifiers(text):
+    """Return the set of code-like identifiers *text* names (see regex above)."""
+    found = set()
+    for m in _ANCHOR_IDENTIFIER_RE.finditer(text or ""):
+        found.add(next(g for g in m.groups() if g))
+    return found
+
+
+def check_anchoring_advisory(lint, audit, ledger_rows):
+    """Advisory-only scan of a b5-claims recheck ledger: flag every row whose
+    `Proposed Register Change` closes the claim `confirmed` while the claim's
+    text names an identifier absent from the row's `Evidence Checked`. One
+    WARNING per flagged row; never a hard fail. Skips silently when the
+    canonical claims register is absent or unparsable (advisory robustness)."""
+    reg_path = audit / "claims_register.md"
+    if not reg_path.is_file():
+        return
+    try:
+        reg_text = reg_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    claim_text_by_id = {}
+    for headers, rows, _ in parse_tables(reg_text):
+        if headers == CLAIMS_COLS:
+            for r in rows:
+                d = dict(zip(CLAIMS_COLS, r))
+                claim_text_by_id[d["Claim ID"]] = d["Claim Text"]
+            break
+    if not claim_text_by_id:
+        return
+    for r in ledger_rows:
+        d = dict(zip(LEDGER_COLS, r))
+        rid = d["ID"]
+        # only a close to `confirmed` is in scope (the word-boundary regex
+        # deliberately does not match `confirmation_needed`).
+        if not _ANCHOR_CONFIRMED_RE.search(d["Proposed Register Change"] or ""):
+            continue
+        evidence = (d["Evidence Checked"] or "").lower()
+        missing = sorted(
+            tok for tok in claim_named_identifiers(claim_text_by_id.get(rid, ""))
+            if tok.lower() not in evidence
+        )
+        if missing:
+            lint.warn(
+                f"anchoring: {rid} closes confirmed but the claim names "
+                f"identifier(s) absent from 'Evidence Checked': "
+                f"{', '.join('`%s`' % t for t in missing)}; verify each is "
+                f"anchored at its claimed role (anchoring rule, registers.md)"
+            )
+
+
 def check_output_rows(lint, path, rows, final=False):
     statuses = OUTPUT_STATUS_FINAL if final else OUTPUT_STATUS_FIRST
     for r in rows:
@@ -1167,6 +1254,9 @@ def stage_b5(lint, audit, stream, shard, manifest):
                 lint.fail(f"{shard}: {d['ID']} verdict '{d['Verdict']}' but neither "
                           f"'Proposed Register Change' nor 'Proposed Note' records a blocker")
     check_unique(lint, shard, seen, "ledger ID")
+    if stream == "claims":
+        # U4 advisory: identifier anchoring on rows closing `confirmed`.
+        check_anchoring_advisory(lint, audit, rows)
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")

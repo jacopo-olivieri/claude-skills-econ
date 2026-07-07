@@ -266,7 +266,7 @@ get one row.
 
 | Status | Meaning |
 | --- | --- |
-| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** |
+| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** **Identifier-anchoring rule: a claim that names specific identifiers — variables, files, parameters — cannot close `confirmed` until each named identifier has been located in the code at the role the claim assigns it, anchored to a code line showing that identifier receiving the described treatment. Verifying that the described operation exists and covers *some* variables anchors the operation, not the claim. A named identifier that cannot be anchored keeps the row out of `confirmed`: escalate per the evidence — `inconsistent` if the code visibly applies the behavior to a different identifier, otherwise `confirmation_needed`.** |
 | `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
 | `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
@@ -302,6 +302,13 @@ package states a defined rounding or precision convention that the gap falls wit
 marks the figure as explicitly illustrative (a stylized or round-number example, not a computed
 result). Absent one of these, an unexplained numerical disagreement defaults to `inconsistent`
 (both quantities visible) or `confirmation_needed` (the reconciling value is only in absent data).
+
+**Identifier anchoring on completion.** Completing a cheap check closes the row `confirmed` only
+under the identifier-anchoring rule above: when the claim names specific variables, files, or
+parameters, the completed check must anchor each named identifier to a code line where *that*
+identifier receives the described treatment. Comparing the documented list against *a* coded
+list, or finding *a* constant of the right kind, anchors the operation — the row closes
+`confirmed` only if the anchored identifiers are the ones the claim names.
 
 These three are all **static**, so any worker completes them — no execution needed. A check that
 would instead be settled by a small unit test or a simulated run of error-prone code is completed

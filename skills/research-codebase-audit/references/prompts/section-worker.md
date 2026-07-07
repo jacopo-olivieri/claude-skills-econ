@@ -45,6 +45,12 @@ Rules:
 - Link claims to outputs (`Output IDs` / `Claim IDs`) within your shard; both directions.
 - Think carefully about whether the code actually supports each claim before setting
   `Status` — identifying the right script is mapping, not confirmation.
+- **Identifier anchoring**: a claim that names specific variables, files, or parameters closes
+  `confirmed` only when each named identifier is located in the code at the role the claim
+  assigns it — a code line where *that* identifier receives the described treatment. Verifying
+  the operation exists and covers *some* variables anchors the operation, not the claim; a named
+  identifier you cannot anchor keeps the row out of `confirmed` (identifier-anchoring rule,
+  `audit/audit_readme.md`).
 - **Complete cheap checks; do not park them at `mapped`** (see the cheap-check-completion rule in
   `audit/audit_readme.md`). When a claim reduces to comparing an enumerable list, a single
   constant, or a closed-form arithmetic implication against located code, settle it now and set

@@ -172,11 +172,26 @@ def check_package(root):
 
     Returns {"checked": [(relpath, format, n_problems)],
              "findings": [finding dict], "warnings": [str]}.
+
+    The audited package is UNTRUSTED. The reader stays strictly inside the
+    package boundary: a candidate manifest that is a symlink, or whose real
+    path resolves outside the package root, is recorded as a warning and never
+    read — otherwise a hostile package could ship ``requirements.txt`` as a
+    symlink to ``~/.ssh/id_rsa`` and have its content echoed into the artifact.
     """
     root = Path(root)
+    root_rp = root.resolve()
     checked, findings, warnings = [], [], []
     toml_warned = False
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def _on_walk_error(exc):
+        # os.walk swallows errors (e.g. an unreadable directory) by default,
+        # silently skipping the subtree — which would let a manifest vanish
+        # from the artifact. Surface it as a warning instead.
+        name = getattr(exc, "filename", None) or exc
+        warnings.append(f"could not read directory {name}: {exc}")
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
             fmt = classify(name)
@@ -184,6 +199,24 @@ def check_package(root):
                 continue
             path = Path(dirpath) / name
             rel = path.relative_to(root).as_posix()
+            # Boundary guard: never read a symlink or a file whose real path
+            # escapes the package root (see docstring). Record the gap so the
+            # coverage hole is visible, but emit no content as a finding.
+            if path.is_symlink():
+                warnings.append(
+                    f"skipped {rel}: it is a symlink and was not read "
+                    f"(untrusted package — potential path-escape)")
+                continue
+            try:
+                real = path.resolve()
+            except OSError as exc:
+                warnings.append(f"could not resolve {rel}: {exc}")
+                continue
+            if not real.is_relative_to(root_rp):
+                warnings.append(
+                    f"skipped {rel}: its real path resolves outside the "
+                    f"package root and was not read (untrusted package)")
+                continue
             if fmt == "toml" and tomllib is None:
                 if not toml_warned:
                     warnings.append(

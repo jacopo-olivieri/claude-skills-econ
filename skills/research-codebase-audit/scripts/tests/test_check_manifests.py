@@ -5,6 +5,10 @@ way their consuming tools would and writes an artifact of candidate findings
 (``audit/_run/manifest_check.md``). It never hard-fails on package content.
 """
 
+import os
+
+import pytest
+
 import regbuild as rb
 
 cm = rb.load_script("check_manifests")
@@ -163,3 +167,97 @@ def test_explicit_output_path_overrides_audit_dir(tmp_path):
     res = rb.run_script("check_manifests.py", root, "-o", out)
     assert res.returncode == 0, res.stdout + res.stderr
     assert out.is_file()
+
+
+# --------------------------------------------------------------- coverage: walk
+
+
+def test_manifest_under_skip_dir_is_not_checked(tmp_path):
+    # A recognized manifest buried under a SKIP_DIRS directory (.git, node_modules)
+    # must be pruned from the walk: it never appears in "Manifests checked".
+    res, art = run(tmp_path, {
+        ".git/requirements.txt": "package 1.2.3\n",
+        "node_modules/foo/requirements.txt": "another 4.5.6\n",
+        "requirements.txt": "numpy==1.0\n",
+    })
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "`requirements.txt`" in art  # the top-level one is checked
+    assert ".git/requirements.txt" not in art
+    assert "node_modules" not in art
+    # the buried offending lines never surface
+    assert "package 1.2.3" not in art
+    assert "another 4.5.6" not in art
+
+
+def test_non_utf8_manifest_yields_encoding_finding_not_crash(tmp_path):
+    # Raw non-UTF-8 bytes in a recognized manifest: the consuming tool would
+    # reject it, so the script emits a candidate finding — and never crashes.
+    root = tmp_path / "pkg"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").write_bytes(b"numpy==1.0\n\xff\xfe not utf-8\n")
+    audit = tmp_path / "audit"
+    res = rb.run_script("check_manifests.py", root, "--audit-dir", audit)
+    art = (audit / "_run" / "manifest_check.md").read_text(encoding="utf-8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "not valid UTF-8" in art
+    assert cm.NO_FINDINGS_LINE not in art
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="chmod-000 read guard does not apply to root")
+def test_unreadable_manifest_yields_warning_not_exception(tmp_path):
+    # An OSError on read (unreadable file) must degrade to a warning, mirroring
+    # test_guarded_toml_import_unavailable — never an exception, never a finding.
+    root = make_pkg(tmp_path, {"requirements.txt": "numpy==1.0\n"})
+    target = root / "requirements.txt"
+    os.chmod(target, 0o000)
+    try:
+        results = cm.check_package(root)  # must not raise
+    finally:
+        os.chmod(target, 0o644)
+    assert any("could not read requirements.txt" in w
+               for w in results["warnings"])
+    assert results["findings"] == []
+
+
+# --------------------------------------------------------------- security: boundary
+
+
+def test_symlink_manifest_is_not_read_and_is_warned(tmp_path):
+    # Finding 2: a hostile package ships requirements.txt as a symlink to a file
+    # outside the package (a stand-in for ~/.ssh/id_rsa). Its content must NOT
+    # appear in the artifact, and the skip must be surfaced as a warning.
+    secret = tmp_path / "secret_outside.txt"
+    secret.write_text("SUPERSECRET_PRIVATE_KEY_MATERIAL\n", encoding="utf-8")
+    root = tmp_path / "pkg"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").symlink_to(secret)
+    audit = tmp_path / "audit"
+    res = rb.run_script("check_manifests.py", root, "--audit-dir", audit)
+    art = (audit / "_run" / "manifest_check.md").read_text(encoding="utf-8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "SUPERSECRET_PRIVATE_KEY_MATERIAL" not in art
+    assert "## Warnings" in art
+    assert "requirements.txt" in art  # named in the warning
+    assert "symlink" in art
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="chmod-000 directory guard does not apply to root")
+def test_unreadable_directory_is_warned_not_silently_skipped(tmp_path):
+    # Finding 6: os.walk silently skips a directory it cannot enter, so a
+    # manifest that lives only under it would vanish from the artifact. The
+    # onerror handler must record a Warnings entry instead.
+    root = make_pkg(tmp_path, {"locked/requirements.txt": "package 1.2.3\n"})
+    locked = root / "locked"
+    os.chmod(locked, 0o000)
+    try:
+        res, art = None, None
+        audit = tmp_path / "audit"
+        res = rb.run_script("check_manifests.py", root, "--audit-dir", audit)
+        art = (audit / "_run" / "manifest_check.md").read_text(encoding="utf-8")
+    finally:
+        os.chmod(locked, 0o755)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "## Warnings" in art
+    assert "could not read directory" in art

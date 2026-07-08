@@ -436,6 +436,182 @@ def test_fp_keyed_composite_mismatch_warns(tmp_path):
     assert len(warns) == 1 and "C-0101" in warns[0], res.stdout
 
 
+# --------------- SC-01 overlap-conflict advisory (b7) — line-range parser
+#
+# Plan 2026-07-07-001 (SC-01), U5/U6: a deterministic advisory at b7 that
+# warns when a confirmed claim's cited code location overlaps a confirmed
+# error's cited Code Location without the pair being linked and listed as a
+# status conflict. Ranged-only matching: a bare file citation contributes no
+# range and never overlaps (whole-file coverage is the b7 worker rule's job).
+# Advisory only: WARNING lines carrying the literal token ``overlap-conflict``,
+# exit status never changed.
+
+_lm = rb._lint_mod
+
+
+def test_line_ranges_colon_form():
+    assert _lm.code_line_ranges("`do/build_panel.do:21-23`") == [
+        ("do/build_panel.do", (21, 23))]
+
+
+def test_line_ranges_space_l_form():
+    assert _lm.code_line_ranges("do/build_panel.do L21-23") == [
+        ("do/build_panel.do", (21, 23))]
+
+
+def test_line_ranges_multi_range_and_en_dash():
+    assert _lm.code_line_ranges("`do/analysis.do:11,16–20`") == [
+        ("do/analysis.do", (11, 11)), ("do/analysis.do", (16, 20))]
+
+
+def test_line_ranges_bare_file_contributes_none():
+    """Ranged-only matching (KTD-4): no line spec -> no range, never overlaps."""
+    assert _lm.code_line_ranges("`README.md`") == []
+    assert _lm.code_line_ranges("`do/build_panel.do`; see also the README") == []
+
+
+def test_line_ranges_single_line_and_reversed():
+    assert _lm.code_line_ranges("do/x.do:5") == [("do/x.do", (5, 5))]
+    # reversed bounds are normalized, not treated as non-overlapping
+    assert _lm.code_line_ranges("do/x.do:9-7") == [("do/x.do", (7, 9))]
+
+
+def test_line_ranges_multiple_files_in_one_cell():
+    assert _lm.code_line_ranges("`do/a.do:1-2`; `do/b.do:4`") == [
+        ("do/a.do", (1, 2)), ("do/b.do", (4, 4))]
+
+
+def test_line_ranges_prose_after_colon_is_not_a_citation():
+    """A colon followed by prose (space before the number) is not a line spec;
+    treating it as one would break ranged-only semantics on bare citations."""
+    assert _lm.code_line_ranges("`do/clean.do`: 3 variables are dropped") == []
+    assert _lm.code_line_ranges("do/clean.do: 3 variables are dropped") == []
+
+
+def test_line_ranges_backticked_path_with_lines_outside():
+    """Worker drift form: backticks around the path only, lines outside."""
+    assert _lm.code_line_ranges("`do/x.do`:21-23") == [("do/x.do", (21, 23))]
+
+
+# ------------- SC-01 overlap-conflict advisory — pure pair computation
+
+
+def _oc(claim_source, err_location, *, claim_status="confirmed",
+        err_status="confirmed"):
+    claims = [rb.claims_row("C-0014", source=claim_source, status=claim_status)]
+    errors = [rb.error_row("E-0151", location=err_location, status=err_status)]
+    return _lm.overlapping_confirmed_pairs(claims, errors)
+
+
+def test_overlap_pairs_positive_c0014_e0151():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`") == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_same_file_disjoint_ranges_silent():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:30-35`") == []
+
+
+def test_overlap_pairs_distinct_files_silent():
+    assert _oc("`do/build_panel.do:21-23`", "`do/merge.do:21-23`") == []
+
+
+def test_overlap_pairs_bare_file_never_matches():
+    assert _oc("`do/build_panel.do`", "`do/build_panel.do:20-23`") == []
+
+
+def test_overlap_pairs_requires_confirmed_on_both_sides():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`",
+               claim_status="inconsistent") == []
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`",
+               err_status="candidate") == []
+
+
+def test_overlap_pairs_read_error_code_location_not_source():
+    """The error side parses the ranged Code Location column; the error
+    Code/Data Source cell (a bare script path) must not silence the pair."""
+    claims = [rb.claims_row("C-0014", source="`py/make_figures.py:4-6`")]
+    errors = [rb.error_row("E-0151")]  # default: source bare, location `:5`
+    assert _lm.overlapping_confirmed_pairs(claims, errors) == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_cross_citation_forms():
+    assert _oc("do/build_panel.do L21-23", "`do/build_panel.do:23`") == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_skip_example_rows():
+    claims = [rb.claims_row("C-0000", source="`do/x.do:1-2`")]
+    errors = [rb.error_row("E-0151", location="`do/x.do:1-2`")]
+    assert _lm.overlapping_confirmed_pairs(claims, errors) == []
+
+
+# ------------- SC-01 overlap-conflict advisory — b7 boundary behavior
+
+
+def _b7_conflict_rows(*, linked=False):
+    claims = [rb.claims_row(
+        "C-0014", source="`do/build_panel.do:21-23`",
+        related="E-0151" if linked else "")]
+    errors = [rb.error_row(
+        "E-0151", etype="aggregation_or_unit_error",
+        source="`do/build_panel.do`",
+        location="`do/build_panel.do:20-23`",
+        related="C-0014" if linked else "")]
+    return claims, errors
+
+
+def test_b7_unlinked_overlap_warns_and_stays_green(tmp_path):
+    claims, errors = _b7_conflict_rows()
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "overlap-conflict")
+    assert len(warns) == 1, res.stdout
+    assert "C-0014" in warns[0] and "E-0151" in warns[0], res.stdout
+
+
+def test_b7_linked_and_listed_pair_not_double_reported(tmp_path):
+    """A confirmed pair that is linked and listed under '## Status conflicts'
+    is covered by the existing hard check; the advisory must not re-report."""
+    claims, errors = _b7_conflict_rows(linked=True)
+    summary = (
+        "# Cross-link summary\n\n## Status conflicts\n\n"
+        "C-0014 <-> E-0151 — confirmed claim contradicted by confirmed error\n\n"
+        "## Escalated mapped claims\n\nnone\n\n"
+        "## Severity divergences\n\nnone\n"
+    )
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors,
+                   summary=summary)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "overlap-conflict"), res.stdout
+
+
+def test_b7_advisory_prints_even_when_summary_missing(tmp_path):
+    """The conductor's pre-dispatch flow (pipeline-finalize b7 step 2) runs the
+    b7 lint before the cross-link summary exists: the stage FAILS on the
+    missing summary but the overlap-conflict WARNING lines still print — they
+    are the pair list passed to the cross-linker."""
+    claims, errors = _b7_conflict_rows()
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    (a.audit / "register_cross_link_summary.md").unlink()
+    res = rb.lint(a, "b7")
+    assert res.returncode == 1, res.stdout + res.stderr
+    warns = warning_lines(res, "overlap-conflict")
+    assert len(warns) == 1 and "C-0014" in warns[0], res.stdout
+
+
+def test_b7_non_overlapping_citations_silent(tmp_path):
+    claims = [rb.claims_row("C-0014", source="`do/build_panel.do:21-23`")]
+    errors = [rb.error_row("E-0151", location="`do/build_panel.do:30-35`")]
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "overlap-conflict"), res.stdout
+
+
 def test_anchoring_silent_without_claims_register(tmp_path):
     """No canonical claims register in the audit dir (as in these synthetic
     boundaries): the advisory skips silently — it never fails the stage and

@@ -141,10 +141,18 @@ SIGNATURES = {
 # family): inconsistent at qualifying severity OR blocked with a Blocked
 # Check that itself records the contradiction (severity floor waived).
 BLOCKED_VISIBLE_PLANTS = {"P-14", "P-20"}
+# Each decoy is (site_terms, qualifier_terms). A row trips the decoy when it
+# matches a site term AND, if qualifier_terms is set, also a qualifier term.
+# D-02's qualifier restricts it to subset-omission complaints — the planted
+# bait — so an unrelated true observation inside the signposted block (e.g.
+# a zero-division guard) is scored on its own merits, not condemned by site.
 DECOYS = {
-    "D-01": ["placebo", "fig_placebo"],
-    "D-02": ["farm_income", "farm-income", "farm income", "farm_components",
-             "farm components", "farm_share", "farm share"],
+    "D-01": (["placebo", "fig_placebo"], None),
+    "D-02": (["farm_income", "farm-income", "farm income", "farm_components",
+              "farm components", "farm_share", "farm share"],
+             ["omit", "subset", "diverg", "four-component", "four component",
+              "four income", "remittance", "incomplete", "excludes",
+              "missing component"]),
 }
 # --- artifact-layer constants (U9) ----------------------------------------
 # the U2 plant: the malformed manifest the parser artifact must name
@@ -316,13 +324,15 @@ def score_blocked_visible(item, tagged_rows):
     return "MISS", "no row matches the mechanism signature"
 
 
-def check_decoy(terms, tagged_rows, summary_text):
+def check_decoy(terms, quals, tagged_rows, summary_text):
+    def trips(text):
+        return any(t in text for t in terms) and (
+            quals is None or any(q in text for q in quals))
     found = []
     for kind, id_col, d in tagged_rows:
-        text = row_text(d)
-        if any(t in text for t in terms):
+        if trips(row_text(d)):
             found.append(describe(kind, id_col, d))
-    if summary_text and any(t in summary_text.lower() for t in terms):
+    if summary_text and trips(summary_text.lower()):
         found.append("register_cross_link_summary.md")
     return found
 
@@ -573,8 +583,8 @@ def main() -> int:
         print(f"{item['id']}: {verdict}{tag} — {note}")
 
     print()
-    for did, terms in DECOYS.items():
-        found = check_decoy(terms, tagged_rows, summary_text)
+    for did, (terms, quals) in DECOYS.items():
+        found = check_decoy(terms, quals, tagged_rows, summary_text)
         if found:
             print(f"{did} decoy: PRESENT — {'; '.join(found)}")
             red_reasons.append(f"{did} decoy present")

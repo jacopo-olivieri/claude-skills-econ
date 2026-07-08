@@ -22,7 +22,16 @@ canon exists.
    every link pairing a `confirmed` claim with a `confirmed` code error, a
    `## Escalated mapped claims` section for every link pairing a `confirmed` code error with a
    `mapped` claim it contradicts, and a `## Severity divergences` section for every link whose
-   two rows carry filled, differing severities.
+   two rows carry filled, differing severities. Before dispatch, compute the
+   confirmed-claim↔confirmed-error code-location overlaps and pass the pair list in the
+   dispatch as the floor of the worker's step-2 overlap enumeration; the worker adjudicates
+   every overlap candidate individually, and no sibling's judgment call clears another row
+   citing the same lines. Obtain the list by running `lint_registers.py --stage b7` right
+   after the step-1 snapshot and reading its `overlap-conflict` WARNING lines — at that
+   point the cross-link summary does not exist yet, so the stage prints the warnings and
+   then FAILS on the missing summary; that pre-dispatch failure is expected, and only the
+   WARNING lines are consumed. The floor is ranged-only (a bare-file citation never appears
+   in it); whole-file overlap coverage is the worker's own addition per its step-2 rule.
 3. `lint_registers.py --stage b7`: non-link columns byte-identical to snapshot; every link
    resolves both ways (C-x lists E-y ⟺ E-y lists C-x); summary exists; every
    confirmed-claim↔confirmed-error link is listed under `## Status conflicts`; every

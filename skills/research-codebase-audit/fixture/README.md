@@ -50,7 +50,12 @@ see this folder's other files.
 
 1. Copy `planted/` to a scratch location (the audit writes an `audit/` folder into it).
 2. Invoke `research-codebase-audit` on that copy: mode = full replication audit,
-   ladder level 1 (static), no exclusions.
+   **review-ladder level 2** (static inspection plus parser/runtime checks, unit tests
+   with simulated data, and small targeted reruns where a check needs them, each bounded
+   by a 15-minute per-check compute budget), review depth `standard`, nothing off-limits.
+   Every scored run of record has used this configuration; hold it fixed across runs so the
+   run-to-run comparison in the Evaluation protocol below stays valid — a run at a different
+   ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
    - **Recall**: all 20 `must_find` mechanisms present as issue-flagged or confirmed rows

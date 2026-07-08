@@ -376,6 +376,20 @@ def test_intentional_subset_decoy_turns_gate_red(tmp_path):
     assert "GATE RED" in res.stdout
 
 
+def test_non_omission_finding_in_subset_block_is_not_decoy(tmp_path):
+    """D-02 narrowed 2026-07-08: only subset-omission complaints trip the
+    decoy. A distinct true observation inside the signposted block (here a
+    zero-income division guard) is scored on its own merits."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0099", etype="aggregation_or_unit_error", severity="1",
+        desc=("farm_share divides by the raw income column with no guard "
+              "against income == 0, yielding inf for a zero-income row."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-02 decoy: ABSENT" in res.stdout
+
+
 def test_decoy_in_summary_turns_gate_red(tmp_path):
     summary = CLEAN_SUMMARY + "\nNote: fig_placebo.pdf was inspected.\n"
     audit = write_final_registers(tmp_path, hit_claims_rows(),

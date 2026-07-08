@@ -132,7 +132,7 @@ ordinary worker observation, not one of these.
    `version_or_dependency_error` / `stale_or_wrong_path`). Mechanical helper: the conductor runs
    `scripts/check_manifests.py` at b4, which parses each recognized manifest and emits candidate
    findings (see `pipeline-code-errors.md`, b4).
-2. **Shared conventions agree.** The package asserts one definition for each convention it uses in
+2. **Shared and definition/use conventions agree.** The package asserts one definition for each convention it uses in
    more than one place. Gather every site that defines a shared convention — fiscal-year or
    sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
    separator, ID/merge key, enumerated member list (`enumerated_member_list`: a member set the
@@ -145,6 +145,17 @@ ordinary worker observation, not one of these.
    by the code-side re-materialization sites the b4 grep locates — and the code-stream recheck
    (b4) greps the codebase for each listed convention's definition sites and flags any that
    disagree.
+   The same duty applies **within one file**: the package asserts that a derived control variable
+   is used only for the cases its own definition covers. When a derived flag, indicator, category,
+   sentinel, or eligibility variable's code, adjacent comment, label, or header states the cases
+   it covers, and later code uses it to gate a filter, replacement, drop, keep, merge, aggregation,
+   weight, sample, treatment, or output, compare the producer-defined set against each consumer's
+   effective predicate. An extra consumer predicate that narrows the covered set is the error —
+   acceptable only when it is an independently defined eligibility restriction or when a companion
+   consumer covers the excluded cases. This half of the check is worker-side reading within a file,
+   not a cross-file greppable convention, so it is not consolidated at b3c or grepped at b4:
+   comments and labels are claims to check, not proof — do not treat a stale comment as the
+   specification, and establish the coverage from the code itself.
 3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each
    point where the pipeline hands off between languages or scripts, follow the inputs and outputs
    and confirm what one step writes is exactly where the next reads — same path, name, and shape.

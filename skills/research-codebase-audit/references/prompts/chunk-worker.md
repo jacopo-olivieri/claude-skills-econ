@@ -65,7 +65,14 @@ Also run the three **standing self-consistency checks** defined in `audit/audit_
   needs no row. Your rows go to the code register, which the b3c consolidation does not read; the
   b4 shared-conventions grep independently locates re-materialization sites and compares each
   against the paper-stated set — this bullet exists so you recognize enumerated-list sites and
-  catch divergences at first pass;
+  catch divergences at first pass. Check the same agreement **within one file**: when a derived
+  flag, indicator, category, sentinel, or eligibility variable's code, adjacent comment, label, or
+  header states the cases it covers, and later code uses it to gate a filter, replacement, drop,
+  keep, merge, aggregation, weight, sample, treatment, or output, compare the producer-defined set
+  against each consumer's effective predicate — an extra consumer predicate that narrows the
+  covered set is a finding unless it is an independently defined eligibility restriction or a
+  companion consumer covers the excluded cases; comments and labels are claims to check, not proof,
+  so establish the coverage from the code and never treat a stale comment as the specification;
 - (3) every cross-language or cross-script hand-off your scope touches connects — what one step
   writes is exactly where the next reads (path, name, shape).
 <!-- RESTATEMENT:standing-checks END -->

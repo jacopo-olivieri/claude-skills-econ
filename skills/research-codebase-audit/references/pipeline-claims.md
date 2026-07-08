@@ -45,7 +45,7 @@ generated `audit/audit_readme.md`). Lint stages here are `--stage b<N>-claims`.
 
 ## b3c — Shared-conventions consolidation (adds no rows; emits a cross-stream artifact)
 
-Operationalizes standing self-consistency check 2 ("Shared conventions agree", `registers.md`):
+Operationalizes standing self-consistency check 2 ("Shared and definition/use conventions agree", `registers.md`):
 the merged claims register now records, across many rows, the conventions the package uses in
 more than one place; this step collects them into one small list so the code-stream recheck (b4,
 `pipeline-code-errors.md`) can grep the codebase for sites that violate each. Runs after the

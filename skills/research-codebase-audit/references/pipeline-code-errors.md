@@ -142,7 +142,10 @@ frozen).** Alongside the shared-conventions grep, and likewise before writing th
 run `check_manifests.py <package_root> --audit-dir audit`. The script parses every recognized
 dependency and configuration manifest the way its consuming tool would (TOML via the
 standard-library parser; requirements-style lists via the crude line grammar documented in the
-script's docstring) and writes `audit/_run/manifest_check.md`. Each row of that artifact's
+script's docstring) and writes `audit/_run/manifest_check.md`. If the package documentation or any
+script passes a file to an installer (for example `pip install -r somefile`), hand that file to the
+checker with `--also somefile`, whatever its name, since a requirements manifest need not be named
+`requirements.txt`. Each row of that artifact's
 candidate-findings table becomes a new `candidate` code-error row — typed
 `version_or_dependency_error` for a dependency line an installer would reject, or
 `readme_or_package_mismatch` where the defect is between the documented setup and the shipped

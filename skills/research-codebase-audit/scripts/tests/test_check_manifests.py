@@ -261,3 +261,217 @@ def test_unreadable_directory_is_warned_not_silently_skipped(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
     assert "## Warnings" in art
     assert "could not read directory" in art
+
+
+# --------------------------------------------------------------- content sniffing
+
+
+def test_content_sniffed_requirements_under_odd_name(tmp_path):
+    # The real-world miss: a pip requirements file named python_requirements.txt
+    # whose lines read "name version" (invalid pip syntax). It is not matched by
+    # filename, but content sniffing pulls it in and the whitespace near-miss
+    # fires, tagged detected_by "content".
+    root = make_pkg(tmp_path, {
+        "python_requirements.txt": (
+            "# python dependencies\n"
+            "# install with: pip install -r python_requirements.txt\n"
+            "dbfread 2.0.7\n"
+            "numpy 2.2.0\n"
+            "pandas 2.1.0\n"
+        ),
+    })
+    results = cm.check_package(root)
+    problems = [f for f in results["findings"]
+                if f["manifest"] == "python_requirements.txt"]
+    assert len(problems) == 3
+    assert all(f["detected_by"] == "content" for f in problems)
+    assert all("without an operator" in f["problem"] for f in problems)
+
+
+def test_bare_name_list_yields_no_findings(tmp_path):
+    # A Stata-dependencies lookalike: a header line plus bare names. Bare
+    # names carry no version evidence, so the strong-line gate keeps the
+    # file from classifying at all — and even if it were checked, bare names
+    # are valid pip grammar, so no finding could fire.
+    root = make_pkg(tmp_path, {
+        "dependencies.txt":
+            "Stata packages:\n\navar\nestout\nreghdfe\nftools\n",
+    })
+    results = cm.check_package(root)
+    assert results["findings"] == []
+    assert not any(rel == "dependencies.txt" for rel, *_ in results["checked"])
+
+
+def test_generated_report_bullets_not_classified(tmp_path):
+    # A lint-report lookalike: a header sentence plus bullet lines that
+    # resemble pip option lines ("- path: message"). Bullets are at most
+    # weak evidence and the file has no version-carrying line, so the
+    # strong-line gate must keep it out.
+    root = make_pkg(tmp_path, {
+        "report.txt": (
+            "LINT FAIL [b2-claims] — 4 finding(s):\n"
+            "  - audit/_work/S1.md: claims row 1 has 12 cells, expected 13\n"
+            "  - audit/_work/S1.md: claims row 2 has 12 cells, expected 13\n"
+            "  - audit/_work/S1.md: claims row 3 has 12 cells, expected 13\n"
+            "  - audit/_work/S1.md: claims row 4 has 12 cells, expected 13\n"
+        ),
+    })
+    results = cm.check_package(root)
+    assert results["findings"] == []
+    assert not any(rel == "report.txt" for rel, *_ in results["checked"])
+
+
+def test_audit_workspace_is_not_scanned(tmp_path):
+    # The skill's own working directory (identified by its content markers,
+    # not its name) fills with generated files during a run; the checker
+    # must not descend into it. The same manifest at package root is still
+    # found.
+    pins = "dbfread 2.0.7\ngeopy 2.4.1\nnumpy 2.2.0\n"
+    root = make_pkg(tmp_path, {
+        "python_requirements.txt": pins,
+        "audit/audit_readme.md": "# audit\n",
+        "audit/_run/lint_reports/S1.txt": pins,
+    })
+    results = cm.check_package(root)
+    rels = [rel for rel, *_ in results["checked"]]
+    assert "python_requirements.txt" in rels
+    assert not any(rel.startswith("audit/") for rel in rels)
+
+
+def test_prose_txt_is_not_classified_as_manifest(tmp_path):
+    # Guards the classification boundary, not the sniffer path: this plain prose
+    # has no version-like tokens, so it fails classification on the old code too.
+    res, art = run(tmp_path, {
+        "README.txt": (
+            "This package replicates the main results of the paper.\n"
+            "Run the do-files in order to reproduce every table.\n"
+            "Questions can be directed to the corresponding author.\n"
+            "The data were obtained under a restricted-use agreement.\n"
+        ),
+    })
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert cm.NO_FINDINGS_LINE in art
+    assert "README.txt" not in art
+
+
+def test_below_threshold_pins_not_classified(tmp_path):
+    # Guards the classification boundary, not the sniffer path: two pins are
+    # below SNIFF_MIN_LINES, so this fails classification on the old code too.
+    # Only two pin-like lines amid prose: below SNIFF_MIN_LINES, so not a
+    # manifest and nothing is checked.
+    root = make_pkg(tmp_path, {
+        "notes.txt": (
+            "The analysis proceeds in three broad stages as follows.\n"
+            "We first clean the raw survey extracts before merging.\n"
+            "numpy 1.21\n"
+            "The second stage estimates the headline specification.\n"
+            "pandas 1.3\n"
+            "Robustness checks appear in the online appendix section.\n"
+        ),
+    })
+    results = cm.check_package(root)
+    assert not any(rel == "notes.txt" for rel, *_ in results["checked"])
+    assert results["findings"] == []
+
+
+# --------------------------------------------------------------- --also handoff
+
+
+def test_also_forces_check_with_explicit_detection(tmp_path):
+    root = make_pkg(tmp_path, {
+        "install/deps.cfg": "numpy==1.0\nstatsmodels 0.13.2\n",
+    })
+    target = root / "install" / "deps.cfg"
+    audit = tmp_path / "audit"
+    res = rb.run_script("check_manifests.py", root, "--audit-dir", audit,
+                        "--also", target)
+    art = (audit / "_run" / "manifest_check.md").read_text(encoding="utf-8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "statsmodels 0.13.2" in art
+    assert "explicit" in art
+    # and the finding dict carries detected_by "explicit"
+    results = cm.check_package(root, also=[target])
+    hits = [f for f in results["findings"] if "statsmodels" in f["text"]]
+    assert hits and all(f["detected_by"] == "explicit" for f in hits)
+
+
+def test_also_outside_root_is_skipped_with_warning(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("statsmodels 0.13.2\n", encoding="utf-8")
+    root = make_pkg(tmp_path, {"requirements.txt": "numpy==1.0\n"})
+    results = cm.check_package(root, also=[outside])
+    assert results["findings"] == []
+    assert any("outside" in w and "package root" in w
+               for w in results["warnings"])
+
+
+def test_also_symlink_is_skipped_with_warning(tmp_path):
+    secret = tmp_path / "secret_outside.txt"
+    secret.write_text("statsmodels 0.13.2\n", encoding="utf-8")
+    root = make_pkg(tmp_path, {"requirements.txt": "numpy==1.0\n"})
+    link = root / "handed_in.txt"
+    link.symlink_to(secret)
+    results = cm.check_package(root, also=[link])
+    assert results["findings"] == []
+    assert any("symlink" in w for w in results["warnings"])
+
+
+# --------------------------------------------------------------- detected_by field
+
+
+def test_name_matched_requirements_detected_by_filename(tmp_path):
+    root = make_pkg(tmp_path, {"requirements.txt": "statsmodels 0.13.2\n"})
+    results = cm.check_package(root)
+    assert results["findings"]
+    assert all(f["detected_by"] == "filename" for f in results["findings"])
+    assert all(det == "filename" for *_, det in results["checked"])
+
+
+# ---------------------------------------------- near-miss classifier tightness
+
+
+def test_enumerated_prose_outputs_list_not_classified(tmp_path):
+    # Exercises the tightened near-miss path (fails on the old code, which read
+    # "Table 1"/"Figure 2" as name-plus-version pins and sniffed this README as
+    # a manifest). A plain-prose outputs list must not be classified.
+    res, art = run(tmp_path, {
+        "README.txt": (
+            "Table 1 summary statistics\n"
+            "Table 2 main regressions\n"
+            "Figure 1 event study\n"
+            "Figure 2 robustness\n"
+        ),
+    })
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert cm.NO_FINDINGS_LINE in art
+    assert "README.txt" not in art
+
+
+def test_bare_integer_version_not_pin_like(tmp_path):
+    # Exercises the tightened near-miss path: two-token lines whose version is a
+    # bare integer ("name 2") are NOT real pins, so the file is not classified.
+    root = make_pkg(tmp_path, {
+        "notes.txt": (
+            "alpha 2\n"
+            "beta 3\n"
+            "gamma 1\n"
+            "delta 4\n"
+        ),
+    })
+    results = cm.check_package(root)
+    assert not any(rel == "notes.txt" for rel, *_ in results["checked"])
+    assert results["findings"] == []
+
+
+def test_bom_prefixed_manifest_name_has_no_bom(tmp_path):
+    # A UTF-8 BOM on requirements.txt must not glue onto the first line's name
+    # in the finding text.
+    root = tmp_path / "pkg"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").write_bytes(
+        b"\xef\xbb\xbfdbfread 2.0.7\n")
+    results = cm.check_package(root)
+    hits = [f for f in results["findings"] if "dbfread" in f["text"]]
+    assert hits, results["findings"]
+    assert all("﻿" not in f["text"] for f in hits)
+    assert any(f["text"] == "dbfread 2.0.7" for f in hits)

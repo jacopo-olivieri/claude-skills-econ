@@ -383,6 +383,45 @@ def test_intentional_subset_decoy_turns_gate_red(tmp_path):
     assert "GATE RED" in res.stdout
 
 
+def test_p15_row_quoting_signpost_comment_is_not_decoy(tmp_path):
+    """D-02 narrowed again 2026-07-08: a legitimate P-15 recovery row that
+    QUOTES the farm_components signpost comment as evidence (and records the
+    subset reviewed-not-divergent) must not trip the decoy — only flagging
+    the intentional subset AS the error is the planted bait."""
+    errors = [r for r in hit_error_rows() if r[0] != "E-0015"]
+    errors.append(rb.error_row(
+        "E-0015", etype="aggregation_or_unit_error", severity="2",
+        desc=("The income aggregate sums three components and omits "
+              "remittances from the paper's four-component income list. "
+              "The file's own later comment states the farm share is "
+              "'deliberately a subset of the four income components'; the "
+              "farm_components subset is explicitly local and recorded "
+              "reviewed-not-divergent, but the total-income list at line 14 "
+              "has no such signpost and under-counts the aggregate.")))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-02 decoy: ABSENT" in res.stdout
+    assert re.match(r"P-15: HIT", plant_line(res, "P-15"))
+
+
+def test_farm_subset_flagged_as_error_still_trips_decoy(tmp_path):
+    """The exculpation override must not defuse a genuine decoy hit: a row
+    whose tripping sentence flags farm_components as wrongly subsetting the
+    income list (no exculpatory language in that sentence) still trips D-02
+    even when a neighbouring sentence contains exculpatory vocabulary."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0097", etype="sample_filter_or_flag_error", severity="2",
+        desc=("The farm_share diagnostic was reviewed. farm_components "
+              "wrongly omits wage earnings and remittances from the "
+              "four-component income list, biasing the farm share."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "D-02 decoy: PRESENT" in res.stdout
+    assert "GATE RED" in res.stdout
+
+
 def test_non_omission_finding_in_subset_block_is_not_decoy(tmp_path):
     """D-02 narrowed 2026-07-08: only subset-omission complaints trip the
     decoy. A distinct true observation inside the signposted block (here a

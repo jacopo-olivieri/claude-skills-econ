@@ -151,6 +151,14 @@ BLOCKED_VISIBLE_PLANTS = {"P-14", "P-20"}
 # D-02's qualifier restricts it to subset-omission complaints — the planted
 # bait — so an unrelated true observation inside the signposted block (e.g.
 # a zero-division guard) is scored on its own merits, not condemned by site.
+# Qualified decoys match at SENTENCE granularity, and a sentence carrying
+# exculpatory language (DECOY_EXCULPATIONS) never trips: a legitimate P-15
+# recovery row may QUOTE the farm_components signpost comment as evidence
+# ("deliberately a subset ...", "recorded reviewed-not-divergent") while
+# flagging the total-income omission — that is not the planted bait. A row
+# that flags the intentional subset AS the error carries no such exculpation
+# in its tripping sentence and still turns the gate red (narrowed 2026-07-08
+# after a gate run condemned legitimate P-15 rows for quoting the comment).
 DECOYS = {
     "D-01": (["placebo", "fig_placebo"], None),
     "D-02": (["farm_income", "farm-income", "farm income", "farm_components",
@@ -159,6 +167,14 @@ DECOYS = {
               "four income", "remittance", "incomplete", "excludes",
               "missing component"]),
 }
+# Sentence-level exculpations: language recording the subset as intentional
+# or already reviewed. Mechanism-general (the signpost's own vocabulary plus
+# the reviewed-not-divergent bookkeeping term), not any one run's phrasing.
+DECOY_EXCULPATIONS = [
+    "deliberate", "intentional", "signpost", "reviewed-not-divergent",
+    "reviewed not divergent", "not divergent", "explicitly local",
+    "is fine", "by design", "on purpose",
+]
 # --- artifact-layer constants (U9) ----------------------------------------
 # the U2 plant: the malformed manifest the parser artifact must name
 MANIFEST_PLANT = "pyproject.toml"
@@ -329,10 +345,28 @@ def score_blocked_visible(item, tagged_rows):
     return "MISS", "no row matches the mechanism signature"
 
 
+def _decoy_sentences(text):
+    """Sentence-ish units: split on sentence enders followed by whitespace and
+    on the cell separators row_text inserts. Dotted filenames/line refs
+    (build_income.py:14) carry no space after the dot, so they stay intact."""
+    return re.split(r"(?<=[.;!?])\s+|\s\|\s", text)
+
+
 def check_decoy(terms, quals, tagged_rows, summary_text):
     def trips(text):
-        return any(t in text for t in terms) and (
-            quals is None or any(q in text for q in quals))
+        if quals is None:
+            return any(t in text for t in terms)
+        # Qualified decoy: site and qualifier must co-occur in one sentence,
+        # and a sentence with exculpatory language never trips — it records
+        # the subset as intentional/reviewed instead of flagging it as the
+        # error (quoting the signpost comment as evidence for ANOTHER finding
+        # is not the planted bait).
+        for sent in _decoy_sentences(text):
+            if (any(t in sent for t in terms)
+                    and any(q in sent for q in quals)
+                    and not any(e in sent for e in DECOY_EXCULPATIONS)):
+                return True
+        return False
     found = []
     for kind, id_col, d in tagged_rows:
         if trips(row_text(d)):

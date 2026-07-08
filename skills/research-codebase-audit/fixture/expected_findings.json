@@ -148,8 +148,8 @@
       "kind": "code_error",
       "expected_type": "sample_filter_or_flag_error",
       "where": "py/build_income.py has_wages loop",
-      "mechanism": "The comment says has_wages flags households reporting wage earnings in ANY wave, but the loop assigns (rather than accumulates) the column each iteration, so the wave-2 pass erases wave-1 matches and the final flag reflects the last iteration only. U3 TEST (loop-flag idiom): probing two iterations, one matching and one not, settles it. Planted in a file also carrying the unrelated P-15 and P-19 plants. Fresh variable and idiom, not the Floods match flag.",
-      "min_severity": 2,
+      "mechanism": "The comment says has_wages flags households reporting wage earnings in ANY wave, but the loop assigns (rather than accumulates) the column each iteration, so the wave-2 pass erases wave-1 matches and the final flag reflects the last iteration only. U3 TEST (loop-flag idiom): probing two iterations, one matching and one not, settles it. Planted in a file also carrying the unrelated P-15 and P-19 plants. Fresh variable and idiom, not the Floods match flag. min_severity lowered 2->1 on 2026-07-08: the flag feeds only the off-path diagnostic output/income_check.csv, so under the registers.md author-materiality rubric a correct rating is severity 1; the floor of 2 conflicted with the skill's own rubric (gate run 1 scorecard).",
+      "min_severity": 1,
       "failure_class": "empirical_verification"
     },
     {
@@ -182,7 +182,7 @@
       "id": "D-02",
       "kind": "decoy",
       "where": "py/build_income.py farm_components block",
-      "mechanism": "farm_components = ['crop_sales', 'livestock_sales'] materializes a deliberate, locally-signposted SUBSET of the paper's four-component income list (the comment declares it a farm-only descriptive share). The U1 intentional-subset guard must record the site reviewed-not-divergent; any finding about the farm components or farm share is a false positive."
+      "mechanism": "farm_components = ['crop_sales', 'livestock_sales'] materializes a deliberate, locally-signposted SUBSET of the paper's four-component income list (the comment declares it a farm-only descriptive share). The U1 intentional-subset guard must record the site reviewed-not-divergent; a SUBSET-OMISSION complaint about the farm components or farm share (that the list omits/diverges from the four-component definition) is a false positive. Narrowed 2026-07-08: other findings inside the block (e.g. the true zero-income division guard observation) are scored on their own merits and do not trip the decoy."
     }
   ],
   "expected_status_conflicts": [

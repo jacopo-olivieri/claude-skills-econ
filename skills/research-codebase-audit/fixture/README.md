@@ -1,8 +1,8 @@
 # Fixture — planted-error validation package
 
 `planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, two
-Python scripts, data, a TOML manifest, artifacts, README) with **20 planted findings**
-(`must_find` items P-01 through P-20) spanning the error taxonomy — including the three
+Python scripts, data, a TOML manifest, artifacts, README) with **21 planted findings**
+(`must_find` items P-01 through P-21) spanning the error taxonomy — including the three
 classes added by the design (seed, SE specification, weights), a transcription mismatch
 against a shipped artifact, hygiene/PII findings, and **two decoys** that must NOT be
 flagged (a commented-out figure, and an intentional subset of a stated member list).
@@ -41,6 +41,19 @@ the Floods package, each tagged with a `failure_class` the scorer reports per cl
 - **D-02 decoy** — `farm_components` in `py/build_income.py` keeps a deliberate,
   comment-signposted subset of the stated income list; flagging it is a false positive
   (exercises the U1 intentional-subset guard).
+
+**Definition/use contract plant (added 2026-07-08)** — P-21 exercises the reworded
+standing check 2 (a derived control variable used only for the cases its own definition
+covers):
+- **P-21** (`definition_use_contract`) — in `do/build_panel.do` (already carrying
+  P-05/P-08/P-11/P-17), the `consent_ok` release flag's comment states it covers both
+  consent families (individual data-sharing consent AND village-level community consent),
+  but the estimation-sample filter `keep if consent_ok == 1 & consent == "individual"`
+  adds a conjunct that silently drops the community-consent households. The narrowed
+  sample flows to `output/panel.dta` -> `do/analysis.do` -> `artifacts/tab1.tex`, so the
+  severity floor of 2 is honest under the materiality rubric. Fresh domain (survey consent
+  gating a published table); the excluded case family is named in the comment, not a
+  missing-value idiom.
 
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can

@@ -136,6 +136,11 @@ SIGNATURES = {
              ["crop_sales", "crop sales"]],
     "P-20": [["15-km", "15 km", "15km", "fifteen"],
              ["25km", "25-km", "25 km", "twenty-five"]],
+    "P-21": [["consent"],
+             ["community"],
+             ["individual", "keep if", "drop", "exclu", "omit", "narrow",
+              "only", "conjunct", "silently", "left out", "not kept",
+              "removed", "restrict"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked

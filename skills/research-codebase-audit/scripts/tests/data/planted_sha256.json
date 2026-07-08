@@ -1,7 +1,7 @@
 {
   "README.md": "afe8b887c763b510021954cc75c0230c2141f773ac002143c3a9aa58a593b578",
   "artifacts/tab1.tex": "51af5102223b79a7bb39c071b478252e0393e8c3a837008243af0fc472c5c82b",
-  "data/households.csv": "a61f19159e449dc6c09056e3fed9335946c543886c51dd430d08b1662168f2be",
+  "data/households.csv": "ac0f9c320171b36b924eb0321f63d664c56f4697d46554fc2dac711cc6daaae3",
   "data/village_rain_radius_25km.csv": "193dcec4bc235d976f6070883e273bcec545b0dde5e5dd0fabf2d42a949eba07",
   "do/analysis.do": "d9d7c5b12ce26cf873f95dbbf2a8601a415939c962f605b8a9266cb22f8d61a4",
   "do/build_panel.do": "c5d0ab3c3ec7dc0ec96aca7a17dda5c1a16d275e30b1ece43e8da3cdde56f29f",

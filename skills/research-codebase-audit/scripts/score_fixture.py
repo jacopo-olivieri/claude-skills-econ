@@ -138,8 +138,8 @@ SIGNATURES = {
              ["25km", "25-km", "25 km", "twenty-five"]],
     "P-21": [["consent"],
              ["community"],
-             ["individual", "keep if", "drop", "exclu", "omit", "narrow",
-              "only", "conjunct", "silently", "left out", "not kept",
+             ["keep if", "drop", "exclu", "omit", "narrow",
+              "conjunct", "silently", "left out", "not kept",
               "removed", "restrict"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible

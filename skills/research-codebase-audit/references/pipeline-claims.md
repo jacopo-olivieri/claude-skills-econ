@@ -49,19 +49,25 @@ Operationalizes standing self-consistency check 2 ("Shared conventions agree", `
 the merged claims register now records, across many rows, the conventions the package uses in
 more than one place; this step collects them into one small list so the code-stream recheck (b4,
 `pipeline-code-errors.md`) can grep the codebase for sites that violate each. Runs after the
-first merge (b3), before the recheck plan (b4). Non-blocking: a package with no multi-site
+first merge (b3), before the recheck plan (b4). Non-blocking: a package with no qualifying
 convention produces an empty-or-absent artifact and nothing downstream fails.
 
 1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream). It reads
    the canonical `claims_register.md` and writes `audit/_run/conventions.md` — a small Markdown
    table, one row per stated convention the paper uses in more than one place, drawn **only** from
    the categories standing check 2 enumerates (fiscal-year or sample-window boundary, date-parse
-   mask, missing-value sentinel, unit/scale factor, path separator, ID/merge key), with columns
+   mask, missing-value sentinel, unit/scale factor, path separator, ID/merge key, enumerated
+   member list), with columns
    `| Convention | Category | Stated Definition | Sites Already Seen |`. `Stated Definition` is
-   what the paper states (with the C-ID it came from); `Sites Already Seen` lists the files/rows
-   already logged for it. A convention stated in only one place is **not** listed.
-2. If no convention is used in more than one place, the worker writes the table header with no
-   rows (or omits the file). Either is valid; the step never blocks and adds no register rows.
+   what the paper states (with the C-ID it came from; for an `enumerated_member_list` it quotes
+   the full member set verbatim); `Sites Already Seen` lists the files/rows
+   already logged for it. A convention stated in only one place is **not** listed — except an
+   `enumerated_member_list`, where a single register row naming the member set qualifies: the
+   second side of the comparison is supplied by the code-side re-materialization sites the b4
+   grep locates, not by a second register row.
+2. If no convention qualifies — none is used in more than one place and no single register row
+   names an enumerated member list — the worker writes the table header with no rows (or omits
+   the file). Either is valid; the step never blocks and adds no register rows.
 3. This step mutates no canonical register, so there is no snapshot/staging/rename. It is a
    read-only emit; the artifact is advisory input to the code-stream recheck grep. Manifest
    `claims_b3c = done`.

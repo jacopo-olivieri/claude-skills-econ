@@ -18,6 +18,8 @@ panel. A one-standard-deviation rainfall shock reduces log household income by
 
 We use a household panel covering three villages over two survey waves. Income is measured
 in thousands of local currency units.
+Total household income is the sum of the four components recorded in the survey instrument:
+crop sales, livestock sales, wage earnings, and remittances.
 The estimation sample excludes households observed in fewer than two survey waves, leaving
 a balanced panel of 4,832 household-year observations (2,416 households across the two waves).
 Of these, 725 households --- 25 percent of the panel --- experienced a negative rainfall shock
@@ -34,7 +36,9 @@ normal).
 
 We regress log household income on the rainfall shock and household controls. All
 regressions are weighted using the survey weights provided with the sampling frame, and
-standard errors are clustered at the village level.
+standard errors are clustered at the village level. To limit the influence of outliers,
+wage earnings (\texttt{wage\_earnings}) are winsorised at the 99th percentile before
+entering total income.
 
 \section{Results}
 
@@ -72,5 +76,20 @@ errors (200 replications); the confidence interval excludes zero.
 \section{Conclusion}
 
 Rainfall shocks reduce household income in this entirely synthetic setting.
+
+\appendix
+
+\section{Rainfall data construction}
+\label{app:rain}
+
+The village rainfall series used to construct the shock is built in three steps:
+\begin{enumerate}
+\item daily rain-gauge records are aggregated to survey-wave totals;
+\item each village is matched to every rain gauge within a 15-km radius of its centroid;
+\item village rainfall is the mean of the matched gauges' wave totals.
+\end{enumerate}
+The gauge match was performed at the national meteorological service, and gauge coordinates
+are not distributed with this package. The resulting village-level series ships with the
+package and is merged into the household file.
 
 \end{document}

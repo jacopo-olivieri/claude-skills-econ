@@ -120,7 +120,15 @@ plan, for each listed convention grep the codebase for its definition sites — 
 the boundary literal, sentinel, unit/scale factor, path separator, date mask, or ID/merge key the
 `Stated Definition` column records (e.g. a fiscal-year boundary "July" → grep for month/quarter
 literals and cutoff comparisons in the date-construction scripts; a missing-value sentinel → grep
-for the sentinel value and the replace/recode calls that set it). Any site whose definition
+for the sentinel value and the replace/recode calls that set it; an enumerated member list
+(`enumerated_member_list`) → locate each site that re-materializes the stated list by hand —
+hand-written category or level lists in keep-or-drop conditions, value-label definitions, list or
+dictionary literals in any language, column-selection vectors, legend or axis label arrays — and
+take the set difference between each materialized set and the stated set, typing any missing,
+extra, or renamed member by its mechanism). Guard for enumerated member lists: a site that
+materializes a strict subset of the stated list with explicit local subsetting intent — a named
+sub-sample, a figure- or table-specific filter, a commented restriction — is recorded as
+reviewed-not-divergent, not emitted as a candidate. Any site whose definition
 disagrees with the stated one becomes a new `candidate` code-error row, typed by its mechanism per
 the taxonomy (a boundary literal mismatch is `treatment_or_event_timing_error`, a sentinel or
 scale mismatch is `aggregation_or_unit_error`, a divergent merge key is
@@ -128,6 +136,20 @@ scale mismatch is `aggregation_or_unit_error`, a divergent merge key is
 the b4 inventory so the recheck resolves it. If the artifact is absent or lists no convention,
 skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
 the claims side reaches the code side as a concrete grep target.
+
+**Manifest-parseability check (conductor-invoked script; adds candidates before the plan is
+frozen).** Alongside the shared-conventions grep, and likewise before writing the recheck plan,
+run `check_manifests.py <package_root> --audit-dir audit`. The script parses every recognized
+dependency and configuration manifest the way its consuming tool would (TOML via the
+standard-library parser; requirements-style lists via the crude line grammar documented in the
+script's docstring) and writes `audit/_run/manifest_check.md`. Each row of that artifact's
+candidate-findings table becomes a new `candidate` code-error row — typed
+`version_or_dependency_error` for a dependency line an installer would reject, or
+`readme_or_package_mismatch` where the defect is between the documented setup and the shipped
+manifest — minted from an unused error-ID range and folded into the b4 inventory so the recheck
+resolves it (a worker dispositions every candidate; a legitimate line the crude grammar
+over-flagged closes as `not_error`). The script never hard-fails on package content and its exit
+status carries no findings; if the artifact reports no candidates, nothing is added — non-blocking.
 
 ## b5 — Recheck cluster workers (parallel)
 

@@ -45,6 +45,19 @@ Rules:
 - Link claims to outputs (`Output IDs` / `Claim IDs`) within your shard; both directions.
 - Think carefully about whether the code actually supports each claim before setting
   `Status` — identifying the right script is mapping, not confirmation.
+- **Identifier anchoring**: a claim that names specific variables, files, or parameters closes
+  `confirmed` only when each named identifier is located in the code at the role the claim
+  assigns it — a code line where *that* identifier receives the described treatment. Verifying
+  the operation exists and covers *some* variables anchors the operation, not the claim; a named
+  identifier you cannot anchor keeps the row out of `confirmed` (identifier-anchoring rule,
+  `audit/audit_readme.md`).
+- **Quote qualifiers**: judge `confirmed` against the row's own verbatim `Paper Quote`, not only
+  your paraphrased `Claim Text` — a paraphrase that drops a qualifier never narrows what must be
+  verified. A qualifier the quote attaches to the claimed operation or definition (a baseline
+  period or reference window, radius, threshold, ratio, unit, or named population) blocks
+  `confirmed` unless the cited code implements it; escalate as under identifier anchoring —
+  a different qualifier in the code is `inconsistent`, an unlocatable one is
+  `confirmation_needed` (quote-qualifier rule, `audit/audit_readme.md`).
 - **Complete cheap checks; do not park them at `mapped`** (see the cheap-check-completion rule in
   `audit/audit_readme.md`). When a claim reduces to comparing an enumerable list, a single
   constant, or a closed-form arithmetic implication against located code, settle it now and set
@@ -55,12 +68,28 @@ Rules:
 - **Arithmetic sweep**: for every share, percentage, ratio, or "X out of Y" in your section,
   recompute it from numbers already visible in the paper or the shipped artifacts (static only —
   do not run code); a recompute that disagrees with the stated figure is an `inconsistent` claim.
+- **Filename-parameter reconciliation sweep**: for every numeric parameter your section's paper
+  text states — a return period, threshold, year or sample window, resolution, unit, sampling
+  ratio — compare the stated value against the parameters embedded in the names of the shipped
+  input and output files (`sample_1in20.csv`, `grid_10km.dta`, `panel_2005_2015.csv`). Apply the
+  claim-unit corollary from `audit/audit_readme.md` first: each parameter-bearing step of an
+  enumerated procedure is its own claim row, so each parameter reconciles on its own row. A
+  filename token of the same shape that disagrees with the paper-stated parameter is a visible
+  contradiction — both halves ship — so the row is `inconsistent`, never `blocked`; cite the
+  filename in the row's evidence. Run this sweep even on claims you cannot otherwise verify:
+  filenames are visible material, so on a row blocked for other reasons the comparison belongs
+  in `Blocked Check`.
+<!-- RESTATEMENT:standing-checks BEGIN -->
 - Apply the **standing self-consistency checks** from `audit/audit_readme.md` where your section
   makes them paper-relevant: when the paper states a shared convention (a sample-window boundary,
-  unit/scale, date mask, missing-value sentinel), confirm the code defines it the same way and
-  consistently across files (check 2); when a claim depends on a cross-language or cross-script
-  hand-off, confirm what one step writes is where the next reads (check 3). A divergence is an
-  `inconsistent` claim.
+  unit/scale, date mask, missing-value sentinel, or an enumerated member list —
+  `enumerated_member_list`: the categories kept, a sample-defining enumerated set, the columns
+  exported), confirm the code defines it the same way and consistently across files (check 2);
+  for an enumerated member list, quote the full member set verbatim in the claim row — a single
+  row naming the set is enough for the b3c consolidation to carry it to the code-side grep; when
+  a claim depends on a cross-language or cross-script hand-off, confirm what one step writes is
+  where the next reads (check 3). A divergence is an `inconsistent` claim.
+<!-- RESTATEMENT:standing-checks END -->
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`
   blank.

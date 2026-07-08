@@ -1,10 +1,11 @@
 # Fixture — planted-error validation package
 
-`planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, one
-Python script, data, artifacts, README) with **14 planted findings** (`must_find` items P-01
-through P-14) spanning the error taxonomy — including the three classes added by the design
-(seed, SE specification, weights), a transcription mismatch against a shipped artifact,
-hygiene/PII findings, and **one decoy** (a commented-out figure) that must NOT be flagged.
+`planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, two
+Python scripts, data, a TOML manifest, artifacts, README) with **20 planted findings**
+(`must_find` items P-01 through P-20) spanning the error taxonomy — including the three
+classes added by the design (seed, SE specification, weights), a transcription mismatch
+against a shipped artifact, hygiene/PII findings, and **two decoys** that must NOT be
+flagged (a commented-out figure, and an intentional subset of a stated member list).
 
 **Behavior-test plants (added 2026-07-06)** — P-12/P-13/P-14 exist to predict the Floods
 failure mode, keyed to the behavior each tests:
@@ -18,6 +19,29 @@ failure mode, keyed to the behavior each tests:
   **blocked-visible-metadata discipline**: flagged inconsistent (or blocked with a Blocked Check
   note), never silently blocked.
 
+**Failure-class plants (added 2026-07-07)** — P-15 through P-20 plant one instance of each
+mechanism from the recall-determinism refactor (U1–U5), each in a domain fresh relative to
+the Floods package, each tagged with a `failure_class` the scorer reports per class:
+- **P-15** (`enumerated_member_list`, U1) — the paper states a four-component income list;
+  `py/build_income.py` hand-retypes it as three, omitting remittances. Recovery is attributed
+  to the b3c consolidation single-row carve-out plus the b4 set-difference grep.
+- **P-16** (`manifest_parseability`, U2) — `pyproject.toml` is invalid TOML (unquoted
+  `version = 0.4.1`), a different format/ecosystem from the Floods requirements defect;
+  `check_manifests.py` must name it in `audit/_run/manifest_check.md`.
+- **P-17 / P-18** (`empirical_verification`, U3) — a Stata backfill guard whose comment says
+  it fills missing `hhsize` but whose `if hhsize < .` condition excludes the missing case
+  (in `do/build_panel.do`, already carrying P-05/P-08/P-11), and a Python loop that
+  overwrites `has_wages` each iteration so the last wave erases earlier matches (in
+  `py/build_income.py`, alongside P-15/P-19) — each in a file with unrelated plants, the
+  shape of the real misses.
+- **P-19** (`identifier_anchoring`, U4) — the paper says `wage_earnings` is winsorised at
+  the 99th percentile; the code winsorises `crop_sales`. The claim must not close confirmed.
+- **P-20** (`step_parameter_filename`, U5) — Appendix A step 2 states a 15-km gauge radius;
+  the shipped file is `data/village_rain_radius_25km.csv`. Dual-accept like P-14.
+- **D-02 decoy** — `farm_components` in `py/build_income.py` keeps a deliberate,
+  comment-signposted subset of the stated income list; flagging it is a false positive
+  (exercises the U1 intentional-subset guard).
+
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
@@ -26,20 +50,35 @@ see this folder's other files.
 
 1. Copy `planted/` to a scratch location (the audit writes an `audit/` folder into it).
 2. Invoke `research-codebase-audit` on that copy: mode = full replication audit,
-   ladder level 1 (static), no exclusions.
+   **review-ladder level 2** (static inspection plus parser/runtime checks, unit tests
+   with simulated data, and small targeted reruns where a check needs them, each bounded
+   by a 15-minute per-check compute budget), review depth `standard`, nothing off-limits.
+   Every scored run of record has used this configuration; hold it fixed across runs so the
+   run-to-run comparison in the Evaluation protocol below stays valid — a run at a different
+   ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 14 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 20 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
-     `min_severity` (see `expected_findings.json` `scoring` for P-14's dual-accept rule).
-   - **Precision**: nothing about the placebo figure / `fig_placebo.pdf` (`must_not_find`),
-     and the `expected_confirmed_examples` come out clean rather than flagged.
+     `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
+     rule).
+   - **Precision**: nothing about the placebo figure / `fig_placebo.pdf`, nothing about the
+     farm-components subset (`must_not_find`), and the `expected_confirmed_examples` come
+     out clean rather than flagged.
 
 ### Automated scoring
 
 `scripts/score_fixture.py` automates the recall/precision core of the scorecard
-(mechanism-signature matching, the P-14 dual-accept branch logic, the D-01 decoy
-grep, and an SC-01 unresolved-conflict check). Point it at the finished run's
+(mechanism-signature matching, the P-14/P-20 dual-accept branch logic, the decoy
+greps, an SC-01 unresolved-conflict check, a per-failure-class breakdown
+alongside the aggregate recall — P-15..P-20 report under their `failure_class`
+tags, and the pre-taxonomy plants P-01..P-14 roll up in an explicit
+`unclassified_legacy` bucket so the aggregate always equals the per-class
+sum — and the
+artifact-layer checks: the U2 parser artifact must name `pyproject.toml`; the U4
+and U5 advisory lints must have fired if the corresponding plant closed in the
+failure state; the U1 conventions-artifact check is informative only, never
+gate-settling — see KTD-8 in the 2026-07-07 plan). Point it at the finished run's
 final registers:
 
 ```
@@ -76,3 +115,52 @@ doc).
 
 The data are fabricated; the PII-looking columns (names, GPS) are invented and planted
 deliberately as finding P-10.
+
+## Evaluation protocol — how a scored run is interpreted
+
+This section is human interpretation guidance. It is a measurement and interpretation
+protocol, not a code check: nothing below is enforced by the scorer or the linter, and it
+exists so that the run-to-run randomness of an LLM pipeline is not mistaken for progress
+or regression. Three scored runs of the Floods gate have shown four item-level flips, so a
+single run is one draw from a noisy process and must be read as one.
+
+**Interpretation rules for the next scored Floods run:**
+
+1. **The four permanent misses are the primary endpoint.** Four defects have been missed
+   in all three scored runs (they are described in the run-3 scorecard and the 2026-07-07
+   plan; they are not restated here). Whether the next run recovers any of them is the
+   primary measure of the cycle. Movement on other items is secondary and is read under
+   rules 2 and 3.
+2. **A previously-flipping item counts as fixed only when it hits in two consecutive
+   runs.** An item that was found in one run and missed in another has already
+   demonstrated that a single hit can be luck. One hit after a change is evidence, not a
+   fix; the "fixed" label waits for the second consecutive hit.
+3. **Deterministic-mechanism recoveries carry the most weight only after the mechanism has
+   reproduced its hit across two consecutive scored runs.** The design leans on mechanisms
+   that search mechanically rather than depend on a worker noticing, and their recoveries
+   are the strongest evidence the approach works — but the determinism claim is itself a
+   hypothesis resting on a single observed run. The chain from consolidation through
+   grep-term choice to recheck disposition has model-dependent links, so the heavier
+   weighting is earned by observed reproduction, not granted by construction.
+
+**Pre-merge fixture-re-score gate rules** (recorded from the build process, so the gate is
+pre-registered rather than improvised at merge time):
+
+- An outcome produced by a committed script or lint — the U2 parser artifact naming the
+  malformed manifest, the U4/U5 advisory warnings in the lint output — is settled by a
+  **single re-score**, because that layer is deterministic given the plant.
+- An outcome that depends on worker behavior — a candidate surviving recheck disposition,
+  a claim closing flagged rather than confirmed, a procedure extracted as multiple rows,
+  any conventions-grep emission, any recovery from a reading-based change — needs **two
+  consecutive re-scores**.
+- **Exactly two re-scores** are run for the worker-dependent gate. Both must pass for
+  merge. Any failure requires a diagnosed change before further re-scoring. A pass-then-fail
+  split fails the gate — with one recorded exit: if the split's
+  recorded diagnosis attributes the flip to run variance (the mechanism artifact is intact
+  and no code or prompt defect is found), the rest of the batch may merge, the split unit
+  merges without a "fixed" claim, and its stability is adjudicated at the next scored run
+  under rule 2 above. Single-run-settled outcomes are never blocked by a reading-unit split.
+- **No harvesting:** running additional re-scores to collect two consecutive passes is
+  prohibited.
+- **Every re-score outcome is recorded in the gate scorecard**, with the artifact-layer
+  (single-re-score) results recorded separately from the register-based two-run results.

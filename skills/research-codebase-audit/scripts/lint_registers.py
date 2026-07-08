@@ -93,7 +93,7 @@ CONVENTIONS_COLS = ["Convention", "Category", "Stated Definition", "Sites Alread
 CONVENTION_CATEGORIES = {
     "fiscal_year_or_sample_window_boundary", "date_parse_mask",
     "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
-    "id_or_merge_key",
+    "id_or_merge_key", "enumerated_member_list",
 }
 
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
@@ -342,6 +342,250 @@ def check_adjudication_advisory(lint, path, rows, cols=None):
                     f"escalation rule (registers.md)"
                 )
                 break
+
+
+# --- U4 advisory identifier-anchoring heuristic (KTD-3: advisory, ledger-only)
+#
+# A recheck ledger row that closes a claim `confirmed` while the claim names a
+# specific identifier (a variable, file, or parameter) that its own
+# `Evidence Checked` never mentions is a likely anchoring gap: the anchoring
+# rule in registers.md requires each named identifier located in the code at
+# the role the claim assigns it — verifying that the operation exists and
+# covers SOME variables anchors the operation, not the claim. Per KTD-3 the
+# check reads the LEDGER's `Evidence Checked` column, never the claims
+# register's own row (a confirmed register row has no evidence column, so
+# comparing against it would fire on nearly every clean row); the claims
+# register is read only to fetch each ledger ID's claim text. Like the U1
+# adjudication advisory, this is a lexical proxy that both over- and
+# under-matches, so it is a WARNING only — exit status never changes. Pinned
+# false-positive path (see test_lint_registers.py): evidence citing a
+# file:line anchor without repeating the identifier's name still warns —
+# advisory noise is acceptable, a silent miss is not. Coverage limit, stated
+# honestly: only rechecked rows have a ledger, so this is a tripwire over the
+# recheck sample, not a guarantee over every confirmed claim.
+#
+# Identifier extraction — narrowly code-shaped tokens in the claim text:
+#   * backtick-quoted tokens without internal whitespace (`test_score_std`);
+#   * bare snake_case tokens (an interior underscore);
+#   * bare dotted filenames with a code/data extension (build_panel.R).
+_ANCHOR_EXTENSIONS = (
+    r"do|ado|py|r|jl|m|sas|sps|csv|dta|tsv|txt|tex|md|json|ya?ml|xlsx?|rds|parquet"
+)
+_ANCHOR_IDENTIFIER_RE = re.compile(
+    r"`([^`\s]+)`"                                    # backticked, no spaces
+    r"|\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\b"  # snake_case
+    r"|\b([\w./-]+\.(?:%s))\b" % _ANCHOR_EXTENSIONS,  # filename.ext
+    re.IGNORECASE,
+)
+_ANCHOR_CONFIRMED_RE = re.compile(r"\bconfirmed\b", re.IGNORECASE)
+
+
+def claim_named_identifiers(text):
+    """Return the set of code-like identifiers *text* names (see regex above)."""
+    found = set()
+    for m in _ANCHOR_IDENTIFIER_RE.finditer(text or ""):
+        found.add(next(g for g in m.groups() if g))
+    return found
+
+
+def check_anchoring_advisory(lint, audit, ledger_rows):
+    """Advisory-only scan of a b5-claims recheck ledger: flag every row whose
+    `Proposed Register Change` closes the claim `confirmed` while the claim's
+    text names an identifier absent from the row's `Evidence Checked`. One
+    WARNING per flagged row; never a hard fail. Skips silently when the
+    canonical claims register is absent or unparsable (advisory robustness)."""
+    reg_path = audit / "claims_register.md"
+    if not reg_path.is_file():
+        return
+    try:
+        reg_text = reg_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    claim_text_by_id = {}
+    for headers, rows, _ in parse_tables(reg_text):
+        # Tolerate extra trailing columns: the post-b8 finalize step promotes
+        # the rewriter's staging register, appending `*Original` columns, so
+        # the real final `claims_register.md` header is CLAIMS_COLS PLUS extras.
+        # Mirror load_register(..., allow_extra=True) / score_fixture's
+        # _find_claims_table, and zip each row against the ACTUAL headers so the
+        # claim columns are read by name, not position.
+        if set(CLAIMS_COLS) <= set(headers):
+            for r in rows:
+                if len(r) != len(headers):
+                    continue
+                d = dict(zip(headers, r))
+                claim_text_by_id[d["Claim ID"]] = d["Claim Text"]
+            break
+    if not claim_text_by_id:
+        return
+    for r in ledger_rows:
+        d = dict(zip(LEDGER_COLS, r))
+        rid = d["ID"]
+        # only a close to `confirmed` is in scope (the word-boundary regex
+        # deliberately does not match `confirmation_needed`).
+        if not _ANCHOR_CONFIRMED_RE.search(d["Proposed Register Change"] or ""):
+            continue
+        evidence = (d["Evidence Checked"] or "").lower()
+        missing = sorted(
+            tok for tok in claim_named_identifiers(claim_text_by_id.get(rid, ""))
+            if tok.lower() not in evidence
+        )
+        if missing:
+            lint.warn(
+                f"anchoring: {rid} closes confirmed but the claim names "
+                f"identifier(s) absent from 'Evidence Checked': "
+                f"{', '.join('`%s`' % t for t in missing)}; verify each is "
+                f"anchored at its claimed role (anchoring rule, registers.md)"
+            )
+
+
+# --- U5 advisory filename-parameter reconciliation (KTD-4: advisory, blocked
+#     rows only, same-syntactic-shape tokens only) --------------------------
+#
+# A `blocked` claims row whose claim text states a numeric parameter while a
+# filename the row itself cites encodes a DIFFERENT value of the same
+# syntactic shape has already transcribed a visible contradiction — the
+# blocked-row escalation rule in registers.md says such a row cannot rest at
+# `blocked`. This lint is the finalize-stage tripwire behind the reading-side
+# reconciliation sweep (section-worker.md); it attaches at b8 (the U1
+# adjudication advisory's finalize sibling; U4's anchoring advisory sits at
+# b5). Per KTD-4 the crude any-numeric-mismatch version is explicitly
+# rejected as too noisy — filenames carry incidental years, versions, and
+# resolutions, and claim text is dense with estimates and sample sizes — so
+# the check is restricted to blocked rows and compares only tokens of the
+# SAME syntactic shape:
+#   * ratio composites — "one-in-ten" / "1 in 10" in prose vs `1in10` /
+#     `1_in_10` / `1-in-10` in a filename stem; spelled-out number words in
+#     the claim are normalized to digits first (vocabulary mirrors the P-14
+#     signatures in scripts/score_fixture.py);
+#   * keyed parameter composites — an alpha key attached to a number
+#     (`rp100`, `10km`, `q99`) compared only against a filename token
+#     sharing the SAME alpha key. A key present on only one side is never a
+#     mismatch, so an incidental year (no key at all) or version (`v3` with
+#     no `v`-keyed claim token) stays silent.
+# Advisory only: one WARNING per flagged row carrying the literal token
+# ``filename-parameter``; exit status never changes.
+
+# Spelled-out number words normalized before comparison (mirrors the
+# score_fixture.py P-14 vocabulary: "one-in-ten", "one in twenty", ...).
+_FP_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100,
+    "thousand": 1000,
+}
+_FP_NUMBER_WORD_RE = re.compile(
+    r"\b(%s)\b" % "|".join(_FP_NUMBER_WORDS), re.IGNORECASE)
+# filenames cited in a register cell (same extension vocabulary as the U4
+# anchoring advisory above).
+_FP_FILENAME_RE = re.compile(
+    r"\b([\w./-]+\.(?:%s))\b" % _ANCHOR_EXTENSIONS, re.IGNORECASE)
+# ratio composite in prose (after number-word normalization): "1-in-10",
+# "1 in 10"; in a filename stem: "1in10", "1_in_10", "1-in-10".
+_FP_PROSE_RATIO_RE = re.compile(r"\b(\d+)[\s-]+in[\s-]+(\d+)\b", re.IGNORECASE)
+_FP_FNAME_RATIO_RE = re.compile(r"(\d+)[-_]?in[-_]?(\d+)", re.IGNORECASE)
+# keyed composite: alpha key attached (no whitespace) to a number, either
+# order — `rp100`, `rp-100`, `10km`, `q99`. Attachment (or a single
+# hyphen/underscore) is required so free-standing counts ("4,832
+# households") never form a token. Lookarounds rather than \b: an
+# underscore is a \w character, so \b would never fire inside a filename
+# stem like `grid_25km` — here `-`/`_` count as token separators.
+_FP_KEYED_RES = (
+    re.compile(r"(?<![A-Za-z0-9])([a-z]{1,10})[-_]?(\d+)(?![A-Za-z0-9])",
+               re.IGNORECASE),   # key-first
+    re.compile(r"(?<![A-Za-z0-9])(\d+)[-_]?([a-z]{1,10})(?![A-Za-z0-9])",
+               re.IGNORECASE),   # number-first
+)
+
+
+def _fp_normalize_number_words(text):
+    return _FP_NUMBER_WORD_RE.sub(
+        lambda m: str(_FP_NUMBER_WORDS[m.group(1).lower()]), text)
+
+
+def _fp_tokens(text, ratio_re):
+    """(ratios, keyed) parameter tokens of *text*: ratios as a set of
+    (numerator, denominator) int pairs; keyed composites as {key: {values}}.
+    Ratio matches are masked before keyed extraction so `1in20` never also
+    yields an `in`-keyed composite."""
+    ratios = set()
+
+    def mask(m):
+        ratios.add((int(m.group(1)), int(m.group(2))))
+        return " " * len(m.group(0))
+
+    masked = ratio_re.sub(mask, text)
+    keyed = {}
+    for rx in _FP_KEYED_RES:
+        for m in rx.finditer(masked):
+            a, b = m.group(1), m.group(2)
+            key, num = (a, b) if a[0].isalpha() else (b, a)
+            keyed.setdefault(key.lower(), set()).add(int(num))
+    return ratios, keyed
+
+
+def _fp_claim_params(claim_text):
+    """Parameter tokens the CLAIM states: cited filenames are masked out
+    first (their embedded tokens belong to the filename side), then
+    spelled-out number words are normalized to digits."""
+    prose = _FP_FILENAME_RE.sub(lambda m: " " * len(m.group(0)), claim_text or "")
+    return _fp_tokens(_fp_normalize_number_words(prose), _FP_PROSE_RATIO_RE)
+
+
+def _fp_filename_params(*cells):
+    """Parameter tokens embedded in every filename cited across *cells*,
+    extracted from each filename's stem (basename, extension stripped)."""
+    ratios, keyed = set(), {}
+    for cell in cells:
+        for m in _FP_FILENAME_RE.finditer(cell or ""):
+            stem = m.group(1).rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            r, k = _fp_tokens(stem, _FP_FNAME_RATIO_RE)
+            ratios |= r
+            for key, vals in k.items():
+                keyed.setdefault(key, set()).update(vals)
+    return ratios, keyed
+
+
+def check_filename_parameter_advisory(lint, path, rows, cols=None):
+    """Advisory-only scan of a FINAL claims register (b8): flag every
+    `blocked` row whose claim-stated parameter disagrees with a same-shape
+    token embedded in a filename the row cites (Code/Data Source, Blocked
+    Check, or the claim text itself). One WARNING per flagged row; never a
+    hard fail. *cols* is the actual header order of *rows* (defaults to the
+    canonical ``CLAIMS_COLS``; at b8 the staging register carries extra
+    ``*Original`` columns)."""
+    cols = cols or CLAIMS_COLS
+    for r in rows:
+        d = dict(zip(cols, r))
+        if d.get("Status") != "blocked":
+            continue
+        c_ratios, c_keyed = _fp_claim_params(d.get("Claim Text", ""))
+        f_ratios, f_keyed = _fp_filename_params(
+            d.get("Code/Data Source", ""), d.get("Blocked Check", ""),
+            d.get("Claim Text", ""))
+        mismatches = []
+        if c_ratios and f_ratios and not (c_ratios & f_ratios):
+            mismatches.append(
+                "ratio %s vs filename %s" % (
+                    "/".join(sorted("%d-in-%d" % p for p in c_ratios)),
+                    "/".join(sorted("%d-in-%d" % p for p in f_ratios))))
+        for key in sorted(set(c_keyed) & set(f_keyed)):
+            if not (c_keyed[key] & f_keyed[key]):
+                mismatches.append(
+                    "'%s' %s vs filename %s" % (
+                        key,
+                        "/".join(str(v) for v in sorted(c_keyed[key])),
+                        "/".join(str(v) for v in sorted(f_keyed[key]))))
+        if mismatches:
+            lint.warn(
+                f"filename-parameter: {d.get('Claim ID', '?')} (blocked) — "
+                f"claim-stated parameter disagrees with a same-shape token "
+                f"in a cited filename ({'; '.join(mismatches)}); reconcile "
+                f"per the blocked-row escalation rule (registers.md)"
+            )
 
 
 def check_output_rows(lint, path, rows, final=False):
@@ -1167,6 +1411,9 @@ def stage_b5(lint, audit, stream, shard, manifest):
                 lint.fail(f"{shard}: {d['ID']} verdict '{d['Verdict']}' but neither "
                           f"'Proposed Register Change' nor 'Proposed Note' records a blocker")
     check_unique(lint, shard, seen, "ledger ID")
+    if stream == "claims":
+        # U4 advisory: identifier anchoring on rows closing `confirmed`.
+        check_anchoring_advisory(lint, audit, rows)
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")
@@ -1283,6 +1530,79 @@ def confirmed_conflict_links(claim_rows, error_rows, claim_cols=None, error_cols
     return pairs
 
 
+# SC-01 overlap-conflict advisory (plan 2026-07-07-001, U5). Code-line citation
+# forms observed in real registers: the documented colon form (`path:21-23`,
+# `path:11,16-20`) plus the space-L form (`path L21-23`) seen as worker drift.
+# RANGE_RE above matches identifier ranges (C-0001–C-0005), not code lines.
+CODE_LOC_RE = re.compile(
+    r"([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9_]+)"  # repo-relative path with extension
+    r"(?::(?=\d)|\s+L\s*)"  # colon form (digit must follow — 'path: 3 vars' is prose) or space-L
+    r"(\d+(?:\s*[–—-]\s*\d+)?(?:\s*,\s*\d+(?:\s*[–—-]\s*\d+)?)*)"
+)
+_SPAN_RE = re.compile(r"(\d+)(?:\s*[–—-]\s*(\d+))?")
+
+
+def code_line_ranges(cell):
+    """Extract ``(path, (lo, hi))`` tuples from a citation cell.
+
+    Handles the colon form (``path:21-23``, ``path:11,16-20``) and the space-L
+    form (``path L21-23``), comma-separated multi-ranges, hyphen/en-dash/
+    em-dash, and backticked paths. Ranged-only matching (KTD-4): a bare file
+    with no line spec contributes no range and never overlaps — whole-file
+    coverage belongs to the b7 worker rule, not this parser. Single lines
+    yield ``(n, n)``; reversed bounds are normalized.
+    """
+    out = []
+    # strip (not blank) backticks so `path`:21-23 keeps the colon abutting the path
+    for m in CODE_LOC_RE.finditer((cell or "").replace("`", "")):
+        path = m.group(1)
+        for span in _SPAN_RE.finditer(m.group(2)):
+            lo = int(span.group(1))
+            hi = int(span.group(2)) if span.group(2) else lo
+            out.append((path, (min(lo, hi), max(lo, hi))))
+    return out
+
+
+def overlapping_confirmed_pairs(claim_rows, error_rows, claim_cols=None, error_cols=None):
+    """Confirmed-claim↔confirmed-error pairs whose cited code lines overlap.
+
+    The claim side parses the claims register's Code/Data Source cell; the
+    error side parses the code-error register's Code Location cell (the ranged
+    column — the error Code/Data Source carries bare script paths that parse
+    to no ranges). Example rows are skipped. Pairs already linked via Related
+    Error IDs are the hard check's territory (``confirmed_conflict_links``);
+    callers subtract that set before advising.
+    """
+    ccols = claim_cols or CLAIMS_COLS
+    ecols = error_cols or ERROR_COLS
+    err_ranges = []
+    for r in error_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ecols, r))
+        if d.get("Status") != "confirmed" or not d.get("Error ID"):
+            continue
+        spans = code_line_ranges(d.get("Code Location", ""))
+        if spans:
+            err_ranges.append((d["Error ID"], spans))
+    pairs = []
+    for r in claim_rows:
+        if is_example_row(r):
+            continue
+        d = dict(zip(ccols, r))
+        if d.get("Status") != "confirmed" or not d.get("Claim ID"):
+            continue
+        cspans = code_line_ranges(d.get("Code/Data Source", ""))
+        if not cspans:
+            continue
+        for eid, espans in err_ranges:
+            if any(cp == ep and clo <= ehi and elo <= chi
+                   for cp, (clo, chi) in cspans
+                   for ep, (elo, ehi) in espans):
+                pairs.append((d["Claim ID"], eid))
+    return pairs
+
+
 # NOTE (U6/U7 open question): the "downstream-use severities must cite a search" rule is NOT
 # mechanized here. Detecting that a severity "rests on downstream use" requires interpreting free
 # text (Issue/Error Description), which is not cleanly lintable; it stays review guidance
@@ -1390,6 +1710,20 @@ def stage_b7(lint, audit):
         severity_divergence_links(c_rows, e_rows, c_headers, e_headers),
         "b7", "linked pair with differing severities",
     )
+    # SC-01 overlap-conflict advisory (U5): warn on confirmed-vs-confirmed pairs
+    # whose cited code lines overlap but that no one linked — the case the hard
+    # checks above cannot see (they only inspect links a worker already created).
+    # Advisory only; the exit code is driven by lint.errors alone.
+    linked = set(confirmed_conflict_links(c_rows, e_rows, c_headers, e_headers))
+    for cid, eid in overlapping_confirmed_pairs(c_rows, e_rows, c_headers, e_headers):
+        if (cid, eid) in linked:
+            continue
+        lint.warn(
+            f"overlap-conflict: confirmed claim {cid} cites code lines overlapping "
+            f"confirmed error {eid}, but the pair is not linked and listed under "
+            f"'## Status conflicts' — adjudicate against the b7 status-conflict rule "
+            f"(registers.md, Cross-link consistency); overlap alone is not proof of conflict"
+        )
 
 
 REWRITE_PAIRS = {
@@ -1428,6 +1762,9 @@ def stage_b8(lint, audit, manifest):
             # U1 advisory: b8 also lints a FINAL claims register. Read under the
             # staging header order (extra `*Original` cols) so field lookup aligns.
             check_adjudication_advisory(lint, staging / f, st_rows, list(st_headers))
+            # U5 advisory: filename-parameter reconciliation on blocked rows
+            # (attaches at finalize per KTD-4).
+            check_filename_parameter_advisory(lint, staging / f, st_rows, list(st_headers))
         if any(h in ("Notes", "Notes Original") for h in st_headers):
             lint.fail(f"{staging / f}: Notes columns are forbidden")
         for new_col, orig_col in REWRITE_PAIRS[f]:

@@ -162,6 +162,20 @@ def test_conventions_artifact_wellformed_is_silent(tmp_path):
     assert not warning_lines(res, "conventions.md"), res.stdout
 
 
+def test_conventions_artifact_enumerated_member_list_is_silent(tmp_path):
+    """The U1 category `enumerated_member_list` is in-vocabulary: a row using
+    it (even single-site, per the U1 carve-out) draws no warning."""
+    rows = [
+        rb.conventions_row(
+            "income components list", category="enumerated_member_list",
+            definition='members "crop sales; livestock sales; wages" (C-0310)',
+            sites="C-0310"),
+    ]
+    a = rb.make_conventions_b4_code(tmp_path, rows)
+    res = rb.lint(a, "b4-code")
+    assert not warning_lines(res, "conventions.md"), res.stdout
+
+
 def test_conventions_artifact_bad_category_warns(tmp_path):
     """An out-of-vocabulary Category draws an advisory warning, never a fail."""
     rows = [rb.conventions_row("mystery thing", category="not_a_real_category")]
@@ -181,3 +195,433 @@ def test_conventions_artifact_wrong_header_warns(tmp_path):
     res = rb.lint(a, "b4-code")
     assert any("expected header" in ln for ln in warning_lines(res, "conventions.md")), \
         res.stdout
+
+
+# --------------------- U4 identifier-anchoring advisory (b5-claims ledger)
+#
+# KTD-3: the advisory reads the recheck ledger's `Evidence Checked` column,
+# never the claims register's own row (a confirmed register row has no
+# evidence column — comparing identifiers against it would fire on nearly
+# every clean row). The claim's *text* comes from the canonical claims
+# register at ``audit/claims_register.md``, keyed by the ledger row's ID.
+# Advisory only: one WARNING per flagged row, exit status never changed.
+# Fixture domain: an education-panel package (fresh, non-Floods surface).
+
+
+def _anchoring_b5(tmp_path, *, claim_text, evidence,
+                  verdict="not_substantiated",
+                  change="set Status=confirmed",
+                  note="", with_register=True):
+    """A b5-claims boundary: one rechecked claim row closing `confirmed`."""
+    row = rb.ledger_row(
+        "C-0101", status="confirmed", severity="", evidence=evidence,
+        verdict=verdict, change=change, impact="none", note=note)
+    a, shard = rb.make_b5(tmp_path, "claims", ledger_rows=[row])
+    if with_register:
+        a.write_register(
+            "claims_register.md", rb.CLAIMS_COLS,
+            [rb.claims_row("C-0101", text=claim_text)],
+            title="Claims register")
+    return a, shard
+
+
+def test_anchoring_named_identifier_in_evidence_is_silent(tmp_path):
+    """A confirmed close whose evidence names the claimed identifier draws
+    no anchoring warning."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the score index `test_score_std` is standardized to "
+                    "mean zero within each cohort"),
+        evidence=("`code/build_scores.R:41-44` standardizes test_score_std "
+                  "within cohort; recomputed mean is 0 at shown precision"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout
+
+
+def test_anchoring_named_identifier_absent_warns(tmp_path):
+    """A confirmed close whose evidence never mentions the claimed identifier
+    draws exactly one anchoring warning naming the row — and the warning is
+    advisory (exit status unchanged)."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence=("verified the drop filter exists at `code/build_panel.R:88` "
+                  "and covers the tenure block"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    # advisory: never changes the stage exit status
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "anchoring")
+    assert len(warns) == 1, res.stdout
+    assert "C-0101" in warns[0], res.stdout
+    assert "teacher_tenure_yrs" in warns[0], res.stdout
+
+
+def test_anchoring_line_number_only_evidence_warns(tmp_path):
+    """PINNED DECISION — the main false-positive path.
+
+    Evidence that cites only a file:line range without repeating the named
+    identifier WARNS. Rationale: the evidence-discipline rule already
+    requires exact anchors, and the anchoring norm requires each named
+    identifier located *at its claimed role* — an anchor that names the
+    identifier is the compliant form, so a line-number-only citation is
+    exactly the case a human should re-read. Consistent with the U1 advisory
+    philosophy: the lexical proxy over-matches by design; advisory noise is
+    acceptable, a silent miss is not (the warning never fails the stage).
+    """
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence=("`code/build_panel.R:88-93` applies the described drop "
+                  "filter; output row count matches the paper"),
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "anchoring")
+    assert len(warns) == 1 and "C-0101" in warns[0], res.stdout
+
+
+def test_anchoring_scoped_to_confirmed_closes_only(tmp_path):
+    """A row NOT closing `confirmed` (here `confirmation_needed`) is out of
+    scope even when its evidence omits the named identifier — this also pins
+    that the 'confirmed' detector does not fire on 'confirmation_needed'."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text=("the panel drops teachers with `teacher_tenure_yrs` "
+                    "below two years"),
+        evidence="static read of `code/build_panel.R:88` could not decide",
+        verdict="confirmation_needed",
+        change="set Status=confirmation_needed",
+        note="cannot decide statically; needs the shipped panel",
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout
+
+
+# ------------- U5 filename-parameter advisory (b8 finalize, blocked rows)
+#
+# KTD-4: the reconciliation lint is advisory, blocked-rows-only, and
+# pattern-shaped, never magnitude-shaped — it compares only tokens of the
+# SAME syntactic shape (a ratio composite against a ratio composite, a
+# keyed parameter composite against one sharing the same alpha key). The
+# crude any-numeric-mismatch version is explicitly rejected: filenames carry
+# incidental years, versions, and resolutions, and claim text is dense with
+# estimates and sample sizes. It attaches at finalize (``--stage b8``),
+# alongside the U1 adjudication advisory; U4's anchoring advisory sits at
+# b5 — this one reads the final claims register. Advisory only: WARNING
+# lines carrying the literal token ``filename-parameter``, exit status
+# never changed. Fixture domain: a customs-records / pollution-grid package
+# (fresh, non-Floods surface).
+
+
+def _fp_b8(tmp_path, *, claim_text, source, status="blocked",
+           blocked_check=""):
+    """A b8 boundary with one claims row for the filename-parameter check."""
+    row = rb.claims_row("C-0101", status=status, text=claim_text,
+                        source=source, blocked_check=blocked_check)
+    a = rb.make_b8(tmp_path, claims_rows=[row])
+    return a
+
+
+def test_fp_builder_boundary_is_green(tmp_path):
+    """Sanity: the make_b8 boundary itself lints green (so any warning the
+    U5 scenarios observe comes from the advisory, not builder breakage)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text="the sample contains 4,832 registered importers",
+        source="`data/importers_panel.csv`",
+        status="confirmed",
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "LINT PASS [b8]" in res.stdout
+
+
+def test_fp_blocked_ratio_mismatch_warns(tmp_path):
+    """A blocked row whose claim states a ratio parameter (spelled out) and
+    whose cited filename encodes a DIFFERENT ratio of the same shape draws
+    exactly one filename-parameter warning naming the row — and the warning
+    is advisory (exit status unchanged)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_sample_1in20.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "filename-parameter")
+    assert len(warns) == 1, res.stdout
+    assert "C-0101" in warns[0], res.stdout
+
+
+def test_fp_blocked_ratio_agreement_is_silent(tmp_path):
+    """A blocked row whose claim and cited filename state the SAME ratio
+    (spelled-out words normalized to digits before comparison) draws no
+    warning — this also pins the number-word normalization."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one in twenty subsample "
+                    "of the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_sample_1in20.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_incidental_year_and_version_are_silent(tmp_path):
+    """GUARDS THE MAIN FALSE-POSITIVE PATH (KTD-4). A blocked row whose
+    cited filename carries an incidental year and a version token unrelated
+    to any claimed parameter draws no warning: a bare year has no syntactic
+    key to compare, and a `v3` composite has no `v`-keyed counterpart in the
+    claim — tokens of different shapes are never compared."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_2019_v3.csv`",
+        blocked_check=("raw customs microdata is restricted-access; the "
+                       "shipped filename `data/customs_2019_v3.csv` "
+                       "remains visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_non_blocked_row_is_never_examined(tmp_path):
+    """A NON-blocked row is out of scope even when its claim and cited
+    filename carry mismatching same-shape tokens (the sweep's reading-side
+    rule handles open rows; the lint is a blocked-row tripwire only)."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("the placebo estimates use a one-in-ten subsample of "
+                    "the customs transaction records"),
+        source="`data/customs_sample_1in20.csv`",
+        status="unclear",
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "filename-parameter"), res.stdout
+
+
+def test_fp_keyed_composite_mismatch_warns(tmp_path):
+    """A blocked row whose claim states a keyed parameter composite (`10km`)
+    and whose cited filename encodes a different value under the SAME alpha
+    key (`25km`) warns; the shared key is what licenses the comparison."""
+    a = _fp_b8(
+        tmp_path,
+        claim_text=("monitor readings are gridded at a 10km resolution "
+                    "before aggregation"),
+        source="`data/pollution_grid_25km.csv`",
+        blocked_check=("the gridding script is not shipped; the shipped "
+                       "filename `data/pollution_grid_25km.csv` remains "
+                       "visible"),
+    )
+    res = rb.lint(a, "b8")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "filename-parameter")
+    assert len(warns) == 1 and "C-0101" in warns[0], res.stdout
+
+
+# --------------- SC-01 overlap-conflict advisory (b7) — line-range parser
+#
+# Plan 2026-07-07-001 (SC-01), U5/U6: a deterministic advisory at b7 that
+# warns when a confirmed claim's cited code location overlaps a confirmed
+# error's cited Code Location without the pair being linked and listed as a
+# status conflict. Ranged-only matching: a bare file citation contributes no
+# range and never overlaps (whole-file coverage is the b7 worker rule's job).
+# Advisory only: WARNING lines carrying the literal token ``overlap-conflict``,
+# exit status never changed.
+
+_lm = rb._lint_mod
+
+
+def test_line_ranges_colon_form():
+    assert _lm.code_line_ranges("`do/build_panel.do:21-23`") == [
+        ("do/build_panel.do", (21, 23))]
+
+
+def test_line_ranges_space_l_form():
+    assert _lm.code_line_ranges("do/build_panel.do L21-23") == [
+        ("do/build_panel.do", (21, 23))]
+
+
+def test_line_ranges_multi_range_and_en_dash():
+    assert _lm.code_line_ranges("`do/analysis.do:11,16–20`") == [
+        ("do/analysis.do", (11, 11)), ("do/analysis.do", (16, 20))]
+
+
+def test_line_ranges_bare_file_contributes_none():
+    """Ranged-only matching (KTD-4): no line spec -> no range, never overlaps."""
+    assert _lm.code_line_ranges("`README.md`") == []
+    assert _lm.code_line_ranges("`do/build_panel.do`; see also the README") == []
+
+
+def test_line_ranges_single_line_and_reversed():
+    assert _lm.code_line_ranges("do/x.do:5") == [("do/x.do", (5, 5))]
+    # reversed bounds are normalized, not treated as non-overlapping
+    assert _lm.code_line_ranges("do/x.do:9-7") == [("do/x.do", (7, 9))]
+
+
+def test_line_ranges_multiple_files_in_one_cell():
+    assert _lm.code_line_ranges("`do/a.do:1-2`; `do/b.do:4`") == [
+        ("do/a.do", (1, 2)), ("do/b.do", (4, 4))]
+
+
+def test_line_ranges_prose_after_colon_is_not_a_citation():
+    """A colon followed by prose (space before the number) is not a line spec;
+    treating it as one would break ranged-only semantics on bare citations."""
+    assert _lm.code_line_ranges("`do/clean.do`: 3 variables are dropped") == []
+    assert _lm.code_line_ranges("do/clean.do: 3 variables are dropped") == []
+
+
+def test_line_ranges_backticked_path_with_lines_outside():
+    """Worker drift form: backticks around the path only, lines outside."""
+    assert _lm.code_line_ranges("`do/x.do`:21-23") == [("do/x.do", (21, 23))]
+
+
+# ------------- SC-01 overlap-conflict advisory — pure pair computation
+
+
+def _oc(claim_source, err_location, *, claim_status="confirmed",
+        err_status="confirmed"):
+    claims = [rb.claims_row("C-0014", source=claim_source, status=claim_status)]
+    errors = [rb.error_row("E-0151", location=err_location, status=err_status)]
+    return _lm.overlapping_confirmed_pairs(claims, errors)
+
+
+def test_overlap_pairs_positive_c0014_e0151():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`") == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_same_file_disjoint_ranges_silent():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:30-35`") == []
+
+
+def test_overlap_pairs_distinct_files_silent():
+    assert _oc("`do/build_panel.do:21-23`", "`do/merge.do:21-23`") == []
+
+
+def test_overlap_pairs_bare_file_never_matches():
+    assert _oc("`do/build_panel.do`", "`do/build_panel.do:20-23`") == []
+
+
+def test_overlap_pairs_requires_confirmed_on_both_sides():
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`",
+               claim_status="inconsistent") == []
+    assert _oc("`do/build_panel.do:21-23`", "`do/build_panel.do:20-23`",
+               err_status="candidate") == []
+
+
+def test_overlap_pairs_read_error_code_location_not_source():
+    """The error side parses the ranged Code Location column; the error
+    Code/Data Source cell (a bare script path) must not silence the pair."""
+    claims = [rb.claims_row("C-0014", source="`py/make_figures.py:4-6`")]
+    errors = [rb.error_row("E-0151")]  # default: source bare, location `:5`
+    assert _lm.overlapping_confirmed_pairs(claims, errors) == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_cross_citation_forms():
+    assert _oc("do/build_panel.do L21-23", "`do/build_panel.do:23`") == [
+        ("C-0014", "E-0151")]
+
+
+def test_overlap_pairs_skip_example_rows():
+    claims = [rb.claims_row("C-0000", source="`do/x.do:1-2`")]
+    errors = [rb.error_row("E-0151", location="`do/x.do:1-2`")]
+    assert _lm.overlapping_confirmed_pairs(claims, errors) == []
+
+
+# ------------- SC-01 overlap-conflict advisory — b7 boundary behavior
+
+
+def _b7_conflict_rows(*, linked=False):
+    claims = [rb.claims_row(
+        "C-0014", source="`do/build_panel.do:21-23`",
+        related="E-0151" if linked else "")]
+    errors = [rb.error_row(
+        "E-0151", etype="aggregation_or_unit_error",
+        source="`do/build_panel.do`",
+        location="`do/build_panel.do:20-23`",
+        related="C-0014" if linked else "")]
+    return claims, errors
+
+
+def test_b7_unlinked_overlap_warns_and_stays_green(tmp_path):
+    claims, errors = _b7_conflict_rows()
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    warns = warning_lines(res, "overlap-conflict")
+    assert len(warns) == 1, res.stdout
+    assert "C-0014" in warns[0] and "E-0151" in warns[0], res.stdout
+
+
+def test_b7_linked_and_listed_pair_not_double_reported(tmp_path):
+    """A confirmed pair that is linked and listed under '## Status conflicts'
+    is covered by the existing hard check; the advisory must not re-report."""
+    claims, errors = _b7_conflict_rows(linked=True)
+    summary = (
+        "# Cross-link summary\n\n## Status conflicts\n\n"
+        "C-0014 <-> E-0151 — confirmed claim contradicted by confirmed error\n\n"
+        "## Escalated mapped claims\n\nnone\n\n"
+        "## Severity divergences\n\nnone\n"
+    )
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors,
+                   summary=summary)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "overlap-conflict"), res.stdout
+
+
+def test_b7_advisory_prints_even_when_summary_missing(tmp_path):
+    """The conductor's pre-dispatch flow (pipeline-finalize b7 step 2) runs the
+    b7 lint before the cross-link summary exists: the stage FAILS on the
+    missing summary but the overlap-conflict WARNING lines still print — they
+    are the pair list passed to the cross-linker."""
+    claims, errors = _b7_conflict_rows()
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    (a.audit / "register_cross_link_summary.md").unlink()
+    res = rb.lint(a, "b7")
+    assert res.returncode == 1, res.stdout + res.stderr
+    warns = warning_lines(res, "overlap-conflict")
+    assert len(warns) == 1 and "C-0014" in warns[0], res.stdout
+
+
+def test_b7_non_overlapping_citations_silent(tmp_path):
+    claims = [rb.claims_row("C-0014", source="`do/build_panel.do:21-23`")]
+    errors = [rb.error_row("E-0151", location="`do/build_panel.do:30-35`")]
+    a = rb.make_b7(tmp_path, claims_rows=claims, error_rows=errors)
+    res = rb.lint(a, "b7")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "overlap-conflict"), res.stdout
+
+
+def test_anchoring_silent_without_claims_register(tmp_path):
+    """No canonical claims register in the audit dir (as in these synthetic
+    boundaries): the advisory skips silently — it never fails the stage and
+    never crashes the linter."""
+    a, shard = _anchoring_b5(
+        tmp_path,
+        claim_text="unused",
+        evidence="verified the drop filter exists at `code/build_panel.R:88`",
+        with_register=False,
+    )
+    res = rb.lint(a, "b5-claims", shard=shard)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not warning_lines(res, "anchoring"), res.stdout

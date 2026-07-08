@@ -1,0 +1,6 @@
+# Python environment for the analysis and figure scripts.
+[project]
+name = "rainfall-panel"
+version = 0.4.1
+requires-python = ">=3.10"
+dependencies = ["pandas>=2.0", "matplotlib>=3.8"]

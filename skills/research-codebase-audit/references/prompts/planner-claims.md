@@ -38,6 +38,12 @@ registers; do not edit paper or code.
 
 - One coherent section or ≤ ~10 paper pages per worker; split longer sections.
 - Expected claims per worker: 15–35; split scopes that would exceed this.
+- Count expected claims at the claim-unit rule's granularity (`audit/audit_readme.md`),
+  including its enumerated-procedure corollary: a procedure whose steps state checkable
+  parameters yields one claim per parameter-bearing step, so a scope carrying long enumerated
+  procedures (appendix data-construction recipes especially) is sized on its step count, not
+  its sentence count. When that count pressures the budget, split the scope across workers —
+  the sizing budget must never collapse a procedure's steps into a single expected claim.
 - Claim ID range per worker: max(50, 3 × expected claims); output ID range:
   max(30, 3 × expected outputs). Ranges globally disjoint, allocated upward from
   {ID_ALLOCATION_START}. Additionally reserve a 50-ID merge-coordinator range per register,

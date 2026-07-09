@@ -23,8 +23,9 @@ Reference files (all paths relative to this skill's folder):
 Invariants you never break:
 
 - **Workers get filled prompts, never skill files.** Inside the audited repo a worker reads only
-  its plan, the generated `audit/audit_readme.md`, `audit/CODEMAP.md`, the paper, and the code,
-  shipped artifacts, and data in scope.
+  its plan, its role contract under `audit/_run/contracts/`, `audit/CODEMAP.md`, the paper, and
+  the code, shipped artifacts, and data in scope. The conductor and deliberate full-readme
+  pointers may still read `audit/audit_readme.md`.
 - **Skeleton text is invariant** — you and the planner subagents fill the designated slots only.
 - **Every canonical register mutation** goes write-to-staging (`audit/_staging/`) → lint →
   atomic rename (`mv`), with a pre-stage snapshot of the register under
@@ -137,9 +138,9 @@ Completion: manifest written and every field above resolved with the user.
 1. Create `audit/` with empty registers per `references/registers.md`, plus
    `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`,
    `audit/_staging/`, `audit/_run/snapshots/`, and `audit/plans/`.
-2. **Generate `audit/audit_readme.md`** per the generation instruction at the top of
-   `references/registers.md` (reproduce every normative section). Workers read this file,
-   never the skill's own references.
+2. Run `scripts/build_worker_contracts.py --audit-dir audit` to generate
+   `audit/audit_readme.md` and the per-role contracts in `audit/_run/contracts/`. Workers read
+   their role contract, never the skill's own references.
 3. If the paper is LaTeX: run `scripts/blank_tex_comments.py` to produce the audit copy —
    comments blanked, line numbers preserved, so only PDF-visible content is audited. Record it
    as `paper_audit_path` (`paper_source_path`/`paper_sha256` keep pointing at the source).

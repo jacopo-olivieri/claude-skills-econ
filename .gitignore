@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
+docs/
 .pytest_cache/
+CLAUDE.local.md

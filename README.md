@@ -46,7 +46,7 @@ bash scripts/link-skills.sh
 To add a skill: create `skills/<name>/SKILL.md` (see
 [`TEMPLATE-SKILL.md`](./TEMPLATE-SKILL.md)), add `"./skills/<name>"` to
 [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json), then run the link
-script. Conventions live in [`CLAUDE.md`](./CLAUDE.md).
+script. Conventions live in [`AGENTS.md`](./AGENTS.md).
 
 ## License
 

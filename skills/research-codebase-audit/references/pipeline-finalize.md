@@ -16,8 +16,9 @@ canon exists.
 ## b7 — Cross-link (full replication only)
 
 1. Snapshot both link-bearing registers to `audit/_run/snapshots/b7/`.
-2. Dispatch one subagent with `prompts/cross-linker.md`. It edits **only** `Related Error IDs`
-   (claims) and `Related Claim IDs` (code errors) in staging copies, and writes
+2. Dispatch one subagent with `prompts/cross-linker.md`, with `{CONTRACT_PATH}` set to
+   `audit/_run/contracts/cross_link.md`. It edits **only** `Related Error IDs` (claims) and
+   `Related Claim IDs` (code errors) in staging copies, and writes
    `audit/register_cross_link_summary.md` — including a `## Status conflicts` section for
    every link pairing a `confirmed` claim with a `confirmed` code error, a
    `## Escalated mapped claims` section for every link pairing a `confirmed` code error with a
@@ -38,16 +39,12 @@ canon exists.
    mapped-claim↔confirmed-error contradiction is listed under `## Escalated mapped claims`;
    every divergent-severity link is listed under `## Severity divergences`. Atomic rename.
 4. **Status-conflict resolution** (only when the summary lists conflicts): dispatch one
-   recheck-cluster-worker over the conflicted claim rows, with the linked error rows named as
-   evidence to check. Apply the standard verdict→register mapping (registers.md) to the
+   recheck-cluster-worker over the conflicted claim rows, with `{CONTRACT_PATH}` set to
+   `audit/_run/contracts/recheck_claims.md` and the linked error rows named as evidence to
+   check. Apply the standard verdict→register mapping (registers.md) to the
    claims register mechanically. Whenever the recheck chooses between `inconsistent` and
-   `confirmation_needed`, apply the **visibility test**: escalate to `inconsistent` only when
-   both halves of the contradiction are visible in files that ship; when shipped files
-   establish only that a contradiction *could* occur — a value only absent data would reveal —
-   the row stops at `confirmation_needed`. Paper text versus a shipped filename is fully
-   visible and escalates; "these two identifier codes might collide when multiplied" depends
-   on absent data and stops at `confirmation_needed`. If a verdict leaves the claim
-   `confirmed` (the error does
+   `confirmation_needed`, apply the visibility test in `references/registers.md`. If a verdict
+   leaves the claim `confirmed` (the error does
    not actually contradict it), the link itself was wrong: remove it from both rows and note
    the removal in the summary. No confirmed-claim↔confirmed-error link may survive into b8
    (lint b8 enforces).
@@ -78,8 +75,9 @@ canon exists.
 ## b8 — Author-facing rewrite
 
 1. Snapshot to `audit/_run/snapshots/b8/`.
-2. Dispatch one subagent with `prompts/rewriter.md` (register paths per mode). This is the
-   dedicated clarity pass: it renames technical fields to `*_Original` and writes author-facing
+2. Dispatch one subagent with `prompts/rewriter.md` (register paths per mode), with
+   `{CONTRACT_PATH}` set to `audit/_run/contracts/rewrite.md`. This is the dedicated clarity
+   pass: it renames technical fields to `*_Original` and writes author-facing
    versions, armed with the five contrastive gold examples and the jargon ban carried verbatim
    in the skeleton.
 3. `lint_registers.py --stage b8`: counts/IDs/statuses/paths byte-identical; `*_Original`

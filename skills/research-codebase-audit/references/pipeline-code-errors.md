@@ -6,7 +6,8 @@ cross-link. Lint stages here are `--stage b<N>-code`.
 
 ## b1 — Plan
 
-1. Dispatch one planner subagent with `prompts/planner-code.md` filled.
+1. Dispatch one planner subagent with `prompts/planner-code.md` filled; set
+   `{CONTRACT_PATH}` to `audit/_run/contracts/planning.md`.
 2. Planner writes `audit/plans/code_error_review_plan.md`: full script inventory (from `audit/CODEMAP.md`,
    minus manifest scope exclusions), and the chunk allocation table (Chunk ID · Script Scope ·
    Likely Pipeline Stage/Outputs · Shard File under `audit/_code_errors/` · Error ID Range ·
@@ -41,14 +42,16 @@ Hygiene and provenance findings default to severity 1–2 per the rubric.
 
 ## b2 — Chunk workers (parallel, fire-and-forget)
 
-Fill `prompts/chunk-worker.md` per chunk (the ERROR SCOPE lists live inside that skeleton —
+Fill `prompts/chunk-worker.md` per chunk, with `{CONTRACT_PATH}` set to
+`audit/_run/contracts/code_first_pass.md` (the ERROR SCOPE lists live inside that skeleton —
 they do not depend on plan quality). Completion = shard exists and passes
 `lint_registers.py --stage b2-code --shard <path>`; retry-once → blocked-continue.
 
 ## b3 — First merge (adds rows)
 
 Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3/`; dispatch
-`prompts/merge-first-pass.md` filled for the code stream → staging register +
+`prompts/merge-first-pass.md` filled for the code stream with `{CONTRACT_PATH}` set to
+`audit/_run/contracts/merge_first_pass.md` → staging register +
 `audit/_run/merge_report_code.json`; `lint_registers.py --stage b3-code` additionally checks
 every inventory script is covered (coverage row in some shard footer) or has a documented
 blocker. Atomic rename on pass.
@@ -73,14 +76,16 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    is fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
    Findings` lists the E-IDs and one-line mechanism already logged in that script.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
+   with `{CONTRACT_PATH}` set to `audit/_run/contracts/second_read_code.md`,
    fire-and-forget. At `deep` depth dispatch a second pass per script with a different
    `{MANDATE_LENS}` and its own disjoint range. A worker is complete when its shard exists at the
    planned path **and** passes `lint_registers.py --stage b3b-code --shard <path>`; retry-once →
    blocked-continue.
 4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
-   `prompts/merge-first-pass.md` filled for the code stream with `{SHARD_DIR}` =
-   `audit/_code_errors_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and `{MERGE_REPORT}`
-   = `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
+   `prompts/merge-first-pass.md` filled for the code stream with `{CONTRACT_PATH}` set to
+   `audit/_run/contracts/merge_first_pass.md`, `{SHARD_DIR}` = `audit/_code_errors_second_read/`,
+   `{PLAN_PATH}` = the b3b allocation plan, and `{MERGE_REPORT}` =
+   `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
    existing canon, preserving every b3 row unchanged.
 5. `lint_registers.py --stage b3b-code` (new rows in b3b ranges, all `candidate`, no b3 row
    deleted or mutated, report identity holds). Atomic rename on pass. Manifest `code_b3b = done`.
@@ -94,15 +99,9 @@ Inventory, mechanically:
 
 - every `candidate` row (recheck resolves them all — none may survive b6), plus
 - every `confirmed` row with Severity ≥ 3, plus
-- a ~10% **deterministic** sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by
-  Error Type (bounds total across strata: min 3 or all available if fewer, max 15). The sample is
-  drawn by a fixed rule so a resume or a fixture re-run selects exactly the same rows: for each
-  stratum, sort its eligible `confirmed` Error IDs ascending by the lowercase hex `sha256` digest
-  of the salted string `"b4-code:" + ID` (e.g. `sha256("b4-code:E-0044")`), and take from the top
-  of that sorted list until the stratum's ~10% quota is filled (round to nearest, at least 1 per
-  non-empty stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`).
-  Ties are impossible (digests are unique per ID); the salt keeps the code and claims samples
-  independent.
+- a deterministic sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by Error
+  Type, using the code-error stream parameters in the deterministic recheck sampling rule
+  (`references/registers.md`).
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: cluster by Error Type, ≤ 8 IDs
 per cluster. At `deep`: every **substantive ID** gets its own single-ID cluster — a substantive
@@ -112,7 +111,7 @@ clusters of ≤ 8 IDs. Shard files under `audit/_code_error_recheck/`.
 Write `audit/plans/code_error_recheck_plan.md` yourself with the same table formats as the
 claims recheck plan (inventory `| ID | Reason | Likely Evidence |`; clusters
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; vocabulary pointer to
-`audit_readme.md`). `lint_registers.py --stage b4-code`. One recheck pass — no looping.
+the recheck code contract). `lint_registers.py --stage b4-code`. One recheck pass — no looping.
 
 **Shared-conventions grep (consumes the b3c artifact; adds candidates before the plan is frozen).**
 If `audit/_run/conventions.md` exists and lists any convention, then before writing the recheck
@@ -156,10 +155,12 @@ status carries no findings; if the artifact reports no candidates, nothing is ad
 
 ## b5 — Recheck cluster workers (parallel)
 
-`prompts/recheck-cluster-worker.md` with stream = code. Same completion/lint/retry rules
-(`--stage b5-code`). No new IDs; no hunting for unrelated errors.
+`prompts/recheck-cluster-worker.md` with stream = code and `{CONTRACT_PATH}` set to
+`audit/_run/contracts/recheck_code.md`. Same completion/lint/retry rules (`--stage b5-code`).
+No new IDs; no hunting for unrelated errors.
 
 ## b6 — Recheck merge (mutates rows)
 
-Snapshot → `prompts/merge-recheck.md` (stream = code) → staging +
+Snapshot → `prompts/merge-recheck.md` (stream = code, `{CONTRACT_PATH}` =
+`audit/_run/contracts/merge_recheck.md`) → staging +
 `audit/code_error_recheck_summary.md` → `lint_registers.py --stage b6-code` → atomic rename.

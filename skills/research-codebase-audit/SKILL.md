@@ -23,8 +23,9 @@ Reference files (all paths relative to this skill's folder):
 Invariants you never break:
 
 - **Workers get filled prompts, never skill files.** Inside the audited repo a worker reads only
-  its plan, the generated `audit/audit_readme.md`, `audit/CODEMAP.md`, the paper, and the code,
-  shipped artifacts, and data in scope.
+  its plan, its role contract under `audit/_run/contracts/`, `audit/CODEMAP.md`, the paper, and
+  the code, shipped artifacts, and data in scope. The conductor and deliberate full-readme
+  pointers may still read `audit/audit_readme.md`.
 - **Skeleton text is invariant** — you and the planner subagents fill the designated slots only.
 - **Every canonical register mutation** goes write-to-staging (`audit/_staging/`) → lint →
   atomic rename (`mv`), with a pre-stage snapshot of the register under
@@ -33,7 +34,7 @@ Invariants you never break:
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
   sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
-  `b2`, `b5`, and now `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  `b2`, `b5`, and `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
   `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, mark that shard/stage
   `blocked` in the manifest and continue everything that does not depend on it. **Merges
@@ -65,10 +66,8 @@ defaults and let the user correct.
    and an explicit off-limits list (scripts/data/commands the run must not touch).
 4. **Review depth.** How much redundancy the run spends on thoroughness — propose `standard`
    (the default) and let the user pick `shallow` or `deep`, same style as the ladder/budget.
-   Depth is **orthogonal to the review ladder**: the ladder governs *what techniques are
-   allowed*; depth governs *how much redundancy is spent*. The chosen depth sets two
-   conductor knobs — the second-read trigger threshold and whether the recheck runs
-   per-finding — per the depth-knob table below.
+   The chosen depth sets two conductor knobs — the second-read trigger threshold and whether
+   the recheck runs per-finding — per the depth-knob table below.
 5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
    exploratory folders); the user corrects. Propose by default: `audit/` itself, `.git/`, caches
    (`__pycache__`, `.ipynb_checkpoints`, `.Rproj.user`, and similar), package-manager directories
@@ -119,10 +118,7 @@ receives — compose it once from mode + ladder + budget + off-limits.
 **Depth-knob table.** `review_depth` (default `standard`) resolves to two conductor knobs the
 downstream stages read. This table is authoritative for those knobs; it lives here — beside the
 manifest schema — and NOT in `references/registers.md`, because these are conductor behaviours,
-not register semantics pasted into worker contexts. (A third knob — 2 independent first-pass
-passes per b2 worker at `deep` — was deleted: it was never implemented, and pair-allocating
-scopes would break the b1 exactly-one-scope lints. Extra `deep` redundancy comes from the b3b
-second-lens pass instead.)
+not register semantics pasted into worker contexts.
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |
@@ -142,9 +138,9 @@ Completion: manifest written and every field above resolved with the user.
 1. Create `audit/` with empty registers per `references/registers.md`, plus
    `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`,
    `audit/_staging/`, `audit/_run/snapshots/`, and `audit/plans/`.
-2. **Generate `audit/audit_readme.md`** per the generation instruction at the top of
-   `references/registers.md` (reproduce every normative section). Workers read this file,
-   never the skill's own references.
+2. Run `scripts/build_worker_contracts.py --audit-dir audit` to generate
+   `audit/audit_readme.md` and the per-role contracts in `audit/_run/contracts/`. Workers read
+   their role contract, never the skill's own references.
 3. If the paper is LaTeX: run `scripts/blank_tex_comments.py` to produce the audit copy —
    comments blanked, line numbers preserved, so only PDF-visible content is audited. Record it
    as `paper_audit_path` (`paper_source_path`/`paper_sha256` keep pointing at the source).

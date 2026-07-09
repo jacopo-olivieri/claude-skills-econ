@@ -5,6 +5,7 @@ Dispatched at b1-code. One subagent. Fill slots only.
 | Slot | Filled from |
 | --- | --- |
 | `{REVIEW_MODE_SENTENCE}` | manifest |
+| `{CONTRACT_PATH}` | `audit/_run/contracts/planning.md` |
 | `{SCOPE_EXCLUSIONS}` | manifest (or "none") |
 | `{KNOWN_CONTEXT}` | manifest (or "none") |
 | `{ID_ALLOCATION_START}` | conductor: first free E- number (normally `E-0001`) |
@@ -22,8 +23,8 @@ reproducibility, generated outputs, samples, variables, or package execution.
 
 {REVIEW_MODE_SENTENCE}
 
-Previous setup steps are complete: `audit/CODEMAP.md` and the audit folder with
-`audit/audit_readme.md` exist.
+Previous setup steps are complete: `audit/CODEMAP.md`, `{CONTRACT_PATH}`, and the audit folder
+exist.
 
 Out of scope: {SCOPE_EXCLUSIONS}
 Known context: {KNOWN_CONTEXT}
@@ -31,7 +32,7 @@ Known context: {KNOWN_CONTEXT}
 ## TASK
 
 Create `audit/plans/code_error_review_plan.md`. Read `audit/CODEMAP.md`,
-`audit/audit_readme.md`, central README/config files, and master scripts/entry points first.
+`{CONTRACT_PATH}`, central README/config files, and master scripts/entry points first.
 Do not populate registers; do not edit code, data, or paper text.
 
 Start from the source code; ignore paper claims and paper-review findings.
@@ -68,7 +69,7 @@ Start from the source code; ignore paper claims and paper-review findings.
 
 ## CONSTRAINTS
 
-- Use the taxonomy, status vocabulary, and ID conventions from `audit/audit_readme.md`
+- Use the taxonomy, status vocabulary, and ID conventions from `{CONTRACT_PATH}`
   exactly; do not define new vocab or severity rules.
 - Do not restate what workers should look for — the worker prompt carries its own ERROR
   SCOPE; your Review Focus column adds only chunk-specific priorities.

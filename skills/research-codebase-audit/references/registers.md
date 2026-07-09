@@ -252,7 +252,7 @@ whether the code supports it.
 
 | Claim ID | Paper Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data Source | Output IDs | Status | Severity | Issue Description | Blocked Check | Related Error IDs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| C-0000 | Appendix F > Table F.33 note | "excluding capital-goods suppliers" | TRUE | robustness | Table F.33's `Cap` column excludes capital-goods suppliers. | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | O-0000 | inconsistent | 4 | The table note says the `Cap` column excludes capital-goods suppliers, but the code filters the opposite sample: the builder sets `sample_excl_cap == 1` when neither party is capital-good, while the table code keeps `sample_excl_cap == 0`. This reverses the intended robustness sample, so the column does not test what the note claims. |  |  |
+| C-0000 | Fictional Appendix Z > Table Z.1 note | "excluding island workshops" | TRUE | robustness | In this fictional example, Table Z.1's `Mainland` column excludes island workshops. | `example/build_fictional_sample.do`; `example/make_fictional_table.do` | O-0000 | inconsistent | 4 | The fictional table note says the `Mainland` column excludes island workshops, but the example code filters the opposite sample: the builder marks mainland observations with `demo_mainland_flag == 1`, while the table code keeps `demo_mainland_flag == 0`. This reverses the stated example sample, so the column does not demonstrate the robustness check described by the note. |  |  |
 
 Column meanings:
 
@@ -427,7 +427,7 @@ Purpose: one row per paper table/figure/generated output, mapped to its producin
 
 | Output ID | Paper Object | Paper Context | Paper Location | Output Path/Pattern | Producing Script | Input Dataset(s) | Key Spec/Sample | Claim IDs | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| O-0000 | Table F.33 | Appendix F > Table F.33 | `paper/main.tex:1415-1425`; `tab:route_robustness` | `artifacts/pairroute/rr_tab_*.tex` | `do/analysis_jl/transact_regress_route.jl` | `build/VAT_..._PairRoute.dta` | Route-level robustness: baseline, non-manufacturing, capital-goods exclusion, movers, 2015-only floods. | C-0000 | inconsistent |
+| O-0000 | Fictional Table Z.1 | Fictional Appendix Z > Table Z.1 | `example/paper.tex:100-110`; `tab:fictional_robustness` | `example/output/fictional_table_*.tex` | `example/make_fictional_table.do` | `example/data/fictional_workshops.dta` | Fictional robustness comparison: full sample and mainland-only sample. | C-0000 | inconsistent |
 
 Column meanings:
 
@@ -475,7 +475,7 @@ code error underlies a claim issue.
 
 | Error ID | Error Type | Code/Data Source | Code Location | Status | Severity | Error Description | Why It Matters | Related Claim IDs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| E-0000 | sample_filter_or_flag_error | `do/data_building/expand_transaction_panel.do`; `do/analysis_jl/transact_regress_route.jl` | `do/data_building/expand_transaction_panel.do:270-280`; `do/analysis_jl/transact_regress_route.jl:210-225` | candidate | 4 | The builder sets `sample_excl_cap == 1` when neither buyer nor seller is capital-good, but the table code uses `sample_excl_cap == 0` for the capital-goods exclusion column. | Reverses the intended robustness sample and affects the downstream table. |  |
+| E-0000 | sample_filter_or_flag_error | `example/build_fictional_sample.do`; `example/make_fictional_table.do` | `example/build_fictional_sample.do:40-48`; `example/make_fictional_table.do:70-76` | candidate | 4 | In this fictional example, the builder assigns `demo_mainland_flag == 1` to mainland observations, but the table code uses `demo_mainland_flag == 0` for the mainland-only column. | Reverses the stated example sample and affects the fictional downstream table. |  |
 
 Column meanings:
 

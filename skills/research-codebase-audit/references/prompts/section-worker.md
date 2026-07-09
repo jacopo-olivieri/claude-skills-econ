@@ -88,7 +88,14 @@ Rules:
   for an enumerated member list, quote the full member set verbatim in the claim row — a single
   row naming the set is enough for the b3c consolidation to carry it to the code-side grep; when
   a claim depends on a cross-language or cross-script hand-off, confirm what one step writes is
-  where the next reads (check 3). A divergence is an `inconsistent` claim.
+  where the next reads (check 3). Check 2 also covers definition/use agreement within one file:
+  when a derived flag, indicator, category, sentinel, or eligibility variable's code, adjacent
+  comment, label, or header states the cases it covers and later code relies on it to gate a
+  filter, replacement, drop, keep, merge, aggregation, weight, sample, treatment, or output,
+  compare the producer-defined set against each consumer's effective predicate — a narrowing extra
+  predicate is a finding unless it is an independently defined eligibility restriction or a
+  companion consumer covers the excluded cases, and comments and labels are claims to check, not
+  proof. A divergence is an `inconsistent` claim.
 <!-- RESTATEMENT:standing-checks END -->
 - If a claim issue appears to have a code mechanism, describe the mechanism in
   `Issue Description`, but never assign or reference `E-*` IDs; leave `Related Error IDs`

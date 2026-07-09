@@ -8,6 +8,15 @@ cap mkdir output
 
 import delimited "data/households.csv", clear
 
+* Release-eligibility flag for the published analysis sample. A household is
+* cleared for Table 1 if it gave explicit individual data-sharing consent, or
+* if it is covered by the village-level blanket (community) consent — both
+* consent routes are approved for release.
+gen consent_ok = (consent == "individual") | (consent == "community")
+
+* Restrict the estimation sample to households cleared for release.
+keep if consent_ok == 1 & consent == "individual"
+
 * Backfill missing household size with the household's wave-1 value.
 bysort household_id (wave): replace hhsize = hhsize[1] if hhsize < .
 

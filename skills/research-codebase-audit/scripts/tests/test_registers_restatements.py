@@ -72,7 +72,14 @@ EXPECTED_BLOCKS = {
             "  needs no row. Your rows go to the code register, which the b3c consolidation does not read; the\n"
             "  b4 shared-conventions grep independently locates re-materialization sites and compares each\n"
             "  against the paper-stated set — this bullet exists so you recognize enumerated-list sites and\n"
-            "  catch divergences at first pass;\n"
+            "  catch divergences at first pass. Check the same agreement **within one file**: when a derived\n"
+            "  flag, indicator, category, sentinel, or eligibility variable's code, adjacent comment, label, or\n"
+            "  header states the cases it covers, and later code uses it to gate a filter, replacement, drop,\n"
+            "  keep, merge, aggregation, weight, sample, treatment, or output, compare the producer-defined set\n"
+            "  against each consumer's effective predicate — an extra consumer predicate that narrows the\n"
+            "  covered set is a finding unless it is an independently defined eligibility restriction or a\n"
+            "  companion consumer covers the excluded cases; comments and labels are claims to check, not proof,\n"
+            "  so establish the coverage from the code and never treat a stale comment as the specification;\n"
             "- (3) every cross-language or cross-script hand-off your scope touches connects — what one step\n"
             "  writes is exactly where the next reads (path, name, shape).\n"
         ),
@@ -94,7 +101,14 @@ EXPECTED_BLOCKS = {
             "  for an enumerated member list, quote the full member set verbatim in the claim row — a single\n"
             "  row naming the set is enough for the b3c consolidation to carry it to the code-side grep; when\n"
             "  a claim depends on a cross-language or cross-script hand-off, confirm what one step writes is\n"
-            "  where the next reads (check 3). A divergence is an `inconsistent` claim.\n"
+            "  where the next reads (check 3). Check 2 also covers definition/use agreement within one file:\n"
+            "  when a derived flag, indicator, category, sentinel, or eligibility variable's code, adjacent\n"
+            "  comment, label, or header states the cases it covers and later code relies on it to gate a\n"
+            "  filter, replacement, drop, keep, merge, aggregation, weight, sample, treatment, or output,\n"
+            "  compare the producer-defined set against each consumer's effective predicate — a narrowing extra\n"
+            "  predicate is a finding unless it is an independently defined eligibility restriction or a\n"
+            "  companion consumer covers the excluded cases, and comments and labels are claims to check, not\n"
+            "  proof. A divergence is an `inconsistent` claim.\n"
         ),
     },
 }

@@ -208,6 +208,12 @@ def hit_error_rows():
            desc=("has_wages is overwritten on each loop iteration, so the "
                  "wave-2 pass erases wave-1 matches and the flag reflects "
                  "the last wave only.")),
+        mk("E-0021", etype="sample_filter_or_flag_error", severity="2",
+           desc=("consent_ok is defined to cover both individual and "
+                 "community consent, but keep if consent_ok == 1 & consent "
+                 "== \"individual\" adds a conjunct that silently drops the "
+                 "community-consent households from the estimation sample "
+                 "feeding Table 1.")),
     ]
 
 
@@ -267,7 +273,7 @@ def test_gate_green_on_full_hit_set(tmp_path):
     res = run_scorer(audit)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "GATE GREEN" in res.stdout
-    assert "Recall: 20/20" in res.stdout
+    assert "Recall: 21/21" in res.stdout
     assert "MISS" not in res.stdout
 
 
@@ -275,7 +281,7 @@ def test_new_plants_present_and_hit(tmp_path):
     """Each 2026-07-07 failure-class plant is in the key and scored must-find."""
     audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
     res = run_scorer(audit)
-    for pid in ("P-15", "P-16", "P-17", "P-18", "P-19", "P-20"):
+    for pid in ("P-15", "P-16", "P-17", "P-18", "P-19", "P-20", "P-21"):
         assert re.match(rf"{pid}: HIT", plant_line(res, pid)), plant_line(res, pid)
 
 
@@ -286,7 +292,7 @@ def test_per_class_tags_reported(tmp_path):
     assert "Per-class:" in res.stdout
     for cls in ("enumerated_member_list", "manifest_parseability",
                 "empirical_verification", "identifier_anchoring",
-                "step_parameter_filename"):
+                "step_parameter_filename", "definition_use_contract"):
         assert cls in res.stdout
 
 
@@ -305,6 +311,7 @@ def test_per_class_breakdown_lists_every_planted_class(tmp_path):
         "empirical_verification: 2/2 hit, 0 miss",
         "identifier_anchoring: 1/1 hit, 0 miss",
         "step_parameter_filename: 1/1 hit, 0 miss",
+        "definition_use_contract: 1/1 hit, 0 miss",
         "unclassified_legacy: 14/14 hit, 0 miss",
     ):
         assert line in res.stdout, f"missing per-class line {line!r} in:\n{res.stdout}"
@@ -358,7 +365,7 @@ def test_decoy_presence_turns_gate_red(tmp_path):
     assert res.returncode == 1
     assert "D-01 decoy: PRESENT" in res.stdout
     assert "GATE RED" in res.stdout
-    assert "Recall: 20/20" in res.stdout  # decoy alone flips the gate
+    assert "Recall: 21/21" in res.stdout  # decoy alone flips the gate
 
 
 def test_intentional_subset_decoy_turns_gate_red(tmp_path):
@@ -376,6 +383,45 @@ def test_intentional_subset_decoy_turns_gate_red(tmp_path):
     assert "GATE RED" in res.stdout
 
 
+def test_p15_row_quoting_signpost_comment_is_not_decoy(tmp_path):
+    """D-02 narrowed again 2026-07-08: a legitimate P-15 recovery row that
+    QUOTES the farm_components signpost comment as evidence (and records the
+    subset reviewed-not-divergent) must not trip the decoy — only flagging
+    the intentional subset AS the error is the planted bait."""
+    errors = [r for r in hit_error_rows() if r[0] != "E-0015"]
+    errors.append(rb.error_row(
+        "E-0015", etype="aggregation_or_unit_error", severity="2",
+        desc=("The income aggregate sums three components and omits "
+              "remittances from the paper's four-component income list. "
+              "The file's own later comment states the farm share is "
+              "'deliberately a subset of the four income components'; the "
+              "farm_components subset is explicitly local and recorded "
+              "reviewed-not-divergent, but the total-income list at line 14 "
+              "has no such signpost and under-counts the aggregate.")))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-02 decoy: ABSENT" in res.stdout
+    assert re.match(r"P-15: HIT", plant_line(res, "P-15"))
+
+
+def test_farm_subset_flagged_as_error_still_trips_decoy(tmp_path):
+    """The exculpation override must not defuse a genuine decoy hit: a row
+    whose tripping sentence flags farm_components as wrongly subsetting the
+    income list (no exculpatory language in that sentence) still trips D-02
+    even when a neighbouring sentence contains exculpatory vocabulary."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0097", etype="sample_filter_or_flag_error", severity="2",
+        desc=("The farm_share diagnostic was reviewed. farm_components "
+              "wrongly omits wage earnings and remittances from the "
+              "four-component income list, biasing the farm share."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "D-02 decoy: PRESENT" in res.stdout
+    assert "GATE RED" in res.stdout
+
+
 def test_non_omission_finding_in_subset_block_is_not_decoy(tmp_path):
     """D-02 narrowed 2026-07-08: only subset-omission complaints trip the
     decoy. A distinct true observation inside the signposted block (here a
@@ -384,6 +430,25 @@ def test_non_omission_finding_in_subset_block_is_not_decoy(tmp_path):
         "E-0099", etype="aggregation_or_unit_error", severity="1",
         desc=("farm_share divides by the raw income column with no guard "
               "against income == 0, yielding inf for a zero-income row."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-02 decoy: ABSENT" in res.stdout
+
+
+def test_descriptive_subset_noun_in_ratio_finding_is_not_decoy(tmp_path):
+    """D-02 narrowed 2026-07-09 (defuse gate run 2, E-0283): a ratio-basis
+    finding that merely NAMES the block descriptively ("the farm subset's
+    share") while flagging an unrelated denominator/guard defect must not trip.
+    Bare "subset" is the signpost's own descriptive noun, not the omission
+    grievance; the row makes no claim the list omits/diverges from the four
+    components, so it is scored on its own merits."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0096", etype="aggregation_or_unit_error", severity="1",
+        desc=("The comment frames farm_share as the farm subset's share of "
+              "the income components, but the denominator is the reported "
+              "survey total income, not the component sum, so numerator and "
+              "denominator are on different bases and the share can exceed 1."))]
     audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
     res = run_scorer(audit)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -408,6 +473,35 @@ def test_sc01_unresolved_status_conflict_turns_gate_red(tmp_path):
     res = run_scorer(audit)
     assert res.returncode == 1
     assert "SC-01: FAIL" in res.stdout
+
+
+def test_p21_definition_use_contract_miss_when_absent(tmp_path):
+    """Miss path: registers without a qualifying P-21 row report P-21 MISS and
+    red the gate, and the definition_use_contract class shows the miss."""
+    errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert re.match(r"P-21: MISS", plant_line(res, "P-21"))
+    assert "definition_use_contract: 0/1 hit, 1 miss" in res.stdout
+    assert "GATE RED" in res.stdout
+
+
+def test_p21_below_min_severity_is_miss(tmp_path):
+    """Severity floor: a P-21 row at severity 1 matches the mechanism but does
+    not clear the floor of 2, so it is a MISS."""
+    errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
+    errors.append(rb.error_row(
+        "E-0021", etype="sample_filter_or_flag_error", severity="1",
+        desc=("consent_ok is defined to cover both individual and community "
+              "consent, but keep if consent_ok == 1 & consent == "
+              "\"individual\" adds a conjunct that silently drops the "
+              "community-consent households from the estimation sample.")))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert re.match(r"P-21: MISS", plant_line(res, "P-21"))
+    assert "severity >= 2" in plant_line(res, "P-21")
 
 
 def test_below_min_severity_is_miss(tmp_path):

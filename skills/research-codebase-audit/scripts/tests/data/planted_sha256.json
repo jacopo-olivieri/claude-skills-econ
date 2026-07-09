@@ -1,10 +1,10 @@
 {
   "README.md": "afe8b887c763b510021954cc75c0230c2141f773ac002143c3a9aa58a593b578",
   "artifacts/tab1.tex": "51af5102223b79a7bb39c071b478252e0393e8c3a837008243af0fc472c5c82b",
-  "data/households.csv": "9042a1a5805fdcc75e29722fbb13becba8d33e7bdbf0efcfcfd5dcc12a777f45",
+  "data/households.csv": "ac0f9c320171b36b924eb0321f63d664c56f4697d46554fc2dac711cc6daaae3",
   "data/village_rain_radius_25km.csv": "193dcec4bc235d976f6070883e273bcec545b0dde5e5dd0fabf2d42a949eba07",
   "do/analysis.do": "d9d7c5b12ce26cf873f95dbbf2a8601a415939c962f605b8a9266cb22f8d61a4",
-  "do/build_panel.do": "961e18df36253bd41391446f3f2e03c98b4acb58d3f17e33f76ffb1e1b6eaa49",
+  "do/build_panel.do": "c5d0ab3c3ec7dc0ec96aca7a17dda5c1a16d275e30b1ece43e8da3cdde56f29f",
   "paper/paper.tex": "0fe12b787cc086828b01851dfe630b44c94f12984defab7d2ac313e900a93384",
   "py/build_income.py": "1b79ebd4ce493f92d30df325483c7f8c0da47743488e9188dc77d0cea7ec8e98",
   "py/make_figures.py": "f02f2709e6e378e1c971dd4c8677bce12ba3429beb9573312412c65596797e6d",

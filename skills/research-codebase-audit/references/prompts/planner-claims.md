@@ -5,6 +5,7 @@ Dispatched at b1-claims. One subagent. Fill slots only.
 | Slot | Filled from |
 | --- | --- |
 | `{REVIEW_MODE_SENTENCE}` | manifest |
+| `{CONTRACT_PATH}` | `audit/_run/contracts/planning.md` |
 | `{PAPER_PATH}` | manifest `paper_audit_path` |
 | `{KNOWN_CONTEXT}` | manifest (or "none") |
 | `{ID_ALLOCATION_START}` | conductor: first free C-/O- numbers (normally `C-0001`, `O-0001`) |
@@ -20,7 +21,7 @@ I am preparing a code review of an academic paper and its replication package.
 Previous setup steps are complete:
 - Paper: `{PAPER_PATH}` (comment-blanked copy; audit only what is PDF-visible).
 - Pipeline map: `audit/CODEMAP.md` (includes a Materials Inventory — read it first).
-- Audit folder: `audit/` with registers and `audit/audit_readme.md`.
+- Audit folder: `audit/` with registers and `{CONTRACT_PATH}`.
 
 Known context: {KNOWN_CONTEXT}
 
@@ -31,14 +32,14 @@ documentation, and generated outputs.
 ## TASK
 
 Create `audit/plans/claims_review_plan.md` dividing the paper into parallel-safe section-worker
-assignments. Read the paper, `audit/CODEMAP.md`, and `audit/audit_readme.md` first. Do not populate
+assignments. Read the paper, `audit/CODEMAP.md`, and `{CONTRACT_PATH}` first. Do not populate
 registers; do not edit paper or code.
 
 ## SIZING RULES (fixed)
 
 - One coherent section or ≤ ~10 paper pages per worker; split longer sections.
 - Expected claims per worker: 15–35; split scopes that would exceed this.
-- Count expected claims at the claim-unit rule's granularity (`audit/audit_readme.md`),
+- Count expected claims at the claim-unit rule's granularity (`{CONTRACT_PATH}`),
   including its enumerated-procedure corollary: a procedure whose steps state checkable
   parameters yields one claim per parameter-bearing step, so a scope carrying long enumerated
   procedures (appendix data-construction recipes especially) is sized on its step count, not
@@ -72,7 +73,7 @@ registers; do not edit paper or code.
 
 ## CONSTRAINTS
 
-- Use the status vocabulary and ID conventions from `audit/audit_readme.md` exactly; do not
+- Use the status vocabulary and ID conventions from `{CONTRACT_PATH}` exactly; do not
   define new vocab.
 - Workers write only to their own shard; deduplication belongs to the merge coordinator, so
   do NOT instruct workers to dedup against the canonical registers.

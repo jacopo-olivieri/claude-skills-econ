@@ -1,12 +1,13 @@
 # Pipeline — claims stream (paper vs. code)
 
 Conductor instructions for stages b1–b6 of the claims stream. Skeletons live in
-`references/prompts/`; schemas and vocabulary in `references/registers.md` (workers see the
-generated `audit/audit_readme.md`). Lint stages here are `--stage b<N>-claims`.
+`references/prompts/`; schemas and vocabulary in `references/registers.md` (workers see their
+generated role contract). Lint stages here are `--stage b<N>-claims`.
 
 ## b1 — Plan
 
-1. Dispatch one planner subagent with `prompts/planner-claims.md` filled.
+1. Dispatch one planner subagent with `prompts/planner-claims.md` filled; set
+   `{CONTRACT_PATH}` to `audit/_run/contracts/planning.md`.
 2. Planner writes `audit/plans/claims_review_plan.md` with the worker allocation table
    (Worker ID · Paper Scope · Likely Code Scope · Shard File under `audit/_work/` ·
    Claim ID Range · Output ID Range · Review Focus).
@@ -25,7 +26,8 @@ generated `audit/audit_readme.md`). Lint stages here are `--stage b<N>-claims`.
 ## b2 — Section workers (parallel, fire-and-forget)
 
 1. For each row of the allocation table, fill `prompts/section-worker.md` (one subagent per
-   worker, single message, `worker_model` from the manifest).
+   worker, single message, `worker_model` from the manifest); set `{CONTRACT_PATH}` to
+   `audit/_run/contracts/claims_first_pass.md`.
 2. A worker is complete when its shard exists at the planned path **and** passes
    `lint_registers.py --stage b2-claims --shard <path>`.
 3. On lint failure: re-dispatch that worker once with the lint report appended. Second failure:
@@ -34,7 +36,8 @@ generated `audit/audit_readme.md`). Lint stages here are `--stage b<N>-claims`.
 ## b3 — First merge (adds rows)
 
 1. Snapshot `claims_register.md` + `output_register.md` to `audit/_run/snapshots/claims_b3/`.
-2. Dispatch one coordinator with `prompts/merge-first-pass.md` filled for the claims stream.
+2. Dispatch one coordinator with `prompts/merge-first-pass.md` filled for the claims stream; set
+   `{CONTRACT_PATH}` to `audit/_run/contracts/merge_first_pass.md`.
    It writes **staging** registers (`audit/_staging/claims_register.md`,
    `audit/_staging/output_register.md`) and `audit/_run/merge_report_claims.json`
    (per register: `shard_rows`, `dedup_removed`, `added`, `conflicts`, `coverage_gaps`,
@@ -52,8 +55,9 @@ more than one place; this step collects them into one small list so the code-str
 first merge (b3), before the recheck plan (b4). Non-blocking: a package with no qualifying
 convention produces an empty-or-absent artifact and nothing downstream fails.
 
-1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream). It reads
-   the canonical `claims_register.md` and writes `audit/_run/conventions.md` — a small Markdown
+1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream); set
+   `{CONTRACT_PATH}` to `audit/_run/contracts/conventions.md`. It reads the canonical
+   `claims_register.md` and writes `audit/_run/conventions.md` — a small Markdown
    table, one row per stated convention the paper uses in more than one place, drawn **only** from
    the categories standing check 2 enumerates (fiscal-year or sample-window boundary, date-parse
    mask, missing-value sentinel, unit/scale factor, path separator, ID/merge key, enumerated
@@ -90,13 +94,15 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    are fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
    Findings` lists the C-IDs and one-line mechanism already logged there.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = claims), one subagent per row,
+   with `{CONTRACT_PATH}` set to `audit/_run/contracts/second_read_claims.md`,
    fire-and-forget. At `deep` depth dispatch a second pass with a different `{MANDATE_LENS}` and
    its own disjoint ranges. A worker is complete when its shard exists at the planned path **and**
    passes `lint_registers.py --stage b3b-claims --shard <path>`; retry-once → blocked-continue.
 4. **Merge.** Snapshot `claims_register.md` + `output_register.md` to
    `audit/_run/snapshots/claims_b3b/`; dispatch `prompts/merge-first-pass.md` filled for the
-   claims stream with `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b
-   allocation plan, and `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
+   claims stream with `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_first_pass.md`,
+   `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and
+   `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
    **adds** the new rows to the existing canon, preserving every b3 row unchanged.
 5. `lint_registers.py --stage b3b-claims` (new claim rows in b3b ranges and `inconsistent` or
    `unclear`; new output rows not `listed`/`confirmed`; no b3 row deleted or mutated; C↔O links
@@ -124,20 +130,22 @@ be grouped by Claim Type into clusters of ≤ 8 IDs. Assign each cluster a shard
 under `audit/_recheck/`. Write `audit/plans/claims_recheck_plan.md` yourself with:
 an inventory table `| ID | Reason | Likely Evidence |`; a cluster table
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; and a pointer to the
-verdict/evidence vocabulary in `audit_readme.md`. There is exactly **one** recheck pass — no
+verdict/evidence vocabulary in the recheck claims contract. There is exactly **one** recheck pass — no
 looping. Run `lint_registers.py --stage b4-claims`.
 
 ## b5 — Recheck cluster workers (parallel)
 
-Fill `prompts/recheck-cluster-worker.md` per cluster (stream = claims). Completion, lint
-(`--stage b5-claims --shard <path>`), retry, and blocked handling as in b2. Workers judge
-assigned IDs only and mint no IDs.
+Fill `prompts/recheck-cluster-worker.md` per cluster (stream = claims), with
+`{CONTRACT_PATH}` set to `audit/_run/contracts/recheck_claims.md`. Completion, lint (`--stage
+b5-claims --shard <path>`), retry, and blocked handling as in b2. Workers judge assigned IDs
+only and mint no IDs.
 
 ## b6 — Recheck merge (mutates rows)
 
 1. Snapshot both registers to `audit/_run/snapshots/claims_b6/`.
-2. Dispatch one coordinator with `prompts/merge-recheck.md` (stream = claims). It applies the
-   verdict → register mapping from `audit_readme.md`, writes staging registers and
+2. Dispatch one coordinator with `prompts/merge-recheck.md` (stream = claims), with
+   `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_recheck.md`. It applies the verdict →
+   register mapping from that contract, writes staging registers and
    `audit/claims_recheck_summary.md`, declaring any splits/merges.
 3. `lint_registers.py --stage b6-claims` (row counts vs snapshot unless declared; statuses in
    the b6+ allowed set; summary exists). On pass, atomic rename.

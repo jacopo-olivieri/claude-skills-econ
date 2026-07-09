@@ -436,6 +436,25 @@ def test_non_omission_finding_in_subset_block_is_not_decoy(tmp_path):
     assert "D-02 decoy: ABSENT" in res.stdout
 
 
+def test_descriptive_subset_noun_in_ratio_finding_is_not_decoy(tmp_path):
+    """D-02 narrowed 2026-07-09 (defuse gate run 2, E-0283): a ratio-basis
+    finding that merely NAMES the block descriptively ("the farm subset's
+    share") while flagging an unrelated denominator/guard defect must not trip.
+    Bare "subset" is the signpost's own descriptive noun, not the omission
+    grievance; the row makes no claim the list omits/diverges from the four
+    components, so it is scored on its own merits."""
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0096", etype="aggregation_or_unit_error", severity="1",
+        desc=("The comment frames farm_share as the farm subset's share of "
+              "the income components, but the denominator is the reported "
+              "survey total income, not the component sum, so numerator and "
+              "denominator are on different bases and the share can exceed 1."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-02 decoy: ABSENT" in res.stdout
+
+
 def test_decoy_in_summary_turns_gate_red(tmp_path):
     summary = CLEAN_SUMMARY + "\nNote: fig_placebo.pdf was inspected.\n"
     audit = write_final_registers(tmp_path, hit_claims_rows(),

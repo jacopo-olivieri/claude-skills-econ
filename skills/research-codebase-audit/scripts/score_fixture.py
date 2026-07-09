@@ -159,11 +159,18 @@ BLOCKED_VISIBLE_PLANTS = {"P-14", "P-20"}
 # that flags the intentional subset AS the error carries no such exculpation
 # in its tripping sentence and still turns the gate red (narrowed 2026-07-08
 # after a gate run condemned legitimate P-15 rows for quoting the comment).
+# The qualifier set names the OMISSION GRIEVANCE only (omits/diverges/incomplete
+# /excludes/missing, or the full four-component set / an omitted member). Bare
+# "subset" was dropped 2026-07-09: it is the signpost's own descriptive noun
+# ("the farm subset's share"), so it fired on rows that merely NAME the subset
+# while flagging an unrelated ratio-basis defect (defuse gate run 2, E-0283) —
+# not the planted list-is-incomplete bait. Every genuine bait phrasing carries a
+# grievance term above (verified against the four D-02 tests).
 DECOYS = {
     "D-01": (["placebo", "fig_placebo"], None),
     "D-02": (["farm_income", "farm-income", "farm income", "farm_components",
               "farm components", "farm_share", "farm share"],
-             ["omit", "subset", "diverg", "four-component", "four component",
+             ["omit", "diverg", "four-component", "four component",
               "four income", "remittance", "incomplete", "excludes",
               "missing component"]),
 }

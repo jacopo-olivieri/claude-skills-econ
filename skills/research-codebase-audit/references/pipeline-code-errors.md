@@ -94,15 +94,9 @@ Inventory, mechanically:
 
 - every `candidate` row (recheck resolves them all — none may survive b6), plus
 - every `confirmed` row with Severity ≥ 3, plus
-- a ~10% **deterministic** sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by
-  Error Type (bounds total across strata: min 3 or all available if fewer, max 15). The sample is
-  drawn by a fixed rule so a resume or a fixture re-run selects exactly the same rows: for each
-  stratum, sort its eligible `confirmed` Error IDs ascending by the lowercase hex `sha256` digest
-  of the salted string `"b4-code:" + ID` (e.g. `sha256("b4-code:E-0044")`), and take from the top
-  of that sorted list until the stratum's ~10% quota is filled (round to nearest, at least 1 per
-  non-empty stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`).
-  Ties are impossible (digests are unique per ID); the salt keeps the code and claims samples
-  independent.
+- a deterministic sample of the remaining `confirmed` rows (Severity ≤ 2), stratified by Error
+  Type, using the code-error stream parameters in the deterministic recheck sampling rule
+  (`references/registers.md`).
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: cluster by Error Type, ≤ 8 IDs
 per cluster. At `deep`: every **substantive ID** gets its own single-ID cluster — a substantive

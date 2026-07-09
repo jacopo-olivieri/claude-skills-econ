@@ -113,14 +113,8 @@ merge):
 - every issue-flagged claim row (Severity non-empty — this subsumes all `inconsistent` rows
   and all severities), plus
 - every `unclear` row, plus
-- a ~10% **deterministic** sample of `confirmed` rows, stratified by Claim Type (bounds total
-  across strata: min 3 or all available if fewer, max 15). The sample is drawn by a fixed rule so
-  a resume or a fixture re-run selects exactly the same rows: for each stratum, sort its eligible
-  `confirmed` Claim IDs ascending by the lowercase hex `sha256` digest of the salted string
-  `"b4-claims:" + ID` (e.g. `sha256("b4-claims:C-0137")`), and take from the top of that sorted
-  list until the stratum's ~10% quota is filled (round to nearest, at least 1 per non-empty
-  stratum, capped so the cross-stratum total lands in `[min(3, total_confirmed), 15]`). Ties are
-  impossible (digests are unique per ID); the salt keeps the claims and code samples independent.
+- a deterministic sample of `confirmed` rows, stratified by Claim Type, using the claims stream
+  parameters in the deterministic recheck sampling rule (`references/registers.md`).
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: group the inventory by Claim
 Type into clusters of ≤ 8 IDs. At `deep`: every **substantive ID** gets its own single-ID

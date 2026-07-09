@@ -41,13 +41,8 @@ canon exists.
    recheck-cluster-worker over the conflicted claim rows, with the linked error rows named as
    evidence to check. Apply the standard verdict→register mapping (registers.md) to the
    claims register mechanically. Whenever the recheck chooses between `inconsistent` and
-   `confirmation_needed`, apply the **visibility test**: escalate to `inconsistent` only when
-   both halves of the contradiction are visible in files that ship; when shipped files
-   establish only that a contradiction *could* occur — a value only absent data would reveal —
-   the row stops at `confirmation_needed`. Paper text versus a shipped filename is fully
-   visible and escalates; "these two identifier codes might collide when multiplied" depends
-   on absent data and stops at `confirmation_needed`. If a verdict leaves the claim
-   `confirmed` (the error does
+   `confirmation_needed`, apply the visibility test in `references/registers.md`. If a verdict
+   leaves the claim `confirmed` (the error does
    not actually contradict it), the link itself was wrong: remove it from both rows and note
    the removal in the summary. No confirmed-claim↔confirmed-error link may survive into b8
    (lint b8 enforces).

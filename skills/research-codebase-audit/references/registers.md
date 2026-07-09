@@ -296,13 +296,68 @@ parameter then reconciles independently against the code and the shipped filenam
 
 | Status | Meaning |
 | --- | --- |
-| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. **Run-boundary rule: if you identified the relevant code but deciding requires running something beyond the ladder level or compute budget, the row is `mapped`, not `confirmed`.** **Identifier-anchoring rule: a claim that names specific identifiers — variables, files, parameters — cannot close `confirmed` until each named identifier has been located in the code at the role the claim assigns it, anchored to a code line showing that identifier receiving the described treatment. Verifying that the described operation exists and covers *some* variables anchors the operation, not the claim. A named identifier that cannot be anchored keeps the row out of `confirmed`: escalate per the evidence — `inconsistent` if the code visibly applies the behavior to a different identifier, otherwise `confirmation_needed`.** **Quote-qualifier rule: the `confirmed` test is judged against the row's own verbatim Paper Quote, not only its paraphrased Claim Text — a paraphrase that omits a qualifier present in the quote never narrows what must be verified. A qualifier the quote attaches to the claimed operation or definition — a baseline period or reference window (e.g. "long-run", "historical", "1991–2020", "climate normal"), a radius or distance, a threshold, a ratio, a unit, a named population — blocks `confirmed` unless the cited code implements that qualifier. Escalate as under identifier anchoring: code implementing the operation against a different qualifier is `inconsistent`; a qualifier that cannot be located is `confirmation_needed`. Bare transcription counts (e.g. N = 4,832) carry no operation-attached qualifier and are not swept in.** |
+| `confirmed` | Verified with evidence permitted at the run's review-ladder level. At level 1 (static) that means the code/docs/existing artifacts demonstrably support the claim. Confirmation is constrained by the run-boundary rule, identifier-anchoring rule, and quote-qualifier rule below. |
 | `mapped` | The producing code/data was identified, but the claim could not be verified within the ladder level. **Reserved for genuinely un-runnable cases** — see the cheap-check-completion rule: a check that reduces to an enumerable list, a single constant, or a closed-form arithmetic implication is *not* `mapped`; the worker completes it. |
 | `unclear` | Could not be verified from available materials (missing or restricted data/scripts, untraceable lineage). There is no separate `not_code_checkable` status — such rows are `unclear` with the boundary explained. |
-| `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. **Visibility test**: both halves of the contradiction must be visible in files that ship (paper text vs a shipped filename, code literal, or artifact value). The boundary with `confirmation_needed` is what ships, never how confident the worker sounds. |
-| `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. Includes contradictions the shipped files establish only *could* occur — a value only absent data would reveal fails the visibility test and stops here, not at `inconsistent`. |
-| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. **A blocked claim must still record its `Blocked Check`**: what remained checkable from visible material and the result. **Escalation is forced by the `Blocked Check`'s own content, not by how blocked the check felt**: if the visible check contradicts the claim, the row is `inconsistent` (both halves shipped) or `confirmation_needed` (only absent data would confirm it) — never `blocked`. A `Blocked Check` that itself records a paper-vs-code discrepancy (a shipped filename, header, shape, or metadata value that disagrees with what the paper states) has already found the contradiction in visible material, so the row cannot rest at `blocked`: escalate it, or state in one line why the recorded disagreement does not settle the claim. |
+| `inconsistent` | The claim conflicts with the code, data construction, or shipped outputs. Always issue-flagged. Apply the visibility test below. |
+| `confirmation_needed` | Recheck could not decide within the evidence standards; survives to the final register. Apply the visibility test below to contradictions that shipped files establish only *could* occur. |
+| `blocked` | The check was blocked (restricted data, environment, budget) or deferred by the ladder/off-limits list; blocker documented. Can arise at first pass or recheck. Survives to the final register. A blocked claim must still record its `Blocked Check`: what remained checkable from visible material and the result. Apply the visibility test below before leaving a row blocked. |
 | `duplicate_of:<ID>` | Same mechanism as claim `<ID>`, and same location — where "same location" depends on the merge context: for a **first-pass across-parallel-shards merge** the exact locator must match; for a **second-read merge against canon** same file is enough (the locators may differ within that file). Format `duplicate_of:C-\d{4}`, same-register target. Tombstone; created only by merge coordinators. |
+
+### Run-boundary confirmation
+
+If you identified the relevant code but deciding requires running something beyond the ladder
+level or compute budget, the row is `mapped`, not `confirmed`.
+
+### Identifier anchoring on confirmation
+
+A claim that names specific identifiers — variables, files, parameters — cannot close
+`confirmed` until each named identifier has been located in the code at the role the claim
+assigns it, anchored to a code line showing that identifier receiving the described treatment.
+Verifying that the described operation exists and covers *some* variables anchors the operation,
+not the claim. A named identifier that cannot be anchored keeps the row out of `confirmed`:
+escalate per the evidence — `inconsistent` if the code visibly applies the behavior to a
+different identifier, otherwise `confirmation_needed`.
+
+### Quote-qualifier confirmation
+
+The `confirmed` test is judged against the row's own verbatim Paper Quote, not only its
+paraphrased Claim Text — a paraphrase that omits a qualifier present in the quote never narrows
+what must be verified. A qualifier the quote attaches to the claimed operation or definition —
+a baseline period or reference window (e.g. "long-run", "historical", "1991–2020", "climate
+normal"), a radius or distance, a threshold, a ratio, a unit, a named population — blocks
+`confirmed` unless the cited code implements that qualifier. Escalate as under identifier
+anchoring: code implementing the operation against a different qualifier is `inconsistent`; a
+qualifier that cannot be located is `confirmation_needed`. Bare transcription counts (e.g.
+N = 4,832) carry no operation-attached qualifier and are not swept in.
+
+### Visibility test
+
+Both halves of the contradiction must be visible in files that ship (paper text vs a shipped
+filename, code literal, or artifact value) before a row escalates to `inconsistent`. The boundary
+with `confirmation_needed` is what ships, never how confident the worker sounds. When shipped
+files establish only that a contradiction *could* occur — a value only absent data would reveal —
+the row stops at `confirmation_needed`.
+
+For a blocked row, escalation is forced by the `Blocked Check`'s own content, not by how blocked
+the check felt: if the visible check contradicts the claim, the row is `inconsistent` (both
+halves shipped) or `confirmation_needed` (only absent data would confirm it), never `blocked`.
+A `Blocked Check` that itself records a paper-vs-code discrepancy (a shipped filename, header,
+shape, or metadata value that disagrees with what the paper states) has already found the
+contradiction in visible material, so the row cannot rest at `blocked`: escalate it, or state in
+one line why the recorded disagreement does not settle the claim.
+
+### Deterministic recheck sampling
+
+When a b4 recheck plan needs a deterministic sample of already-clean rows, sample roughly 10%
+within each stratum with total bounds min 3 or all available if fewer, max 15. For each stratum,
+sort eligible IDs ascending by the lowercase hex `sha256` digest of the salted string
+`<salt> + ID`, and take from the top of that sorted list until the stratum's quota is filled
+(round to nearest, at least 1 per non-empty stratum, capped so the cross-stratum total lands in
+`[min(3, total_confirmed), 15]`). Ties are impossible because digests are unique per ID. Claims
+sampling uses salt `"b4-claims:"`, Claim IDs, and Claim Type strata; code-error sampling uses
+salt `"b4-code:"`, Error IDs, and Error Type strata. The salt keeps the claims and code samples
+independent.
 
 ### Cheap-check completion (mapped-closure discipline)
 
@@ -334,11 +389,7 @@ result). Absent one of these, an unexplained numerical disagreement defaults to 
 (both quantities visible) or `confirmation_needed` (the reconciling value is only in absent data).
 
 **Identifier anchoring on completion.** Completing a cheap check closes the row `confirmed` only
-under the identifier-anchoring rule above: when the claim names specific variables, files, or
-parameters, the completed check must anchor each named identifier to a code line where *that*
-identifier receives the described treatment. Comparing the documented list against *a* coded
-list, or finding *a* constant of the right kind, anchors the operation — the row closes
-`confirmed` only if the anchored identifiers are the ones the claim names.
+under the identifier-anchoring rule above.
 
 These three are all **static**, so any worker completes them — no execution needed. A check that
 would instead be settled by a small unit test or a simulated run of error-prone code is completed
@@ -661,9 +712,7 @@ mechanically by `scripts/lint_registers.py` at the b2/b3 boundaries (except wher
 notes a conductor-read part), so a violation fails the shard lint rather than depending on
 worker recall. A worker prompt therefore points here for
 write-up rather than restating these rules among its reading instructions — a rule the lint
-catches after the fact does not need to occupy a worker's attention while reading. (The
-first-pass code-worker skeleton carries that single pointer; other skeletons still restate
-some of these rules and migrate as they are next touched.)
+catches after the fact does not need to occupy a worker's attention while reading.
 
 1. **Exact canonical columns** — each table uses its target register's exact column set (first
    bullet above); the b2 shard lint fails any other header or a row with the wrong cell count.

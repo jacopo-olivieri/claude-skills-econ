@@ -33,7 +33,7 @@ Invariants you never break:
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
   sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
-  `b2`, `b5`, and now `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  `b2`, `b5`, and `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
   `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, mark that shard/stage
   `blocked` in the manifest and continue everything that does not depend on it. **Merges
@@ -65,10 +65,8 @@ defaults and let the user correct.
    and an explicit off-limits list (scripts/data/commands the run must not touch).
 4. **Review depth.** How much redundancy the run spends on thoroughness — propose `standard`
    (the default) and let the user pick `shallow` or `deep`, same style as the ladder/budget.
-   Depth is **orthogonal to the review ladder**: the ladder governs *what techniques are
-   allowed*; depth governs *how much redundancy is spent*. The chosen depth sets two
-   conductor knobs — the second-read trigger threshold and whether the recheck runs
-   per-finding — per the depth-knob table below.
+   The chosen depth sets two conductor knobs — the second-read trigger threshold and whether
+   the recheck runs per-finding — per the depth-knob table below.
 5. **Scope exclusions.** Propose exclusions from a quick look at the repo (archives, obviously
    exploratory folders); the user corrects. Propose by default: `audit/` itself, `.git/`, caches
    (`__pycache__`, `.ipynb_checkpoints`, `.Rproj.user`, and similar), package-manager directories
@@ -119,10 +117,7 @@ receives — compose it once from mode + ladder + budget + off-limits.
 **Depth-knob table.** `review_depth` (default `standard`) resolves to two conductor knobs the
 downstream stages read. This table is authoritative for those knobs; it lives here — beside the
 manifest schema — and NOT in `references/registers.md`, because these are conductor behaviours,
-not register semantics pasted into worker contexts. (A third knob — 2 independent first-pass
-passes per b2 worker at `deep` — was deleted: it was never implemented, and pair-allocating
-scopes would break the b1 exactly-one-scope lints. Extra `deep` redundancy comes from the b3b
-second-lens pass instead.)
+not register semantics pasted into worker contexts.
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |

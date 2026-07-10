@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -63,11 +64,12 @@ SECTION_MARKER_RE = re.compile(
     r"^\s{0,3}(?:#{1,6}\s*)?(?:\*\*|__)?\s*([1-5])[.)]\s+(.+?)\s*(?:\*\*|__)?\s*$"
 )
 
-# Canonical five-part structure. R2: a marker is accepted only when its title
-# fuzzy-matches the aliases for that section number. These module constants
-# pre-figure U6's summary_sections.json (which becomes the single source with
-# these values as the embedded fallback).
-CANONICAL_SECTION_ALIASES = {
+# Canonical five-part structure. R9/KTD-8: the single source of truth lives in
+# ../../paper-summary/references/summary_sections.json; these embedded values
+# are the fallback so a missing/invalid file does not brick the save. The
+# aliases gate section-marker acceptance (R2): a marker is accepted only when
+# its title fuzzy-matches its number's aliases.
+_EMBEDDED_SECTION_ALIASES = {
     1: ("research question and motivation", "research question", "motivation"),
     2: ("data and methods", "data and empirical strategy", "data and identification",
         "data", "methods", "empirical strategy", "identification strategy"),
@@ -77,9 +79,83 @@ CANONICAL_SECTION_ALIASES = {
     5: ("synthesis of findings", "synthesis", "comments and ideas", "comments",
         "conclusion", "discussion"),
 }
-SYNTHESIS_MARKER_RE = re.compile(r"\bsynthesis of findings\b", re.IGNORECASE)
+_EMBEDDED_PRIMARY_HEADERS = {
+    "s1": "### 💬 Research Question and Motivation %% fold %%",
+    "s2": "### 📌 Data and Empirical Strategy %% fold %%",
+    "s3": "### 🎯 Results %% fold %%",
+    "s4": "### ✒️ Limitations and Extensions %% fold %%",
+    "s5": "### 🧩 Comments and Ideas %% fold %%",
+}
+_EMBEDDED_ADDITIONAL_HEADERS = [
+    "### 🗺️ Background, context and connections %% fold %%",
+    "### 🚧 Digging and disclaimers %% fold %%",
+    "### ❓ Problem formulation %% fold %%",
+]
+
+# Canonical JSON location: sibling paper-summary skill's references directory.
+SUMMARY_SECTIONS_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "paper-summary" / "references" / "summary_sections.json"
+)
+
+
+def load_summary_structure(path: Path | None = None) -> dict:
+    """Load the five-part structure from summary_sections.json (R9/KTD-8).
+
+    Returns a dict with ``aliases`` (int -> tuple), ``primary_headers``
+    (s1..s5), ``additional_headers``, and ``warnings``. Falls back to the
+    embedded constants (with a warning) when the file is missing or invalid, so
+    a missing file never bricks the save.
+    """
+    if path is None:
+        env_override = os.environ.get("PAPER_SUMMARY_SECTIONS_FILE")
+        path = Path(env_override) if env_override else None
+    target = path or SUMMARY_SECTIONS_PATH
+    embedded = {
+        "aliases": dict(_EMBEDDED_SECTION_ALIASES),
+        "primary_headers": dict(_EMBEDDED_PRIMARY_HEADERS),
+        "additional_headers": list(_EMBEDDED_ADDITIONAL_HEADERS),
+        "synthesis_marker": "synthesis of findings",
+        "warnings": [],
+    }
+    if not target.exists():
+        embedded["warnings"].append(
+            f"summary_sections.json not found at {target}; using embedded structure."
+        )
+        return embedded
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        sections = data["sections"]
+        aliases = {int(s["number"]): tuple(s["aliases"]) for s in sections}
+        primary = {f"s{int(s['number'])}": s["fold_heading"] for s in sections}
+        additional = list(data["additional_headings"])
+        synthesis_marker = str(data.get("synthesis_marker") or "synthesis of findings")
+        if set(aliases) != {1, 2, 3, 4, 5}:
+            raise ValueError("summary_sections.json must define sections 1-5")
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+        embedded["warnings"].append(
+            f"summary_sections.json at {target} is invalid ({exc}); using embedded structure."
+        )
+        return embedded
+    return {"aliases": aliases, "primary_headers": primary,
+            "additional_headers": additional, "synthesis_marker": synthesis_marker,
+            "warnings": []}
+
+
+def _fold_heading_text(heading: str) -> str:
+    """Strip the ``### `` prefix and `` %% fold %%`` suffix from a fold heading."""
+    text = re.sub(r"^#+\s*", "", heading)
+    return re.sub(r"\s*%%\s*fold\s*%%\s*$", "", text).strip()
+
+
+SUMMARY_STRUCTURE = load_summary_structure()
+CANONICAL_SECTION_ALIASES = SUMMARY_STRUCTURE["aliases"]
+
+# R9/KTD-8: the synthesis marker is single-sourced from summary_sections.json.
+_SYNTHESIS_MARKER = re.escape(SUMMARY_STRUCTURE["synthesis_marker"])
+SYNTHESIS_MARKER_RE = re.compile(rf"\b{_SYNTHESIS_MARKER}\b", re.IGNORECASE)
 SYNTHESIS_PREFIX_RE = re.compile(
-    r"^\s*(?:[#>\-\+\*]+\s*)?(?:\*\*|__)?\s*synthesis of findings\b[^\n]*\n?",
+    rf"^\s*(?:[#>\-\+\*]+\s*)?(?:\*\*|__)?\s*{_SYNTHESIS_MARKER}\b[^\n]*\n?",
     re.IGNORECASE,
 )
 SYNTHESIS_LIST_MARKER_RE = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
@@ -99,19 +175,8 @@ SUBSECTION_HEADER_RE = re.compile(r"^\s*####\s+\S")
 HORIZONTAL_RULE_RE = re.compile(r"^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$")
 HEADING_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*(?:[.)])?\s+")
 
-PRIMARY_HEADERS = {
-    "s1": "### 💬 Research Question and Motivation %% fold %%",
-    "s2": "### 📌 Data and Empirical Strategy %% fold %%",
-    "s3": "### 🎯 Results %% fold %%",
-    "s4": "### ✒️ Limitations and Extensions %% fold %%",
-    "s5": "### 🧩 Comments and Ideas %% fold %%",
-}
-
-ADDITIONAL_HEADERS = [
-    "### 🗺️ Background, context and connections %% fold %%",
-    "### 🚧 Digging and disclaimers %% fold %%",
-    "### ❓ Problem formulation %% fold %%",
-]
+PRIMARY_HEADERS = SUMMARY_STRUCTURE["primary_headers"]
+ADDITIONAL_HEADERS = SUMMARY_STRUCTURE["additional_headers"]
 
 
 def _pick_first(meta: dict[str, Any], keys: list[str], default: str = "") -> str:
@@ -666,17 +731,11 @@ def _prepare_output_path(output_dir: Path, citation_key: str, mode: str) -> tupl
 # --------------------------------------------------------------------------- #
 
 # Fold-heading strings the rendered note relies on (matches the live template's
-# colorValueMap headings). Kept as text so both the nunjucks template and a
-# rendered note satisfy the check.
+# colorValueMap headings). Derived from the single source (R9/KTD-8) so a
+# heading rename in summary_sections.json propagates to the R10 contract too.
 TEMPLATE_FOLD_HEADINGS = [
-    "💬 Research Question and Motivation",
-    "📌 Data and Empirical Strategy",
-    "🎯 Results",
-    "✒️ Limitations and Extensions",
-    "🧩 Comments and Ideas",
-    "🗺️ Background, context and connections",
-    "🚧 Digging and disclaimers",
-    "❓ Problem formulation",
+    _fold_heading_text(h)
+    for h in list(PRIMARY_HEADERS.values()) + list(ADDITIONAL_HEADERS)
 ]
 TEMPLATE_FRONTMATTER_KEYS = [
     "title", "author", "date-published", "citekey", "itemType", "url", "journal",
@@ -945,7 +1004,7 @@ def main() -> int:
         return _error(f"Invalid metadata JSON: {exc}")
 
     _sections, sections_meta = analyze_summary_sections(summary_text)
-    warnings = list(sections_meta["warnings"])
+    warnings = list(SUMMARY_STRUCTURE["warnings"]) + list(sections_meta["warnings"])
     if not metadata:
         warnings.append("Metadata JSON is empty; frontmatter will be mostly blank.")
 

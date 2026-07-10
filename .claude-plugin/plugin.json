@@ -8,6 +8,7 @@
   "skills": [
     "./skills/research-codebase-audit",
     "./skills/paper-summary",
-    "./skills/paper-summary-obsidian"
+    "./skills/paper-summary-obsidian",
+    "./skills/stata"
   ]
 }

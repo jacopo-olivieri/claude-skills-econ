@@ -32,6 +32,7 @@ ln -s "$(pwd)/claude-skills-econ/skills/<name>" ~/.claude/skills/<name>
 | Skill | What it does |
 |-------|--------------|
 | [`research-codebase-audit`](./skills/research-codebase-audit) | Static-first audit of a replication package: paper-code consistency, source-code errors, and package hygiene via parallel subagents writing to lint-gated registers, exported to an author-facing Excel workbook. User-invoked (`/research-codebase-audit`). |
+| [`stata`](./skills/stata) | Write and safely run Stata do-files, resolve local installation paths, inspect installed `.sthlp` files, and search named PDF manuals. |
 
 ## Developing / maintaining
 
@@ -64,6 +65,20 @@ immediately live. Cut over only from a clean, reviewed commit, retain the archiv
 until fresh Claude and Codex sessions pass, and use `scripts/link-skills.sh` only
 for routine linking—it deliberately skips skills already owned by the shared
 chain.
+
+The Stata skill keeps its default tests host-independent. Its real-machine
+checks are explicit and non-destructive: they run do-files only under pytest's
+temporary directory, make no package or permanent preference changes, and are
+skipped unless enabled.
+
+```bash
+# Portable default (the live module skips before resolving local resources)
+uv run --no-project --with pytest -- pytest skills/stata/scripts/tests/
+
+# Opt-in smoke test for the configured or discovered Stata binary and manuals
+STATA_LIVE_TESTS=1 uv run --no-project --with pytest --with pdfplumber -- \
+  pytest skills/stata/scripts/tests/test_live_stata.py
+```
 
 To add a skill: create `skills/<name>/SKILL.md` (see
 [`TEMPLATE-SKILL.md`](./TEMPLATE-SKILL.md)), add `"./skills/<name>"` to

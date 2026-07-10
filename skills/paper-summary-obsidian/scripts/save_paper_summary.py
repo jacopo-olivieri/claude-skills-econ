@@ -580,7 +580,7 @@ def render_note(item_key: str, citation_key: str, summary_text: str, metadata: d
         if attachment.get("path"):
             # R8: URL-encode the path (keeping '/' as separators) and build a
             # well-formed file:// URI. An absolute path already starts with '/',
-            # so `file://` + `/Users/...` yields the correct `file:///Users/...`.
+            # so `file://` + `/abs/...` yields the correct `file:///abs/...`.
             encoded_path = quote(str(attachment["path"]), safe="/")
             if not encoded_path.startswith("/"):
                 encoded_path = "/" + encoded_path

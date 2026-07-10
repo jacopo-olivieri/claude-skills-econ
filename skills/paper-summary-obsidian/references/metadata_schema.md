@@ -10,7 +10,7 @@ Provide metadata to `scripts/save_paper_summary.py` via `--metadata-file` as JSO
 ## Optional keys
 
 - `citationKey` or `citation_key` or `citekey` (string, recommended for metadata completeness)
-- `date_published` or `date` (ISO date string, e.g. `2020-07-31`)
+- `date_published` or `date-published` or `date` (ISO date string, e.g. `2020-07-31`). The saved note always emits the vault-dominant `date-published` key.
 - `itemType` or `item_type` (string)
 - `url` (string)
 - `doi` (string)

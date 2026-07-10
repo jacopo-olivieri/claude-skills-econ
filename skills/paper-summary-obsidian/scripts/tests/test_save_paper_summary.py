@@ -248,16 +248,16 @@ def test_synthesis_only_triggers_on_first_line():
 
 def test_pdf_link_is_well_formed():
     meta = {"title": "T", "authors": ["A"],
-            "attachments": [{"path": "/Users/x/paper.pdf", "is_pdf": True}]}
+            "attachments": [{"path": "/vault/x/paper.pdf", "is_pdf": True}]}
     note = sps.render_note("K", "cite", "1. RQ", meta)
     link_line = next(ln for ln in note.splitlines() if "file:" in ln)
     assert "file:////" not in link_line, f"malformed link: {link_line!r}"
-    assert "file:///Users/x/paper.pdf" in link_line
+    assert "file:///vault/x/paper.pdf" in link_line
 
 
 def test_pdf_link_encodes_special_chars():
     meta = {"title": "T", "authors": ["A"],
-            "attachments": [{"path": "/Users/x/paper#2 100%.pdf", "is_pdf": True}]}
+            "attachments": [{"path": "/vault/x/paper#2 100%.pdf", "is_pdf": True}]}
     note = sps.render_note("K", "cite", "1. RQ", meta)
     link_line = next(ln for ln in note.splitlines() if "file:" in ln)
     assert "%23" in link_line, f"'#' not encoded: {link_line!r}"

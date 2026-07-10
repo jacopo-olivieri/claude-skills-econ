@@ -37,17 +37,29 @@ def is_numbered_heading(title: str) -> bool:
     return re.match(r"^\d+\.\s+", title) is not None
 
 
+# Appendix/references tokens. R1: these must match as whole words anchored at
+# the start of the heading title (after any leading section number), so a
+# heading like "2. Estimating Preferences" (which contains "references") or
+# "3. Results and Appendix Tables" (mid-title "Appendix") no longer truncates
+# the main text into appendix.md.
+APPENDIX_START_TOKENS = (
+    "online appendix",
+    "supplementary appendix",
+    "supplementary data",
+    "appendix",
+    "references",
+)
+
+_LEADING_NUMBER_RE = re.compile(r"^\s*\d+[.)]?\s*")
+
+
 def is_appendix_heading(title: str) -> bool:
-    lowered = title.lower()
+    # Strip a leading Arabic section number before anchoring. (Roman-numeral
+    # heading support is added with the R6 splitter work in U4.)
+    stripped = _LEADING_NUMBER_RE.sub("", title.lower()).strip()
     return any(
-        token in lowered
-        for token in (
-            "appendix",
-            "online appendix",
-            "supplementary appendix",
-            "supplementary data",
-            "references",
-        )
+        re.match(rf"{re.escape(token)}\b", stripped) is not None
+        for token in APPENDIX_START_TOKENS
     )
 
 

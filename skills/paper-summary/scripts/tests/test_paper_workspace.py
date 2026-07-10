@@ -78,18 +78,15 @@ def test_write_text_writes_into_workspace(tmp_path):
 # R1: appendix/references detection must anchor whole words at heading start
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(reason="R1 (U3): 'Preferences' matches the 'references' token", strict=True)
 def test_estimating_preferences_is_not_appendix():
     # A heading title whose word merely contains 'references' as a substring.
     assert pw.is_appendix_heading("2. Estimating Preferences") is False
 
 
-@pytest.mark.xfail(reason="R1 (U3): mid-title 'Appendix' is not heading-start anchored", strict=True)
 def test_results_and_appendix_tables_is_not_appendix():
     assert pw.is_appendix_heading("3. Results and Appendix Tables") is False
 
 
-@pytest.mark.xfail(reason="R1 (U3): section truncated into appendix.md", strict=True)
 def test_preferences_section_not_truncated_into_appendix():
     text = (
         "# 1. Introduction\nIntro.\n\n"
@@ -105,7 +102,6 @@ def test_preferences_section_not_truncated_into_appendix():
     assert "Results body must survive." in joined
 
 
-@pytest.mark.xfail(reason="R1 (U3): mid-title Appendix truncates the section", strict=True)
 def test_results_and_appendix_tables_section_not_truncated():
     text = (
         "# 1. Intro\nIntro.\n\n"

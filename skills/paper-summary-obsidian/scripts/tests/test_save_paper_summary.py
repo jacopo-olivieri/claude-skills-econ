@@ -106,7 +106,6 @@ def test_dry_run_against_existing_dir_reports_dry_run(tmp_path):
 # R2 (U3): section-marker parsing must not eat body text or subheadings
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(reason="R2 (U3): out-of-order numbered list consumed as markers", strict=True)
 def test_out_of_order_numbered_list_stays_body():
     # '1.' and '2.' appear inside the Results section as an enumerated list.
     summary = "3. Results\nKey effects:\n1. Effect is large\n2. Effect persists\n"
@@ -117,7 +116,6 @@ def test_out_of_order_numbered_list_stays_body():
     assert "Effect persists" in d["s3"]
 
 
-@pytest.mark.xfail(reason="R2 (U3): N.M subheadings consumed as markers", strict=True)
 def test_subsection_numbers_survive_as_content():
     summary = (
         "2. Data and Methods\n"
@@ -132,7 +130,23 @@ def test_subsection_numbers_survive_as_content():
     assert "Limit details." in d["s4"]
 
 
-@pytest.mark.xfail(reason="R2/R8 (U3): degenerate parse of bold markers not surfaced", strict=True)
+def test_enumeration_starting_with_section_word_stays_body():
+    # Regression guard (R2): a numbered list whose items begin with a section
+    # word must not be promoted to markers and lose its text.
+    summary = (
+        "3. Results\n"
+        "We highlight several points:\n"
+        "4. Extensions to neighboring markets replicate the effect (see Table 5).\n"
+        "5. Discussion of mechanisms suggests search frictions.\n"
+    )
+    d, meta = sps.analyze_summary_sections(summary)
+    assert meta["sections_found"] == 1
+    assert "Extensions to neighboring markets replicate the effect" in d["s3"]
+    assert "Discussion of mechanisms suggests search frictions" in d["s3"]
+    assert not d["s4"]
+    assert not d["s5"]
+
+
 def test_bold_markers_detectable_or_warned():
     # analyze_summary_sections is introduced in U3; it returns (sections, meta)
     # with meta['sections_found'] and meta['warnings'].
@@ -147,7 +161,6 @@ def test_bold_markers_detectable_or_warned():
 # R3 (U3): every emitted frontmatter scalar must be quoted
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(reason="R3 (U3): journal/author scalars emitted unquoted", strict=True)
 def test_frontmatter_scalars_with_colons_are_quoted():
     meta = {
         "title": "A Title",
@@ -168,7 +181,6 @@ def test_frontmatter_scalars_with_colons_are_quoted():
     assert '"' in author_line, f"author not quoted: {author_line!r}"
 
 
-@pytest.mark.xfail(reason="R3 (U3): colon-bearing scalars invalidate YAML", strict=True)
 def test_frontmatter_parses_as_yaml():
     yaml = pytest.importorskip("yaml")
     meta = {
@@ -187,7 +199,6 @@ def test_frontmatter_parses_as_yaml():
 # R4 (U3): emit the vault-dominant 'date-published' (hyphen)
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(reason="R4 (U3): script emits date_published (underscore)", strict=True)
 def test_emits_date_published_hyphen():
     meta = {"title": "T", "authors": ["A"], "date_published": "2020-07-31"}
     note = sps.render_note("K", "cite", "1. RQ\nbody\n", meta)

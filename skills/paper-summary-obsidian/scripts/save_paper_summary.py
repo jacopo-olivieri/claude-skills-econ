@@ -12,7 +12,29 @@ from pathlib import Path
 from typing import Any
 
 
-SECTION_HEADER_RE = re.compile(r"^\s{0,3}(?:#+\s*)?([1-5])(?:\s*[\.\)])\s*(.*)$")
+# R2: a section marker is a single-level integer 1-5 with a `.`/`)` delimiter
+# FOLLOWED BY WHITESPACE, optionally wrapped in heading hashes or bold. The
+# trailing whitespace requirement means `2.1` / `4.1` (two-level subsection
+# numbers) are NOT markers — the next char after the dot is a digit, not a
+# space — so template subsections survive as body text.
+SECTION_MARKER_RE = re.compile(
+    r"^\s{0,3}(?:#{1,6}\s*)?(?:\*\*|__)?\s*([1-5])[.)]\s+(.+?)\s*(?:\*\*|__)?\s*$"
+)
+
+# Canonical five-part structure. R2: a marker is accepted only when its title
+# fuzzy-matches the aliases for that section number. These module constants
+# pre-figure U6's summary_sections.json (which becomes the single source with
+# these values as the embedded fallback).
+CANONICAL_SECTION_ALIASES = {
+    1: ("research question and motivation", "research question", "motivation"),
+    2: ("data and methods", "data and empirical strategy", "data and identification",
+        "data", "methods", "empirical strategy", "identification strategy"),
+    3: ("results: main findings", "results and discussion", "results", "main findings",
+        "findings"),
+    4: ("limitations and extensions", "limitations", "extensions", "future research"),
+    5: ("synthesis of findings", "synthesis", "comments and ideas", "comments",
+        "conclusion", "discussion"),
+}
 SYNTHESIS_MARKER_RE = re.compile(r"\bsynthesis of findings\b", re.IGNORECASE)
 SYNTHESIS_PREFIX_RE = re.compile(
     r"^\s*(?:[#>\-\+\*]+\s*)?(?:\*\*|__)?\s*synthesis of findings\b[^\n]*\n?",
@@ -101,18 +123,60 @@ def _format_blockquote(text: str) -> str:
     return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
 
 
-def _split_summary_sections(summary_text: str) -> dict[str, str]:
+def _title_matches_section(number: int, title: str) -> bool:
+    """R2: does the marker title fuzzy-match the canonical name for `number`?
+
+    Matching is deliberately tight so a numbered *list item* whose text merely
+    begins with a section word (e.g. ``4. Extensions to neighboring markets
+    replicate the effect``) is NOT promoted to a section marker and its text is
+    not lost. A trailing subtitle after ``:``/``-``/``—`` is ignored, then:
+    a single-word alias must equal the whole title head; a multi-word alias may
+    match as a prefix (tolerating extra trailing words like "and Discussion").
+    """
+    norm = re.sub(r"\s+", " ", title).strip().lower().rstrip(":").strip()
+    if not norm:
+        return False
+    head = re.split(r"\s*[:\-–—]\s+", norm, maxsplit=1)[0].strip()
+    for alias in CANONICAL_SECTION_ALIASES.get(number, ()):
+        if head == alias:
+            return True
+        if " " in alias and head.startswith(alias):
+            return True
+    return False
+
+
+def analyze_summary_sections(summary_text: str) -> tuple[dict[str, str], dict[str, Any]]:
+    """Split summary text into s1..s5 and report parse metadata.
+
+    R2: a line is accepted as a section marker only when it is a single-level
+    1-5 number whose title fuzzy-matches that section's canonical name, the
+    number strictly increases, and the section has not already been seen.
+    Everything else — numbered list items, `N.M` subheadings, prose — is body
+    text. R8 (surfaced in the JSON by U5): a degenerate parse is detectable via
+    ``sections_found`` and ``warnings``.
+    """
     result = {"s1": "", "s2": "", "s3": "", "s4": "", "s5": ""}
     current_key: str | None = None
-    saw_markers = False
     preamble: list[str] = []
+    last_number = 0
+    seen: set[int] = set()
+    sections_found = 0
+    warnings: list[str] = []
 
     for line in summary_text.splitlines():
-        marker = SECTION_HEADER_RE.match(line)
+        marker = SECTION_MARKER_RE.match(line)
+        accepted = False
         if marker:
-            saw_markers = True
-            current_key = f"s{marker.group(1)}"
+            number = int(marker.group(1))
             title = marker.group(2).strip()
+            if number > last_number and number not in seen and _title_matches_section(number, title):
+                accepted = True
+
+        if accepted:
+            last_number = number
+            seen.add(number)
+            sections_found += 1
+            current_key = f"s{number}"
             if title and current_key == "s5":
                 result[current_key] += f"**{title}**\n"
             continue
@@ -123,7 +187,7 @@ def _split_summary_sections(summary_text: str) -> dict[str, str]:
 
         result[current_key] += f"{line}\n"
 
-    if saw_markers:
+    if sections_found:
         preamble_text = "\n".join(preamble).strip()
         if preamble_text:
             if result["s1"].strip():
@@ -131,12 +195,24 @@ def _split_summary_sections(summary_text: str) -> dict[str, str]:
             else:
                 result["s1"] = f"{preamble_text}\n"
     else:
+        if summary_text.strip():
+            warnings.append(
+                "No section markers detected; the entire summary was placed under "
+                "Comments and Ideas. Check that the summary uses the numbered "
+                "five-part structure."
+            )
         result["s5"] = summary_text.strip()
 
     for key, value in result.items():
         result[key] = value.strip()
 
-    return result
+    meta = {"sections_found": sections_found, "warnings": warnings}
+    return result, meta
+
+
+def _split_summary_sections(summary_text: str) -> dict[str, str]:
+    sections, _meta = analyze_summary_sections(summary_text)
+    return sections
 
 
 def _extract_synthesis_summary(section_text: str) -> tuple[str, bool]:
@@ -417,15 +493,18 @@ def render_note(item_key: str, citation_key: str, summary_text: str, metadata: d
 
     if authors:
         for author in authors:
-            frontmatter.append(f"  - {author}")
+            frontmatter.append(f"  - {_yaml_quote(author)}")
 
+    # R3: quote every scalar that could contain a `: ` or other YAML-breaking
+    # character (authors above, plus dates/itemType/url/journal here). R4: emit
+    # the vault-dominant `date-published` (hyphen), not `date_published`.
     frontmatter.extend(
         [
             f"year: {year}" if year else "year: ",
-            f"date_published: {date_published}" if date_published else "date_published: ",
+            f"date-published: {_yaml_quote(date_published)}" if date_published else "date-published: ",
             f"citekey: {citation_key}",
-            f"itemType: {item_type}" if item_type else "itemType: ",
-            f"url: {url}" if url else "url: ",
+            f"itemType: {_yaml_quote(item_type)}" if item_type else "itemType: ",
+            f"url: {_yaml_quote(url)}" if url else "url: ",
             "cssclasses: lit-note",
             "links:",
             "lit_review:",
@@ -435,7 +514,7 @@ def render_note(item_key: str, citation_key: str, summary_text: str, metadata: d
     if doi:
         frontmatter.append(f"doi: {doi}")
     if journal:
-        frontmatter.append(f"journal: {journal}")
+        frontmatter.append(f"journal: {_yaml_quote(journal)}")
     frontmatter.append("---")
 
     lines: list[str] = []

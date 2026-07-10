@@ -108,13 +108,12 @@ def _load_config(
     config_path: Path | str | None,
     *,
     is_executable: Callable[[Path], bool] = _default_is_executable,
-) -> tuple[Path, dict[str, str]]:
+) -> dict[str, str]:
     path = Path(config_path if config_path is not None else CONFIG_PATH).expanduser()
-    if not path.exists():
-        return path, {}
-
     try:
         metadata = path.stat()
+    except FileNotFoundError:
+        return {}
     except OSError as exc:
         raise StataConfigError(
             "unreadable-config", f"Could not inspect config {path}: {exc}"
@@ -174,7 +173,7 @@ def _load_config(
             )
         else:
             validated[key] = _profile_value(value, key=key, config_path=path)
-    return path, validated
+    return validated
 
 
 def _environment(env: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -215,7 +214,7 @@ def resolve_stata_bin(
             is_executable=is_executable,
         )
 
-    _path, data = _load_config(config_path, is_executable=is_executable)
+    data = _load_config(config_path, is_executable=is_executable)
     if "stata_bin" in data:
         return Path(data["stata_bin"])
 
@@ -265,7 +264,7 @@ def resolve_docs_dir(
             source="Environment",
         )
 
-    _path, data = _load_config(config_path)
+    data = _load_config(config_path)
     if "stata_docs_dir" in data:
         return Path(data["stata_docs_dir"])
 
@@ -352,7 +351,7 @@ def resolve_ado_base_dir(
             source="Environment",
         )
 
-    _path, data = _load_config(config_path)
+    data = _load_config(config_path)
     if "stata_ado_base_dir" in data:
         return Path(data["stata_ado_base_dir"])
 
@@ -386,13 +385,13 @@ def resolve_ado_base_dir(
 
 def resolve_author(*, config_path: Path | str | None = None) -> str:
     """Return the configured do-file author or a neutral public default."""
-    _path, data = _load_config(config_path)
+    data = _load_config(config_path)
     return data.get("author", DEFAULT_AUTHOR)
 
 
 def resolve_stata_version(*, config_path: Path | str | None = None) -> str:
     """Return the configured Stata version or the preserved neutral default."""
-    _path, data = _load_config(config_path)
+    data = _load_config(config_path)
     return data.get("stata_version", DEFAULT_STATA_VERSION)
 
 

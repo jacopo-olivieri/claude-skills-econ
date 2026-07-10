@@ -95,10 +95,7 @@ def test_live_wrapper_surfaces_r111_despite_raw_success(
     source = (
         "clear all\n"
         "set obs 1\n"
-        "capture noisily summarize __codex_live_missing_variable__\n"
-        "local captured_rc = _rc\n"
-        'noisily display as error "r(`captured_rc\');"\n'
-        "exit 0\n"
+        "summarize __codex_live_missing_variable__\n"
     )
     raw_do = tmp_path / "raw_failure.do"
     raw_do.write_text(source, encoding="utf-8")

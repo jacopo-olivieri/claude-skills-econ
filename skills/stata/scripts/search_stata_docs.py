@@ -67,11 +67,39 @@ def import_pdfplumber():
 
 
 def iter_pdf_paths(docs_dir: Path, pdf_name: str | None) -> list[Path]:
-    if pdf_name:
-        normalized = pdf_name if pdf_name.endswith(".pdf") else f"{pdf_name}.pdf"
+    if pdf_name is not None:
+        if (
+            not pdf_name.strip()
+            or Path(pdf_name).is_absolute()
+            or "/" in pdf_name
+            or "\\" in pdf_name
+            or pdf_name in {".", ".."}
+        ):
+            raise ValueError(
+                "--pdf must be a single PDF filename, not a path: "
+                f"{pdf_name}"
+            )
+
+        suffix = Path(pdf_name).suffix
+        if suffix and suffix.lower() != ".pdf":
+            raise ValueError(f"--pdf must name a PDF filename: {pdf_name}")
+
+        normalized = pdf_name if suffix else f"{pdf_name}.pdf"
         path = docs_dir / normalized
         if not path.exists():
             raise FileNotFoundError(f"PDF not found: {path}")
+
+        docs_root = docs_dir.resolve()
+        resolved_path = path.resolve()
+        try:
+            resolved_path.relative_to(docs_root)
+        except ValueError as exc:
+            raise ValueError(
+                "--pdf must resolve beneath the resolved docs directory: "
+                f"{pdf_name}"
+            ) from exc
+        if not resolved_path.is_file():
+            raise ValueError(f"--pdf must name a regular PDF file: {pdf_name}")
         return [path]
 
     pdfs = sorted(docs_dir.glob("*.pdf"))
@@ -162,6 +190,7 @@ def main() -> int:
     pdfplumber = import_pdfplumber()
 
     printed = 0
+    readable_pdfs = 0
     for pdf_path in pdf_paths:
         if printed >= args.max_results:
             break
@@ -176,6 +205,8 @@ def main() -> int:
             print(f"Failed reading {pdf_path.name}: {exc}", file=sys.stderr)
             continue
 
+        readable_pdfs += 1
+
         for page_num, line, context_lines in matches:
             print(f"{pdf_path.name}:{page_num}: {line}")
             if args.context > 0:
@@ -184,6 +215,10 @@ def main() -> int:
             print()
 
         printed += len(matches)
+
+    if readable_pdfs == 0:
+        print("No readable PDFs were searched; see failures above.", file=sys.stderr)
+        return 1
 
     if printed == 0:
         print(f"No results found for: {args.search_term}")

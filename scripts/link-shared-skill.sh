@@ -29,6 +29,17 @@ path_exists() {
   [ -e "$1" ] || [ -L "$1" ]
 }
 
+reject_symlink_components() {
+  candidate="$1"
+  while [ "$candidate" != "/" ]; do
+    [ ! -L "$candidate" ] || \
+      die "symlinked discovery parent is unsafe: $candidate"
+    parent="$(dirname "$candidate")"
+    [ "$parent" != "$candidate" ] || break
+    candidate="$parent"
+  done
+}
+
 home="${HOME:-}"
 preview=0
 rollback=""
@@ -73,6 +84,9 @@ case "$home" in
 esac
 [ "$home" != "/" ] || die "refusing to use the filesystem root as home"
 home="${home%/}"
+case "/${home#/}/" in
+  */./*|*/../*) die "home path must not contain dot path components: $home" ;;
+esac
 
 [ -d "$source_arg" ] || die "repo skill source is missing or not a directory: $source_arg"
 [ ! -L "$source_arg" ] || die "repo skill source must be a real directory: $source_arg"
@@ -91,6 +105,24 @@ git -C "$repo" cat-file -e "HEAD:$relative_source/SKILL.md" 2>/dev/null || \
   die "repo skill source is not tracked at HEAD: $relative_source/SKILL.md"
 [ -z "$(git -C "$repo" status --porcelain --untracked-files=all)" ] || \
   die "Git checkout is dirty; commit and review it before changing live links: $repo"
+
+# Discovery roots are security boundaries. Refuse symlinked ancestors before
+# inspecting or creating anything below them, so --home cannot redirect a
+# migration outside the requested tree.
+for discovery_parent in \
+  "$home" \
+  "$home/.agents" \
+  "$home/.agents/skills" \
+  "$home/.agents/backups" \
+  "$home/.claude" \
+  "$home/.claude/skills" \
+  "$home/.claude/commands" \
+  "$home/.codex" \
+  "$home/.codex/skills"
+do
+  reject_symlink_components "$discovery_parent"
+done
+[ ! -e "$home" ] || [ -d "$home" ] || die "home is not a directory: $home"
 
 agents_target="$home/.agents/skills/$name"
 claude_target="$home/.claude/skills/$name"
@@ -222,9 +254,13 @@ fi
 mkdir -p "$(dirname "$agents_target")" "$(dirname "$claude_target")"
 [ -z "$archive" ] || mkdir -p "$backup_root"
 
-restore_on_error() {
+transaction_active=1
+restore_on_exit() {
   status=$?
-  trap - ERR
+  [ "$transaction_active" -eq 1 ] || return "$status"
+  transaction_active=0
+  trap - EXIT HUP INT TERM
+  set +e
   if [ "$agents_state" = "directory" ] && [ -n "$archive" ] && [ -d "$archive" ]; then
     [ ! -L "$agents_target" ] || rm -f "$agents_target"
     [ -e "$agents_target" ] || mv "$archive" "$agents_target"
@@ -238,7 +274,10 @@ restore_on_error() {
   fi
   exit "$status"
 }
-trap restore_on_error ERR
+trap restore_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ "$agents_state" = "directory" ]; then
   mv "$agents_target" "$archive"
@@ -259,7 +298,8 @@ if [ ! -L "$claude_target" ] || [ "$(readlink "$claude_target")" != "$agents_tar
   false
 fi
 
-trap - ERR
+transaction_active=0
+trap - EXIT HUP INT TERM
 if [ -n "$archive" ]; then
   echo "archived installed directory: $agents_target -> $archive"
   echo "rollback source: $archive"

@@ -1,6 +1,9 @@
 # Stata 18 Documentation Index
 
-All PDFs are in `/Applications/Stata/docs/`. Use this index to identify which manual to consult for a given topic.
+PDF names in this index are relative to the resolved `STATA_DOCS_DIR`. Resolve
+that directory with
+`python3 "$SKILL_DIR/scripts/stata_config.py" docs-dir`, then use this index to
+identify which manual to consult for a given topic.
 
 ## Quick Lookup by Topic
 

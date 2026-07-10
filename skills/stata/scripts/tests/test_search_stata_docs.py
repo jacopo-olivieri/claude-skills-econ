@@ -13,6 +13,7 @@ import stata_config as config
 
 
 SKILL_PATH = Path(__file__).resolve().parents[2] / "SKILL.md"
+DOCS_INDEX_PATH = Path(__file__).resolve().parents[2] / "references/docs_index.md"
 
 
 class FakePage:
@@ -82,6 +83,44 @@ def test_named_pdf_selection_appends_suffix_and_all_pdf_selection_is_sorted(tmp_
 
     with pytest.raises(FileNotFoundError, match="PDF not found"):
         search.iter_pdf_paths(tmp_path, "missing")
+
+
+@pytest.mark.parametrize(
+    "pdf_name",
+    [
+        "/tmp/manual.pdf",
+        "nested/manual.pdf",
+        "nested\\manual.pdf",
+        "../manual.pdf",
+        ".",
+        "",
+        " ",
+    ],
+)
+def test_named_pdf_selection_rejects_paths_instead_of_single_filenames(
+    tmp_path, pdf_name
+):
+    with pytest.raises(ValueError, match="single PDF filename"):
+        search.iter_pdf_paths(tmp_path, pdf_name)
+
+
+def test_named_pdf_selection_requires_a_regular_pdf(tmp_path):
+    (tmp_path / "directory.pdf").mkdir()
+    (tmp_path / "not-pdf.txt").touch()
+
+    with pytest.raises(ValueError, match="regular PDF file"):
+        search.iter_pdf_paths(tmp_path, "directory.pdf")
+    with pytest.raises(ValueError, match="PDF filename"):
+        search.iter_pdf_paths(tmp_path, "not-pdf.txt")
+
+
+def test_named_pdf_selection_rejects_symlink_escaping_docs_dir(tmp_path):
+    outside = tmp_path.parent / "outside.pdf"
+    outside.touch()
+    (tmp_path / "escape.pdf").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="beneath the resolved docs directory"):
+        search.iter_pdf_paths(tmp_path, "escape.pdf")
 
 
 def test_search_respects_page_filter_context_and_result_limit(tmp_path):
@@ -158,6 +197,80 @@ def test_main_all_manual_scan_prints_slow_warning(tmp_path, monkeypatch, capsys)
     assert search.main() == 0
     captured = capsys.readouterr()
     assert "scanning all Stata manuals is slow" in captured.err
+    assert "No results found for: merge" in captured.out
+
+
+def test_main_named_pdf_read_failure_returns_error(tmp_path, monkeypatch, capsys):
+    (tmp_path / "r.pdf").touch()
+
+    class FailingPdfPlumber:
+        def open(self, _path):
+            raise OSError("broken manual")
+
+    monkeypatch.setattr(search, "import_pdfplumber", lambda: FailingPdfPlumber())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["search_stata_docs.py", "merge", "--docs-dir", str(tmp_path), "--pdf", "r"],
+    )
+
+    assert search.main() == 1
+    captured = capsys.readouterr()
+    assert "Failed reading r.pdf: broken manual" in captured.err
+    assert "No readable PDFs were searched" in captured.err
+    assert "No results found" not in captured.out
+
+
+def test_main_all_manual_scan_fails_when_every_pdf_is_unreadable(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "d.pdf").touch()
+    (tmp_path / "r.pdf").touch()
+
+    class FailingPdfPlumber:
+        def open(self, path):
+            raise OSError(f"cannot read {Path(path).name}")
+
+    monkeypatch.setattr(search, "import_pdfplumber", lambda: FailingPdfPlumber())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["search_stata_docs.py", "merge", "--docs-dir", str(tmp_path)],
+    )
+
+    assert search.main() == 1
+    captured = capsys.readouterr()
+    assert "Failed reading d.pdf" in captured.err
+    assert "Failed reading r.pdf" in captured.err
+    assert "No readable PDFs were searched" in captured.err
+    assert "No results found" not in captured.out
+
+
+def test_main_all_manual_scan_succeeds_when_at_least_one_pdf_is_readable(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "d.pdf").touch()
+    (tmp_path / "r.pdf").touch()
+
+    class PartiallyFailingPdfPlumber:
+        def open(self, path):
+            if Path(path).name == "d.pdf":
+                raise OSError("broken manual")
+            return FakePdf(["no matching text"])
+
+    monkeypatch.setattr(
+        search, "import_pdfplumber", lambda: PartiallyFailingPdfPlumber()
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["search_stata_docs.py", "merge", "--docs-dir", str(tmp_path)],
+    )
+
+    assert search.main() == 0
+    captured = capsys.readouterr()
+    assert "Failed reading d.pdf: broken manual" in captured.err
+    assert "No readable PDFs were searched" not in captured.err
     assert "No results found for: merge" in captured.out
 
 
@@ -291,3 +404,13 @@ def test_skill_routes_every_operational_resource_through_shared_resolver():
     assert "<project name>" in skill
     assert "<author>" in skill
     assert "<stata-version>" in skill
+
+
+def test_docs_index_describes_portable_manual_filenames():
+    index = DOCS_INDEX_PATH.read_text(encoding="utf-8")
+
+    assert "`u.pdf`" in index
+    assert "`stoc.pdf`" in index
+    assert "/Applications/Stata/docs" not in index
+    assert "STATA_DOCS_DIR" in index
+    assert "stata_config.py" in index

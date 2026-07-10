@@ -128,6 +128,40 @@ def test_stale_log_is_deleted_before_stata_runs(tmp_path):
     assert "did not produce a fresh log" in result.stderr
 
 
+def test_stale_log_cleanup_failure_stops_before_stata_runs(tmp_path):
+    work_dir = tmp_path / "project"
+    work_dir.mkdir()
+    do_file = work_dir / "analysis.do"
+    do_file.write_text("display 1\n", encoding="utf-8")
+    log_file = do_file.with_suffix(".log")
+    log_file.write_text("clean stale log\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "fake system bin"
+    fake_bin.mkdir()
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text("#!/usr/bin/env bash\nexit 77\n", encoding="utf-8")
+    fake_rm.chmod(0o755)
+
+    capture = tmp_path / "argv.txt"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "STATA_BIN": str(_fake_stata(tmp_path)),
+            "FAKE_CAPTURE": str(capture),
+        }
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), str(do_file)], capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 1
+    assert f"Cannot remove stale Stata log: {log_file}" in result.stderr
+    assert log_file.read_text(encoding="utf-8") == "clean stale log\n"
+    assert not capture.exists()
+
+
 def test_wrong_arity_returns_usage_error():
     result = subprocess.run([str(SCRIPT)], capture_output=True, text=True)
 

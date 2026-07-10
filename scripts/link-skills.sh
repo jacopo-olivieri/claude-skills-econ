@@ -21,8 +21,8 @@ set -euo pipefail
 #   1. Direct link (this script): skills/<name> -> ~/.claude/skills/<name>.
 #      The default for Claude-only skills (e.g. research-codebase-audit).
 #   2. ~/.agents indirection chain (owned elsewhere, e.g. paper-summary):
-#      skills/<name> <- ~/.agents/skills/<name> <- ~/.codex|.claude/skills/<name>.
-#      Skills wired this way reach both Codex and Claude through ~/.agents.
+#      skills/<name> <- ~/.agents/skills/<name> <- ~/.claude/skills/<name>.
+#      Codex discovers ~/.agents/skills directly; a ~/.codex shadow is invalid.
 # To avoid the two mechanisms fighting, this script SKIPS any skill that is
 # already wired through ~/.agents/skills/<name> (a symlink into this repo).
 # scripts/link-shared-skill.sh owns guarded migration and rollback for that

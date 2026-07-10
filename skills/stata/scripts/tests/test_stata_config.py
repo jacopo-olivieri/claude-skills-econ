@@ -124,6 +124,13 @@ def test_valid_config_resolves_paths_tilde_symlinks_spaces_and_profiles(
     assert config.resolve_stata_version(config_path=cfg) == "19"
 
 
+def test_partial_config_with_only_desired_keys_is_valid(tmp_path):
+    cfg = _write_config(tmp_path / "stata.json", {"author": "A Researcher"})
+
+    assert config.resolve_author(config_path=cfg) == "A Researcher"
+    assert config.resolve_stata_version(config_path=cfg) == "18"
+
+
 @pytest.mark.parametrize(
     ("contents", "error_code"),
     [
@@ -270,18 +277,48 @@ def test_app_scan_is_deterministic_se_then_mp_then_be(tmp_path):
     ) == expected.resolve()
 
 
-def test_ado_uses_derived_install_layout_before_known(tmp_path):
+def test_ado_derives_from_docs_layout_before_known_fallback(tmp_path):
     install = tmp_path / "Stata"
+    docs = install / "docs"
+    derived = install / "ado/base"
+    known = tmp_path / "known ado"
+    docs.mkdir(parents=True)
+    derived.mkdir(parents=True)
+    known.mkdir()
+    cfg = _write_config(tmp_path / "stata.json", {"stata_docs_dir": str(docs)})
+
+    assert config.resolve_ado_base_dir(
+        config_path=cfg,
+        env=EMPTY_ENV,
+        derived_candidates=None,
+        known_candidates=(known,),
+        which=lambda _name: None,
+        known_binary_candidates=(),
+        known_docs_candidates=(),
+        app_roots=(),
+    ) == derived.resolve()
+
+
+def test_ado_derives_from_binary_app_layout_before_known_fallback(tmp_path):
+    install = tmp_path / "Stata"
+    binary = _executable(
+        install / "StataSE.app" / "Contents" / "MacOS" / "stata-se"
+    )
     derived = install / "ado/base"
     known = tmp_path / "known ado"
     derived.mkdir(parents=True)
     known.mkdir()
+    cfg = _write_config(tmp_path / "stata.json", {"stata_bin": str(binary)})
 
     assert config.resolve_ado_base_dir(
-        config_path=tmp_path / "missing.json",
+        config_path=cfg,
         env=EMPTY_ENV,
-        derived_candidates=(derived,),
+        derived_candidates=None,
         known_candidates=(known,),
+        which=lambda _name: None,
+        known_binary_candidates=(),
+        known_docs_candidates=(),
+        app_roots=(),
     ) == derived.resolve()
 
 

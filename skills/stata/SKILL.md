@@ -11,7 +11,7 @@ Use this skill to write and run Stata work reproducibly and to consult the local
 
 Resolve the skill directory from the invoked `SKILL.md` path and reuse it as `SKILL_DIR`; do not assume a fixed installation path.
 
-The optional private config is `~/.agents/config/stata.json`; copy `config.example.json` there and replace only the values you need. The shared resolver applies command-line/environment/config/discovery precedence and fails clearly when a selected value is invalid. Resolve only the resources needed for the current task:
+The optional private config is `~/.agents/config/stata.json`. To create it, copy `config.example.json`, replace the values you intend to configure, and remove every unused key. Partial configs are valid; do not retain placeholder paths, because the resolver validates every path present in the file. The shared resolver applies command-line/environment/config/discovery precedence and fails clearly when a selected value is invalid. Resolve only the resources needed for the current task:
 
 ```bash
 STATA_BIN="$(python3 "$SKILL_DIR/scripts/stata_config.py" stata-bin)" || exit 2

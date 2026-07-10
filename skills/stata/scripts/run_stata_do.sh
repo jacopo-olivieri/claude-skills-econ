@@ -30,7 +30,14 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || {
 }
 stata_bin=$(python3 "$script_dir/stata_config.py" stata-bin) || exit 2
 
-rm -f "$log_path"
+if ! rm -f "$log_path"; then
+  printf 'Cannot remove stale Stata log: %s\n' "$log_path" >&2
+  exit 1
+fi
+if [ -e "$log_path" ]; then
+  printf 'Stale Stata log remains after cleanup: %s\n' "$log_path" >&2
+  exit 1
+fi
 
 (
   cd "$do_dir" || exit 2

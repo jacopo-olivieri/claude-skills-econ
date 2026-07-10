@@ -117,6 +117,112 @@ def test_real_install_is_archived_and_shared_chain_created(tmp_path: Path) -> No
     assert (paper_agents.readlink(), paper_claude.readlink()) == paper_state
 
 
+def test_failure_after_archive_restores_original_topology_and_status(
+    tmp_path: Path,
+) -> None:
+    _, source = make_repo(tmp_path)
+    home = tmp_path / "home"
+    agents, claude = seed_real_install(home)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "ln-called"
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        "#!/bin/sh\n"
+        'if [ ! -e "$LINK_TEST_LN_MARKER" ]; then\n'
+        '  : > "$LINK_TEST_LN_MARKER"\n'
+        "  exit 73\n"
+        "fi\n"
+        'exec /bin/ln "$@"\n',
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+
+    result = run_helper(
+        home,
+        source,
+        env_overrides={
+            "LINK_TEST_LN_MARKER": str(marker),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 73
+    assert marker.exists()
+    assert agents.is_dir() and not agents.is_symlink()
+    assert (agents / "legacy.txt").read_text(encoding="utf-8") == "deployed copy\n"
+    assert claude.is_symlink() and claude.readlink() == agents.absolute()
+    assert not next((home / ".agents" / "backups").iterdir(), None)
+
+
+def test_signal_after_archive_restores_original_topology(tmp_path: Path) -> None:
+    _, source = make_repo(tmp_path)
+    home = tmp_path / "home"
+    agents, claude = seed_real_install(home)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "ln-called"
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        "#!/bin/sh\n"
+        'if [ ! -e "$LINK_TEST_LN_MARKER" ]; then\n'
+        '  : > "$LINK_TEST_LN_MARKER"\n'
+        '  kill -TERM "$PPID"\n'
+        "  exit 0\n"
+        "fi\n"
+        'exec /bin/ln "$@"\n',
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+
+    result = run_helper(
+        home,
+        source,
+        env_overrides={
+            "LINK_TEST_LN_MARKER": str(marker),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 143
+    assert marker.exists()
+    assert agents.is_dir() and not agents.is_symlink()
+    assert (agents / "legacy.txt").read_text(encoding="utf-8") == "deployed copy\n"
+    assert claude.is_symlink() and claude.readlink() == agents.absolute()
+    assert not next((home / ".agents" / "backups").iterdir(), None)
+
+
+@pytest.mark.parametrize(
+    "symlinked_parent",
+    ["home", ".agents", ".agents/skills", ".claude", ".claude/skills"],
+)
+def test_symlinked_discovery_parent_is_rejected_without_escape(
+    tmp_path: Path, symlinked_parent: str
+) -> None:
+    _, source = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("unchanged\n", encoding="utf-8")
+    home = tmp_path / "home"
+
+    if symlinked_parent == "home":
+        home.symlink_to(outside, target_is_directory=True)
+    else:
+        home.mkdir()
+        parent = home / symlinked_parent
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        parent.symlink_to(outside, target_is_directory=True)
+
+    result = run_helper(home, source)
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr.lower()
+    assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    assert not (outside / "stata").exists()
+    assert not (outside / "skills" / "stata").exists()
+
+
 def test_correct_topology_is_idempotent(tmp_path: Path) -> None:
     _, source = make_repo(tmp_path)
     home = tmp_path / "home"

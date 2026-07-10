@@ -18,7 +18,8 @@ Reference files (all paths relative to this skill's folder):
   `references/pipeline-finalize.md` — stage-by-stage pipeline instructions and sizing rules.
 - `references/prompts/` — fixed prompt skeletons with slot tables.
 - `scripts/lint_registers.py`, `scripts/blank_tex_comments.py`, `scripts/export_xlsx.py`,
-  `scripts/check_manifests.py` (conductor-invoked at `b4`; see `references/pipeline-code-errors.md`).
+  `scripts/check_manifests.py`, `scripts/emit_defuse_bundles.py` (both conductor-invoked at
+  `b4`; see `references/pipeline-code-errors.md`).
 
 Invariants you never break:
 

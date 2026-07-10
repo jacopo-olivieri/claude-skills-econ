@@ -7,7 +7,11 @@ carried in prior (hand-adjudicated) scorecards.
 
 import re
 
+import pytest
+
 import regbuild as rb
+
+sf = rb.load_script("score_fixture")
 
 CLEAN_SUMMARY = (
     "# Register cross-link summary\n\n"
@@ -56,6 +60,67 @@ MANIFEST_ARTIFACT_PLANT_ONLY_IN_WARNINGS = (
     "## Warnings\n\n"
     "- could not read pyproject.toml: [Errno 13] Permission denied\n"
 )
+
+P21_DU = "DU-p21abc"
+D03_DU = "DU-d03abc"
+
+
+def channel_artifact(*, p21=True, d03=True):
+    rows = []
+    if p21:
+        rows.append([
+            f"`{P21_DU}`", "`(do/build_panel.do, 15, 18, consent_ok)`",
+            "consent_ok", "boolean_gen", "`do/build_panel.do:15`",
+            "`gen consent_ok = ...`", "`do/build_panel.do:18`",
+            "`keep if consent_ok == 1 & consent == individual`",
+            "`consent_ok == 1 & consent == individual`", "context", "review",
+        ])
+    if d03:
+        rows.append([
+            f"`{D03_DU}`", "`(do/analysis.do, 13, 14, baseline_diag_ok)`",
+            "baseline_diag_ok", "boolean_gen", "`do/analysis.do:13`",
+            "`gen baseline_diag_ok = (svy_weight != .)`", "`do/analysis.do:14`",
+            "`keep if baseline_diag_ok == 1 & wave == 1`",
+            "`baseline_diag_ok == 1 & wave == 1`", "intentional diagnostic", "review",
+        ])
+    return (
+        "# Stata definition/use bundles\n\n## Scan summary\n\n"
+        f"- Standard candidates: {len(rows)}\n\n## Candidate findings\n\n"
+        + rb.md_table([
+            "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+            "Definition Site", "Producer Statement", "Consumer Site",
+            "Consumer Statement", "Full Guard", "Code/Comment Context",
+            "Obligation Question",
+        ], rows)
+        + "\n## Advisory candidates\n\nnone\n"
+    )
+
+
+def channel_plan(*, map_p21=True, map_d03=True, p21_evidence=True,
+                 d03_evidence=True, p21_du=P21_DU, d03_du=D03_DU):
+    inventory = [
+        ("E-0021", "definition/use issue", p21_du if p21_evidence else "static"),
+        ("E-0090", "definition/use diagnostic", d03_du if d03_evidence else "static"),
+    ]
+    mappings = []
+    if map_p21:
+        mappings.append((p21_du, "E-0021", "existing_row"))
+    if map_d03:
+        mappings.append((d03_du, "E-0090", "new_candidate"))
+    clusters = [("K1", "definition/use", "E-0021; E-0090",
+                 "`audit/_code_error_recheck/k1.md`")]
+    return rb.recheck_plan_text("code", inventory, clusters, mappings)
+
+
+def channel_ledgers(*, p21_evidence=True, d03_evidence=True,
+                    p21_verdict="confirmed_error", d03_verdict="not_error",
+                    p21_du=P21_DU, d03_du=D03_DU):
+    return [
+        rb.ledger_row("E-0021", evidence=(p21_du if p21_evidence else "source"),
+                      verdict=p21_verdict),
+        rb.ledger_row("E-0090", evidence=(d03_du if d03_evidence else "source"),
+                      verdict=d03_verdict, change="set status=not_error"),
+    ]
 
 
 def hit_claims_rows(p14_branch="inconsistent", p19_branch="inconsistent",
@@ -214,6 +279,11 @@ def hit_error_rows():
                  "== \"individual\" adds a conjunct that silently drops the "
                  "community-consent households from the estimation sample "
                  "feeding Table 1.")),
+        mk("E-0090", etype="sample_filter_or_flag_error", status="not_error",
+           severity="", source="`do/analysis.do`",
+           location="`do/analysis.do:13-16`",
+           desc=("baseline_diag_ok gates an intentional baseline-wave-only "
+                 "diagnostic inside preserve/restore; reviewed and cleared.")),
     ]
 
 
@@ -221,7 +291,9 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
                           summary=CLEAN_SUMMARY,
                           manifest_artifact=MANIFEST_ARTIFACT,
                           conventions=None, ledger_rows=None,
-                          claims_original_cols=False):
+                          claims_original_cols=False,
+                          defuse_artifact="default", defuse_plan="default",
+                          defuse_ledgers="default"):
     audit = tmp_path / "audit"
     audit.mkdir(parents=True)
     if claims_original_cols:
@@ -247,6 +319,22 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
     if manifest_artifact is not None:
         (audit / "_run").mkdir(exist_ok=True)
         (audit / "_run" / "manifest_check.md").write_text(manifest_artifact)
+    if defuse_artifact == "default":
+        defuse_artifact = channel_artifact()
+    if defuse_artifact is not None:
+        (audit / "_run").mkdir(exist_ok=True)
+        (audit / "_run" / "defuse_bundles.md").write_text(defuse_artifact)
+    if defuse_plan == "default":
+        defuse_plan = channel_plan()
+    if defuse_plan is not None:
+        (audit / "plans").mkdir(exist_ok=True)
+        (audit / "plans" / "code_error_recheck_plan.md").write_text(defuse_plan)
+    if defuse_ledgers == "default":
+        defuse_ledgers = channel_ledgers()
+    if defuse_ledgers is not None:
+        (audit / "_code_error_recheck").mkdir(exist_ok=True)
+        (audit / "_code_error_recheck" / "k1.md").write_text(
+            rb.register_text("Recheck ledger", rb.LEDGER_COLS, defuse_ledgers))
     if conventions is not None:
         (audit / "_run").mkdir(exist_ok=True)
         (audit / "_run" / "conventions.md").write_text(conventions)
@@ -366,6 +454,32 @@ def test_decoy_presence_turns_gate_red(tmp_path):
     assert "D-01 decoy: PRESENT" in res.stdout
     assert "GATE RED" in res.stdout
     assert "Recall: 21/21" in res.stdout  # decoy alone flips the gate
+
+
+def test_cleared_decoy_row_does_not_turn_gate_red(tmp_path):
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0099", etype="missing_input_or_output", status="not_error",
+        severity="",
+        desc=("artifacts/fig_placebo.pdf was reviewed and cleared because "
+              "the placebo figure block is intentionally commented out."))]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-01 decoy: ABSENT" in res.stdout
+
+
+def test_p18_source_anchored_loop_overwrite_description_still_hits(tmp_path):
+    errors = [row for row in hit_error_rows() if row[0] != "E-0018"]
+    errors.append(rb.error_row(
+        "E-0018", etype="sample_filter_or_flag_error", severity="2",
+        source="`py/build_income.py`", location="`py/build_income.py:24-26`",
+        desc=("The loop assigns the indicator anew on each iteration instead "
+              "of accumulating prior matches, so the final iteration "
+              "overwrites earlier true values.")))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    res = run_scorer(audit)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert re.match(r"P-18: HIT", plant_line(res, "P-18"))
 
 
 def test_intentional_subset_decoy_turns_gate_red(tmp_path):
@@ -502,6 +616,176 @@ def test_p21_below_min_severity_is_miss(tmp_path):
     assert res.returncode == 1
     assert re.match(r"P-21: MISS", plant_line(res, "P-21"))
     assert "severity >= 2" in plant_line(res, "P-21")
+
+
+# ------------------------------------ U2 definition/use channel attribution
+
+
+def test_defuse_channel_passes_for_p21_and_d03(tmp_path):
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "PASS", note
+    assert P21_DU in note and D03_DU in note
+
+
+def test_defuse_channel_accepts_real_fixture_emitter_artifact(tmp_path):
+    """Integration: score the committed emitter's real P-21/D-03 artifact."""
+    audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
+    emitted = rb.run_script(
+        "emit_defuse_bundles.py", rb.FIXTURE_DIR / "planted",
+        "--audit-dir", audit)
+    assert emitted.returncode == 0, emitted.stdout + emitted.stderr
+    text = (audit / "_run" / "defuse_bundles.md").read_text()
+    section = text.partition("## Candidate findings")[2].split("\n## ", 1)[0]
+    headers, rows = sf._table_with_headers(
+        section, ["Bundle ID", "Variable", "Definition Site", "Consumer Site"])
+    found = {dict(zip(headers, row))["Variable"]:
+             dict(zip(headers, row))["Bundle ID"].strip("`") for row in rows}
+    p21_du, d03_du = found["consent_ok"], found["baseline_diag_ok"]
+    (audit / "plans" / "code_error_recheck_plan.md").write_text(
+        channel_plan(p21_du=p21_du, d03_du=d03_du))
+    (audit / "_code_error_recheck" / "k1.md").write_text(
+        rb.register_text(
+            "Recheck ledger", rb.LEDGER_COLS,
+            channel_ledgers(p21_du=p21_du, d03_du=d03_du)))
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "PASS", note
+
+
+def test_defuse_channel_rejects_longer_prefix_inventory_evidence(tmp_path):
+    plan = channel_plan().replace(
+        f"| E-0021 | definition/use issue | {P21_DU} |",
+        f"| E-0021 | definition/use issue | {P21_DU}4 |",
+    )
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(), defuse_plan=plan)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "Likely Evidence" in note and P21_DU in note
+
+
+def test_defuse_channel_rejects_longer_prefix_ledger_evidence(tmp_path):
+    ledgers = channel_ledgers()
+    ledgers[0][3] = P21_DU + "4"
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(), defuse_ledgers=ledgers)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "Evidence Checked" in note and P21_DU in note
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    ({"defuse_artifact": None}, "artifact"),
+    ({"defuse_artifact": channel_artifact(p21=False)}, "P-21"),
+    ({"defuse_plan": channel_plan(map_p21=False)}, "mapping"),
+    ({"defuse_plan": channel_plan(p21_evidence=False)}, "Likely Evidence"),
+    ({"defuse_ledgers": channel_ledgers(p21_evidence=False)}, "Evidence Checked"),
+    ({"defuse_ledgers": channel_ledgers(p21_verdict="not_error")}, "confirmed_error"),
+    ({"defuse_ledgers": channel_ledgers(d03_verdict="confirmed_error")}, "not_error"),
+])
+def test_defuse_channel_rejects_broken_handoff_or_verdict(tmp_path, kwargs, expected):
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(), **kwargs)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert expected in note
+
+
+def test_defuse_channel_rejects_d03_issue_final_status(tmp_path):
+    errors = [r for r in hit_error_rows() if r[0] != "E-0090"]
+    errors.append(rb.error_row(
+        "E-0090", etype="sample_filter_or_flag_error", status="confirmed",
+        severity="2", source="`do/analysis.do`", location="`do/analysis.do:13-16`",
+        desc="baseline_diag_ok baseline-wave diagnostic is an error"))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "D-03" in note and "not_error" in note
+
+
+def test_defuse_channel_rejects_d03_claim_issue_row(tmp_path):
+    claims = hit_claims_rows() + [rb.claims_row(
+        "C-0090", status="inconsistent", severity="2",
+        ctype="data_construction",
+        issue=("baseline_diag_ok baseline-wave-only diagnostic wrongly "
+               "narrows the estimation sample"))]
+    audit = write_final_registers(tmp_path, claims, hit_error_rows())
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "D-03" in note and "issue row" in note
+
+
+def test_defuse_channel_rejects_d03_issue_at_source_location(tmp_path):
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0091", etype="sample_filter_or_flag_error", status="confirmed",
+        severity="2", source="`do/analysis.do`", location="`do/analysis.do:13`",
+        desc="A temporary marker is incorrectly reported as narrowing the sample")]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "D-03" in note and "issue row" in note
+
+
+def test_defuse_channel_rejects_p21_nonissue_final_status(tmp_path):
+    errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
+    errors.append(rb.error_row(
+        "E-0021", etype="sample_filter_or_flag_error", status="not_error",
+        severity="", desc="consent_ok reviewed and cleared"))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "P-21" in note and "confirmed" in note
+
+
+def test_defuse_channel_accepts_explicit_duplicate_to_equivalent_issue(tmp_path):
+    errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
+    errors.extend([
+        rb.error_row("E-0021", etype="sample_filter_or_flag_error",
+                     status="duplicate_of:E-0022", severity="",
+                     desc="duplicate consent filter row"),
+        rb.error_row(
+            "E-0022", etype="sample_filter_or_flag_error", severity="2",
+            desc=("consent_ok covers individual and community consent, but "
+                  "keep if adds an individual-only conjunct that excludes "
+                  "community households from Table 1.")),
+    ])
+    ledgers = channel_ledgers()
+    ledgers[0] = rb.ledger_row(
+        "E-0021", evidence=P21_DU, verdict="confirmed_error",
+        change="set status=duplicate_of:E-0022")
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), errors, defuse_ledgers=ledgers)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "PASS", note
+
+
+def test_defuse_channel_duplicate_rejects_not_error_verdict(tmp_path):
+    errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
+    errors.extend([
+        rb.error_row("E-0021", etype="sample_filter_or_flag_error",
+                     status="duplicate_of:E-0022", severity=""),
+        rb.error_row(
+            "E-0022", etype="sample_filter_or_flag_error", severity="2",
+            desc=("consent_ok covers individual and community consent, but "
+                  "keep if excludes community households from Table 1.")),
+    ])
+    ledgers = channel_ledgers(p21_verdict="not_error")
+    ledgers[0][6] = "set status=duplicate_of:E-0022"
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), errors, defuse_ledgers=ledgers)
+    status, note = sf.check_channel_defuse(audit)
+    assert status == "FAIL"
+    assert "confirmed_error" in note
+
+
+def test_broken_defuse_channel_turns_integrated_gate_red(tmp_path):
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(),
+        defuse_plan=channel_plan(map_d03=False))
+    res = run_scorer(audit)
+    assert res.returncode == 1
+    assert "Definition/use channel: FAIL" in res.stdout
+    assert "GATE RED" in res.stdout
 
 
 def test_below_min_severity_is_miss(tmp_path):

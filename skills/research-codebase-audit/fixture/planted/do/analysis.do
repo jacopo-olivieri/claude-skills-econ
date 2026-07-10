@@ -7,6 +7,14 @@ set more off
 
 use "output/panel.dta", clear
 
+* ------------------------------------------------ Baseline diagnostic only
+* Intentionally baseline-wave-only diagnostic, separate from the estimation sample.
+preserve
+gen baseline_diag_ok = (svy_weight != .)
+keep if baseline_diag_ok == 1 & wave == 1
+summarize log_income
+restore
+
 * Household controls used throughout.
 * global controls "hhsize educ_head age_head"
 

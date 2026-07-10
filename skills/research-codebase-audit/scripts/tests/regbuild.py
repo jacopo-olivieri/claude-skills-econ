@@ -226,7 +226,7 @@ def ledger_row(rid, *, status="candidate", severity="3",
             impact, note]
 
 
-def recheck_plan_text(stream, inventory, clusters):
+def recheck_plan_text(stream, inventory, clusters, mappings=()):
     """A recheck plan (b4 output): inventory table + cluster table + vocab pointer.
 
     *inventory* is a list of (ID, Reason, Likely Evidence) tuples; *clusters* is a
@@ -236,15 +236,49 @@ def recheck_plan_text(stream, inventory, clusters):
                    [list(r) for r in inventory])
     clu = md_table(["Cluster ID", "Cluster Name", "Assigned IDs", "Shard File"],
                    [list(r) for r in clusters])
+    mapping = md_table(
+        ["Bundle ID", "Error ID", "Mapping Kind"],
+        [list(r) for r in mappings],
+    )
     return (f"# {stream} recheck plan\n\n"
             "## Inventory\n\n" + inv + "\n"
-            "## Clusters\n\n" + clu + "\n"
-            "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
+            + ("## Definition/use bundle mapping\n\n" + mapping + "\n"
+               if stream == "code" else "")
+            + "## Clusters\n\n" + clu + "\n"
+            + "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
+
+
+def defuse_artifact(bundle_ids=()):
+    rows = []
+    for i, bid in enumerate(bundle_ids, start=1):
+        rows.append([
+            f"`{bid}`", f"`(do/build_panel.do, {10+i}, {20+i}, consent_ok)`",
+            "consent_ok", "boolean_gen", f"`do/build_panel.do:{10+i}`",
+            "`gen consent_ok = consent != \"\"`",
+            f"`do/build_panel.do:{20+i}`",
+            "`keep if consent_ok == 1 & wave == 1`",
+            "`consent_ok == 1 & wave == 1`", "context", "review narrowing",
+        ])
+    table = md_table([
+        "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+        "Definition Site", "Producer Statement", "Consumer Site",
+        "Consumer Statement", "Full Guard", "Code/Comment Context",
+        "Obligation Question",
+    ], rows)
+    return (
+        "# Stata definition/use bundles\n\n## Scan summary\n\n"
+        "- Stata files scanned: 1\n"
+        f"- Standard candidates: {len(rows)}\n"
+        "- Advisory candidates: 0\n\n"
+        "## Candidate findings\n\n" + table + "\n"
+        "## Advisory candidates\n\nNo advisory definition/use bundles found.\n"
+    )
 
 
 def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
             canon_errors=(), inventory=None, clusters=None,
-            review_depth="standard") -> AuditDir:
+            review_depth="standard", bundle_ids=(), mappings=(),
+            include_defuse_artifact=True) -> AuditDir:
     """A minimal audit dir that reaches the b4-<stream> boundary.
 
     Canonical registers sit at ``audit/`` (b4 reads them via canon_ids). The
@@ -263,11 +297,31 @@ def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
         a.write_register("code_error_register.md", ERROR_COLS,
                          list(canon_errors), title="Code-error register")
         plan_name = "plans/code_error_recheck_plan.md"
+        if include_defuse_artifact:
+            a.write("_run/defuse_bundles.md", defuse_artifact(bundle_ids))
     if inventory is None or clusters is None:
         auto_inv, auto_clu = _auto_recheck(stream, canon_claims, canon_errors)
         inventory = auto_inv if inventory is None else inventory
         clusters = auto_clu if clusters is None else clusters
-    a.write(plan_name, recheck_plan_text(stream, inventory, clusters))
+    a.write(plan_name, recheck_plan_text(stream, inventory, clusters, mappings))
+    return a
+
+
+def make_b6_code(tmp_path, *, before_rows, final_rows, inventory, clusters,
+                 mappings, ledger_rows) -> AuditDir:
+    """A b6-code boundary with real plan, ledger, snapshot, and staging."""
+    a = AuditDir(tmp_path)
+    a.write_manifest()
+    a.write("plans/code_error_review_plan.md", _code_b1_plan())
+    a.write("plans/code_error_recheck_plan.md",
+            recheck_plan_text("code", inventory, clusters, mappings))
+    a.write_register("_staging/code_error_register.md", ERROR_COLS,
+                     list(final_rows), title="Code-error register")
+    a.write_register("_run/snapshots/code_b6/code_error_register.md", ERROR_COLS,
+                     list(before_rows), title="Code-error register")
+    a.write_recheck_summary("code")
+    a.write("_code_error_recheck/k1.md",
+            register_text("Recheck ledger", LEDGER_COLS, list(ledger_rows)))
     return a
 
 

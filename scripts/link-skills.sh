@@ -7,9 +7,12 @@ set -euo pipefail
 # can author skills here (version-controlled) while Claude Code loads them live.
 # A `git pull` is then all you need to keep your installed skills up to date.
 #
-# Moving an existing skill into the repo:
+# Moving an existing Claude-only skill into the repo:
 #   1. mv ~/.claude/skills/<name>  <repo>/skills/<name>
 #   2. bash scripts/link-skills.sh   # replaces the old copy with a symlink
+# For a skill shared by Claude and Codex, do not move or delete live state by
+# hand. Preview and run scripts/link-shared-skill.sh instead; it archives the
+# installed directory and owns rollback for the ~/.agents indirection chain.
 #
 # Skills under skills/deprecated/ or skills/in-progress/ are intentionally NOT
 # linked (they are drafts / retired and should not load).
@@ -22,7 +25,8 @@ set -euo pipefail
 #      Skills wired this way reach both Codex and Claude through ~/.agents.
 # To avoid the two mechanisms fighting, this script SKIPS any skill that is
 # already wired through ~/.agents/skills/<name> (a symlink into this repo).
-# Those skills are cut over to ~/.codex / ~/.claude by their own setup, not here.
+# scripts/link-shared-skill.sh owns guarded migration and rollback for that
+# topology. This routine linker never archives or migrates shared skills.
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$HOME/.claude/skills"

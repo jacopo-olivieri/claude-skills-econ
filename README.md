@@ -43,6 +43,28 @@ Skills are authored in this repo and symlinked into `~/.claude/skills`, so a
 bash scripts/link-skills.sh
 ```
 
+Skills used by both Claude and Codex can instead share one repo-owned copy via
+`~/.agents/skills`. The guarded migration helper archives an existing installed
+directory, makes the `~/.agents` link, and keeps Claude pointed through that
+single rollback seam:
+
+```bash
+# The checkout must be clean and the skill must be tracked at HEAD.
+bash scripts/link-shared-skill.sh --preview skills/<name>
+bash scripts/link-shared-skill.sh skills/<name>
+
+# Use the exact archive path printed as "rollback source" if rollback is needed.
+bash scripts/link-shared-skill.sh --rollback ~/.agents/backups/<archive> skills/<name>
+```
+
+The helper refuses unexpected agent, Claude, Codex, or legacy-command state
+before making changes. It never deletes the archive. Once linked, both harnesses
+execute the active checkout directly: branch switches and uncommitted edits are
+immediately live. Cut over only from a clean, reviewed commit, retain the archive
+until fresh Claude and Codex sessions pass, and use `scripts/link-skills.sh` only
+for routine linking—it deliberately skips skills already owned by the shared
+chain.
+
 To add a skill: create `skills/<name>/SKILL.md` (see
 [`TEMPLATE-SKILL.md`](./TEMPLATE-SKILL.md)), add `"./skills/<name>"` to
 [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json), then run the link

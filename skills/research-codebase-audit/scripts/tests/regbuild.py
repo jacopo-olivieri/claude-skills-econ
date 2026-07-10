@@ -205,6 +205,10 @@ def make_b6_claims(tmp_path, claims_rows, output_rows=()) -> AuditDir:
     a = AuditDir(tmp_path)
     a.write_manifest()
     a.write_claims_plan()
+    a.write(
+        "plans/claims_recheck_plan.md",
+        recheck_plan_text("claims", [], []),
+    )
     a.write_register("_staging/claims_register.md", CLAIMS_COLS,
                      list(claims_rows), title="Claims register")
     a.write_register("_staging/output_register.md", OUTPUT_COLS,
@@ -329,7 +333,13 @@ def make_b6_code(tmp_path, *, before_rows, final_rows, inventory, clusters,
                  mappings, ledger_rows) -> AuditDir:
     """A b6-code boundary with real plan, ledger, snapshot, and staging."""
     a = AuditDir(tmp_path)
-    a.write_manifest()
+    shards = {
+        cluster[3].strip("`"): {"status": "done", "retries": 0}
+        for cluster in clusters
+    }
+    a.write_manifest(stages={
+        "code_b5": {"status": "done", "retries": 0, "shards": shards},
+    })
     a.write("plans/code_error_review_plan.md", _code_b1_plan())
     a.write("plans/code_error_recheck_plan.md",
             recheck_plan_text("code", inventory, clusters, mappings))

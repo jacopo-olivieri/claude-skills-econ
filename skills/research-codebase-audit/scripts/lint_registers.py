@@ -689,25 +689,31 @@ def parse_plan(lint, path, key_col):
 
 def check_manifest_worker_shards(lint, manifest, stage_key, plan, key_col,
                                  allocations=None):
-    """A done worker stage with planned work must record at least one shard.
+    """A worker stage with planned work must record manifest shard evidence.
 
-    Only completed stages are reconciled: pending/running stages may not have
-    created their shard map yet.  ``allocations`` lets b3b reuse the plan it
-    already parsed; b6 supplies no allocation so the recheck cluster table is
-    read here.
+    The boundary lint runs before the conductor changes ``running`` to
+    ``done``, so stage status cannot guard this check.  ``allocations`` lets
+    b3b reuse the plan it already parsed; b6 supplies no allocation so the
+    recheck cluster table is read here.
     """
-    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
-    entry = stages.get(stage_key) if isinstance(stages, dict) else None
-    if not isinstance(entry, dict) or entry.get("status") != "done":
-        return
     if allocations is None:
         allocations, _ = parse_plan(lint, plan, key_col)
     if allocations is None:
         return
     worker_count = len(allocations)
-    if worker_count and not entry.get("shards"):
+    if not worker_count:
+        return
+
+    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
+    entry = stages.get(stage_key) if isinstance(stages, dict) else None
+    if not isinstance(entry, dict):
         lint.fail(
-            f"manifest stage '{stage_key}' is done with no shards, but "
+            f"manifest stage '{stage_key}' is missing, but {plan} lists "
+            f"{worker_count} planned worker(s)"
+        )
+    elif not entry.get("shards"):
+        lint.fail(
+            f"manifest stage '{stage_key}' has no shards, but "
             f"{plan} lists {worker_count} planned worker(s)"
         )
 

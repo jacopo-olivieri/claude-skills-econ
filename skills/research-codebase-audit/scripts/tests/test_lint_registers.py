@@ -63,17 +63,18 @@ def test_b6_claims_red_on_blocked_without_blocked_check(tmp_path):
 
 
 def _b3b_manifest_boundary(tmp_path, stream, *, workers,
+                           stage_present=True, stage_status="done",
                            shards_present=True, populated_shards=False):
-    """A clean no-shard b3b merge with a done manifest stage."""
+    """A clean no-shard b3b merge with configurable manifest evidence."""
     a = rb.AuditDir(tmp_path)
     key = f"{stream}_b3b"
-    entry = {"status": "done", "retries": 0}
+    entry = {"status": stage_status, "retries": 0}
     if shards_present:
         shard_path = ("audit/_work_second_read/w1.md" if stream == "claims"
                       else "audit/_code_errors_second_read/w1.md")
         entry["shards"] = ({shard_path: {"status": "done", "retries": 0}}
                            if populated_shards else {})
-    a.write_manifest(stages={key: entry})
+    a.write_manifest(stages={key: entry} if stage_present else {})
     if stream == "claims":
         plan = (
             "# Claims second-read plan\n\n"
@@ -129,6 +130,7 @@ def _b3b_manifest_boundary(tmp_path, stream, *, workers,
 
 
 def _b6_manifest_boundary(tmp_path, stream, *, workers,
+                          stage_present=True, stage_status="done",
                           shards_present=True, populated_shards=False):
     """A clean b6 merge whose recheck plan has zero or one cluster."""
     inventory = [("C-0101" if stream == "claims" else "E-0101",
@@ -147,13 +149,13 @@ def _b6_manifest_boundary(tmp_path, stream, *, workers,
         plan_name = "plans/code_error_recheck_plan.md"
     a.write(plan_name, rb.recheck_plan_text(stream, inventory, clusters))
     key = f"{stream}_b5"
-    entry = {"status": "done", "retries": 0}
+    entry = {"status": stage_status, "retries": 0}
     if shards_present:
         shard_path = ("audit/_recheck/k1.md" if stream == "claims"
                       else "audit/_code_error_recheck/k1.md")
         entry["shards"] = ({shard_path: {"status": "done", "retries": 0}}
                            if populated_shards else {})
-    a.write_manifest(stages={key: entry})
+    a.write_manifest(stages={key: entry} if stage_present else {})
     return a
 
 
@@ -177,11 +179,69 @@ def test_done_worker_stage_rejects_empty_manifest_shards(
 @pytest.mark.parametrize("stage", [
     "b3b-code", "b3b-claims", "b6-code", "b6-claims",
 ])
-def test_done_worker_stage_allows_empty_shards_when_plan_has_no_workers(
-        tmp_path, stage):
+def test_planned_worker_stage_requires_manifest_entry(tmp_path, stage):
     boundary, stream = stage.split("-")
     maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
-    a = maker(tmp_path, stream, workers=False)
+    a = maker(tmp_path, stream, workers=True, stage_present=False)
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 1
+    manifest_key = f"{stream}_{'b3b' if boundary == 'b3b' else 'b5'}"
+    assert manifest_key in res.stdout
+    assert "1 planned worker" in res.stdout
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+@pytest.mark.parametrize("shards_present", [True, False], ids=["empty", "absent"])
+def test_running_worker_stage_rejects_empty_manifest_shards(
+        tmp_path, stage, shards_present):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=True, stage_status="running",
+        shards_present=shards_present,
+    )
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 1
+    manifest_key = f"{stream}_{'b3b' if boundary == 'b3b' else 'b5'}"
+    assert manifest_key in res.stdout
+    assert "1 planned worker" in res.stdout
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+def test_running_worker_stage_accepts_populated_manifest_shards(tmp_path, stage):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=True, stage_status="running",
+        populated_shards=True,
+    )
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+@pytest.mark.parametrize("manifest_shape", ["missing-stage", "absent", "empty"])
+def test_worker_stage_allows_empty_shards_when_plan_has_no_workers(
+        tmp_path, stage, manifest_shape):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=False,
+        stage_present=manifest_shape != "missing-stage",
+        shards_present=manifest_shape != "absent",
+    )
     res = rb.lint(a, stage)
 
     assert res.returncode == 0, res.stdout + res.stderr

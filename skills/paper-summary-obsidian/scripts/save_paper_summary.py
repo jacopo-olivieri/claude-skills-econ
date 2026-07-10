@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Render and save an Obsidian paper note from summary text + metadata JSON."""
+"""Render and save an Obsidian paper note from summary text + metadata JSON.
+
+Defaults (output directory and template path) are read from
+``~/.agents/config/paper-skills.json`` (keys ``vault_papers_dir`` and
+``vault_template``); the script fails loudly with a JSON error naming that path
+when it is missing. Before writing, the live template is validated against a
+structural contract (R10) and drift is reported as a ``template_drift`` error.
+``--on-exists update`` performs a section-scoped merge that preserves
+human-owned content (R11).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +19,39 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+
+CONFIG_PATH = Path("~/.agents/config/paper-skills.json").expanduser()
+
+
+class ConfigError(Exception):
+    """A user-facing config error reported as JSON."""
+
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        raise ConfigError(
+            f"Config file not found: {CONFIG_PATH}. Copy the repo's "
+            "config.example.json there and set papers_dir, vault_papers_dir, "
+            "and vault_template."
+        )
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"Could not read config {CONFIG_PATH}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"Config {CONFIG_PATH} must be a JSON object.")
+    return data
+
+
+def config_value(key: str) -> str:
+    value = load_config().get(key)
+    if not value:
+        raise ConfigError(
+            f"'{key}' is not set in {CONFIG_PATH}. Add it (see config.example.json)."
+        )
+    return str(value)
 
 
 # R2: a section marker is a single-level integer 1-5 with a `.`/`)` delimiter
@@ -110,9 +152,11 @@ def _yaml_quote(value: str) -> str:
 
 
 def _extract_year(date_value: str) -> str:
+    # R8: extract a 4-digit year from anywhere in the string (e.g. "July 2020"),
+    # not only from the start.
     if not date_value:
         return ""
-    match = re.match(r"^(\d{4})", date_value)
+    match = re.search(r"(?<!\d)(\d{4})(?!\d)", date_value)
     return match.group(1) if match else ""
 
 
@@ -216,10 +260,13 @@ def _split_summary_sections(summary_text: str) -> dict[str, str]:
 
 
 def _extract_synthesis_summary(section_text: str) -> tuple[str, bool]:
+    # R8: only lift the synthesis when the synthesis marker is the FIRST
+    # non-blank line of the section, so a mid-prose mention of "synthesis of
+    # findings" no longer relocates the surrounding text into Key takeaways.
     text = section_text.strip()
     if not text:
         return "", False
-    if not SYNTHESIS_MARKER_RE.search(text):
+    if not SYNTHESIS_PREFIX_RE.match(text):
         return "", False
     text = SYNTHESIS_PREFIX_RE.sub("", text, count=1).strip()
     return text, True
@@ -330,8 +377,11 @@ def _normalize_section_markdown(text: str) -> str:
         if bullet_bold:
             heading_text = _strip_markdown_emphasis(bullet_bold.group("body")).strip()
             heading_text = HEADING_NUMBER_PREFIX_RE.sub("", heading_text).strip()
-            if not bullet_bold.group("indent") and heading_text:
-                converted_lines.append(f"#### {heading_text}" if heading_text else "")
+            # R8: only promote a bold bullet to a subsection header when its text
+            # is a header candidate; otherwise it is an evidence bullet and must
+            # stay a bullet (e.g. "- **Main estimate**: beta = 0.31").
+            if not bullet_bold.group("indent") and heading_text and _is_subsection_header_candidate(heading_text):
+                converted_lines.append(f"#### {heading_text}")
                 continue
 
         bullet_bold_prefix = BULLET_BOLD_PREFIX_RE.match(line)
@@ -343,7 +393,7 @@ def _normalize_section_markdown(text: str) -> str:
             if label.lower() == "paper":
                 continue
 
-            if label and _should_convert_bold_prefix_tail(tail):
+            if label and _is_subsection_header_candidate(label) and _should_convert_bold_prefix_tail(tail):
                 tail_text = _strip_markdown_emphasis(tail.strip()).strip()
                 if tail_text.startswith(":"):
                     tail_text = tail_text[1:].strip()
@@ -463,8 +513,13 @@ def render_note(item_key: str, citation_key: str, summary_text: str, metadata: d
         info_links.append(f"[**DOI**](https://doi.org/{doi})")
     for idx, attachment in enumerate(pdf_attachments, start=1):
         if attachment.get("path"):
-            encoded_path = str(attachment["path"]).replace(" ", "%20")
-            info_links.append(f"[**PDF-{idx}**](file:///{encoded_path})")
+            # R8: URL-encode the path (keeping '/' as separators) and build a
+            # well-formed file:// URI. An absolute path already starts with '/',
+            # so `file://` + `/Users/...` yields the correct `file:///Users/...`.
+            encoded_path = quote(str(attachment["path"]), safe="/")
+            if not encoded_path.startswith("/"):
+                encoded_path = "/" + encoded_path
+            info_links.append(f"[**PDF-{idx}**](file://{encoded_path})")
 
     if pdf_attachments:
         first_pdf = pdf_attachments[0]
@@ -582,16 +637,226 @@ def render_note(item_key: str, citation_key: str, summary_text: str, metadata: d
     return "\n".join(lines)
 
 
+def _sanitize_citation_key(citation_key: str) -> str:
+    # R8: strip path separators (and other filename-hostile characters) so a
+    # citation key cannot escape the output directory when used as a filename.
+    safe = re.sub(r"[/\\\x00]+", "_", citation_key).strip().strip(".")
+    return safe or "note"
+
+
 def _prepare_output_path(output_dir: Path, citation_key: str, mode: str) -> tuple[Path, str]:
-    base = output_dir / f"@{citation_key}.md"
+    stem = _sanitize_citation_key(citation_key)
+    base = output_dir / f"@{stem}.md"
     if not base.exists():
         return base, "new"
     if mode == "overwrite":
         return base, "overwrite"
+    if mode == "update":
+        return base, "update"
     if mode == "versioned":
-        stamp = datetime.now().strftime("%Y%m%d-%H%M")
-        return output_dir / f"@{citation_key}-{stamp}.md", "versioned"
+        # R8: seconds included so two versioned writes in the same minute do not
+        # collide.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return output_dir / f"@{stem}-{stamp}.md", "versioned"
     return base, "skip"
+
+
+# --------------------------------------------------------------------------- #
+# R10: structural template contract
+# --------------------------------------------------------------------------- #
+
+# Fold-heading strings the rendered note relies on (matches the live template's
+# colorValueMap headings). Kept as text so both the nunjucks template and a
+# rendered note satisfy the check.
+TEMPLATE_FOLD_HEADINGS = [
+    "💬 Research Question and Motivation",
+    "📌 Data and Empirical Strategy",
+    "🎯 Results",
+    "✒️ Limitations and Extensions",
+    "🧩 Comments and Ideas",
+    "🗺️ Background, context and connections",
+    "🚧 Digging and disclaimers",
+    "❓ Problem formulation",
+]
+TEMPLATE_FRONTMATTER_KEYS = [
+    "title", "author", "date-published", "citekey", "itemType", "url", "journal",
+]
+TEMPLATE_STRUCTURAL_MARKERS = [
+    "%% fold %%", "## Reading notes", "## Key takeaways", "contribution::",
+]
+
+
+def check_template_contract(template_text: str) -> list[str]:
+    """Return a list of structural landmarks missing from the live template."""
+    missing: list[str] = []
+    for heading in TEMPLATE_FOLD_HEADINGS:
+        if heading not in template_text:
+            missing.append(f"fold heading: {heading}")
+    for key in TEMPLATE_FRONTMATTER_KEYS:
+        if f'"{key}"' not in template_text and f"{key}:" not in template_text:
+            missing.append(f"frontmatter key: {key}")
+    for marker in TEMPLATE_STRUCTURAL_MARKERS:
+        if marker not in template_text:
+            missing.append(f"marker: {marker}")
+    return missing
+
+
+# --------------------------------------------------------------------------- #
+# R11: section-scoped update merge
+# --------------------------------------------------------------------------- #
+
+class UpdateError(Exception):
+    """A generated anchor is missing, so a safe update is impossible."""
+
+
+_FOLD_HEADING_RE = re.compile(r"^###\s+.+?%%\s*fold\s*%%\s*$")
+# The four fold-heading bodies that the pipeline generates (s1-s4). The 🧩
+# Comments body and the three additional headings are human-owned and preserved.
+GENERATED_FOLD_HEADINGS = [PRIMARY_HEADERS[k] for k in ("s1", "s2", "s3", "s4")]
+
+
+def _find_line(lines: list[str], target: str, name: str) -> int:
+    for i, line in enumerate(lines):
+        if line.strip() == target:
+            return i
+    raise UpdateError(name)
+
+
+def _frontmatter_close(lines: list[str]) -> int:
+    if not lines or lines[0].strip() != "---":
+        raise UpdateError("frontmatter opening '---'")
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i
+    raise UpdateError("frontmatter closing '---'")
+
+
+def _scalar_frontmatter(lines: list[str], close: int) -> dict[str, tuple[int, str]]:
+    out: dict[str, tuple[int, str]] = {}
+    for i in range(1, close):
+        m = re.match(r"^([A-Za-z][\w-]*):(.*)$", lines[i])
+        if m:
+            out[m.group(1)] = (i, m.group(2).strip())
+    return out
+
+
+def _trim_blank(block: list[str]) -> list[str]:
+    start, end = 0, len(block)
+    while start < end and not block[start].strip():
+        start += 1
+    while end > start and not block[end - 1].strip():
+        end -= 1
+    return block[start:end]
+
+
+def _fold_body_map(lines: list[str]) -> dict[str, list[str]]:
+    """Map each fold-heading line to its body (up to the next fold heading)."""
+    fold_idxs = [i for i, line in enumerate(lines) if _FOLD_HEADING_RE.match(line)]
+    try:
+        end_idx = _find_line(lines, "%% end annotations %%", "%% end annotations %%")
+    except UpdateError:
+        end_idx = len(lines)
+    result: dict[str, list[str]] = {}
+    for j, idx in enumerate(fold_idxs):
+        nxt = fold_idxs[j + 1] if j + 1 < len(fold_idxs) else end_idx
+        result[lines[idx].strip()] = lines[idx + 1:nxt]
+    return result
+
+
+def _synthesis_body(lines: list[str]) -> list[str]:
+    notes_begin = _find_line(lines, "%% begin notes %%", "%% begin notes %%")
+    notes_end = _find_line(lines, "%% end notes %%", "%% end notes %%")
+    contrib = next(
+        (i for i in range(notes_begin, notes_end) if lines[i].startswith("contribution::")),
+        None,
+    )
+    if contrib is None:
+        raise UpdateError("contribution::")
+    return _trim_blank(lines[contrib + 1:notes_end])
+
+
+def update_existing_note(existing_text: str, rendered_text: str) -> str:
+    """Merge freshly rendered generated regions into an existing note (R11).
+
+    Replaces only the four generated fold-heading bodies (s1-s4) and the
+    synthesis block, fills only empty frontmatter scalars, and preserves all
+    other (human-owned) content byte-for-byte. Raises ``UpdateError`` naming the
+    missing anchor when the existing note cannot be parsed safely.
+    """
+    ex = existing_text.split("\n")
+    new = rendered_text.split("\n")
+
+    # Validate the anchors we depend on before changing anything.
+    ex_close = _frontmatter_close(ex)
+    ex_notes_begin = _find_line(ex, "%% begin notes %%", "%% begin notes %%")
+    ex_notes_end = _find_line(ex, "%% end notes %%", "%% end notes %%")
+    _find_line(ex, "%% begin annotations %%", "%% begin annotations %%")
+    _find_line(ex, "%% end annotations %%", "%% end annotations %%")
+    if not any(ex[i].startswith("contribution::") for i in range(ex_notes_begin, ex_notes_end)):
+        raise UpdateError("contribution::")
+    ex_fold = _fold_body_map(ex)
+    for heading in GENERATED_FOLD_HEADINGS:
+        if heading not in ex_fold:
+            raise UpdateError(f"fold heading: {heading}")
+
+    new_fold = _fold_body_map(new)
+    new_synth = _synthesis_body(new)
+
+    # 1. Frontmatter: fill only empty scalar keys.
+    new_close = _frontmatter_close(new)
+    ex_fm = _scalar_frontmatter(ex, ex_close)
+    new_fm = _scalar_frontmatter(new, new_close)
+    for key, (idx, value) in ex_fm.items():
+        if value:
+            continue  # never overwrite a non-empty (possibly hand-edited) value
+        if key in new_fm and new_fm[key][1]:
+            ex[idx] = new[new_fm[key][0]]
+
+    # 2. Rebuild the body, replacing generated regions only.
+    out: list[str] = ex[:ex_close + 1]
+    i = ex_close + 1
+    n = len(ex)
+    contrib_seen = False
+    while i < n:
+        line = ex[i]
+        stripped = line.strip()
+
+        # Synthesis: after the contribution:: field, replace the generated
+        # synthesis block up to %% end notes %%. The user's contribution value
+        # (including any multi-line continuation up to the first blank line) is
+        # preserved; only the generated synthesis that follows is regenerated.
+        if not contrib_seen and line.startswith("contribution::"):
+            contrib_seen = True
+            out.append(line)
+            i += 1
+            # Preserve a multi-line contribution value (until the blank line
+            # that separates it from the generated synthesis).
+            while i < n and ex[i].strip() and ex[i].strip() != "%% end notes %%":
+                out.append(ex[i])
+                i += 1
+            if new_synth:
+                out.append("")
+                out.extend(new_synth)
+            out.append("")
+            # Skip the old generated synthesis up to %% end notes %%.
+            while i < n and ex[i].strip() != "%% end notes %%":
+                i += 1
+            continue
+
+        # Generated fold-heading body: replace with the freshly rendered body.
+        if _FOLD_HEADING_RE.match(line) and stripped in GENERATED_FOLD_HEADINGS:
+            out.append(line)
+            out.extend(new_fold.get(stripped, [""]))
+            # skip the old body until the next fold heading or end-of-annotations
+            i += 1
+            while i < n and not _FOLD_HEADING_RE.match(ex[i]) and ex[i].strip() != "%% end annotations %%":
+                i += 1
+            continue
+
+        out.append(line)
+        i += 1
+
+    return "\n".join(out)
 
 
 def parse_args() -> argparse.Namespace:
@@ -614,120 +879,119 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="/Users/jacopoolivieri/Documents/poodle_obsidian_db/sources/papers",
-        help="Directory for rendered Obsidian notes.",
+        default=None,
+        help="Directory for rendered notes (default: vault_papers_dir from config).",
     )
     parser.add_argument(
         "--template-path",
-        default="/Users/jacopoolivieri/Documents/poodle_obsidian_db/templates/template zotero.md",
-        help="Path to the live template reference file.",
+        default=None,
+        help="Path to the live template reference file (default: vault_template from config).",
     )
     parser.add_argument(
         "--on-exists",
-        choices=["skip", "overwrite", "versioned"],
+        choices=["skip", "overwrite", "versioned", "update"],
         default="skip",
-        help="How to handle existing @citation_key.md files.",
+        help="How to handle existing @citation_key.md files. 'update' does a "
+             "section-scoped merge that preserves human-owned content.",
     )
     parser.add_argument("--write", action="store_true", help="Write file. Without this, dry-run only.")
     return parser.parse_args()
 
 
+def _error(message: str, **extra: Any) -> int:
+    print(json.dumps({"status": "error", "message": message, **extra}, indent=2))
+    return 1
+
+
 def main() -> int:
     args = parse_args()
 
-    template_path = Path(args.template_path)
-    if not template_path.exists():
-        print(
-            json.dumps(
-                {"status": "error", "message": f"Template not found: {template_path}"},
-                indent=2,
-            )
-        )
-        return 1
+    # R15: resolve defaults from config; loud, named error when missing.
+    try:
+        output_dir = Path(args.output_dir).expanduser() if args.output_dir else Path(config_value("vault_papers_dir")).expanduser()
+        template_path = Path(args.template_path).expanduser() if args.template_path else Path(config_value("vault_template")).expanduser()
+    except ConfigError as exc:
+        return _error(str(exc))
 
+    if not template_path.exists():
+        return _error(f"Template not found: {template_path}")
     template_text = template_path.read_text(encoding="utf-8")
-    if "## Reading notes" not in template_text:
-        print(
-            json.dumps(
-                {"status": "error", "message": "Template missing expected '## Reading notes' section."},
-                indent=2,
-            )
+
+    # R10: structural template contract; name every divergence.
+    drift = check_template_contract(template_text)
+    if drift:
+        return _error(
+            "template_drift: the live template is missing expected structure.",
+            missing=drift,
         )
-        return 1
 
     summary_path = Path(args.summary_file)
     metadata_path = Path(args.metadata_file)
-    output_dir = Path(args.output_dir)
-
     if not summary_path.exists():
-        print(json.dumps({"status": "error", "message": f"Summary file not found: {summary_path}"}, indent=2))
-        return 1
+        return _error(f"Summary file not found: {summary_path}")
     if not metadata_path.exists():
-        print(json.dumps({"status": "error", "message": f"Metadata file not found: {metadata_path}"}, indent=2))
-        return 1
+        return _error(f"Metadata file not found: {metadata_path}")
 
     try:
         summary_text = summary_path.read_text(encoding="utf-8")
     except OSError as exc:
-        print(json.dumps({"status": "error", "message": f"Failed to read summary file: {exc}"}, indent=2))
-        return 1
+        return _error(f"Failed to read summary file: {exc}")
 
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):
             raise ValueError("metadata root must be an object")
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        print(json.dumps({"status": "error", "message": f"Invalid metadata JSON: {exc}"}, indent=2))
-        return 1
+        return _error(f"Invalid metadata JSON: {exc}")
+
+    _sections, sections_meta = analyze_summary_sections(summary_text)
+    warnings = list(sections_meta["warnings"])
+    if not metadata:
+        warnings.append("Metadata JSON is empty; frontmatter will be mostly blank.")
 
     rendered = render_note(args.item_key, args.citation_key, summary_text, metadata)
-    output_dir.mkdir(parents=True, exist_ok=True)
     output_path, action = _prepare_output_path(output_dir, args.citation_key, args.on_exists)
 
+    base_report = {
+        "item_key": args.item_key,
+        "citation_key": args.citation_key,
+        "path": str(output_path),
+        "mode": action,
+        "sections_found": sections_meta["sections_found"],
+        "warnings": warnings,
+    }
+
     if action == "skip":
-        print(
-            json.dumps(
-                {
-                    "status": "skipped",
-                    "path": str(output_path),
-                    "item_key": args.item_key,
-                    "citation_key": args.citation_key,
-                    "message": "File exists and --on-exists=skip.",
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps({"status": "skipped", **base_report,
+                          "message": "File exists and --on-exists=skip."}, indent=2))
         return 0
+
+    # R11: build the merged note for update mode (needs the existing note).
+    if action == "update":
+        if not output_path.exists():
+            action = "new"
+            base_report["mode"] = "new"
+        else:
+            try:
+                merged = update_existing_note(output_path.read_text(encoding="utf-8"), rendered)
+            except UpdateError as exc:
+                return _error(
+                    f"update refused: existing note is missing anchor '{exc}'. "
+                    "Fix the note by hand or use --on-exists versioned.",
+                    **base_report,
+                )
+            rendered = merged
 
     if args.write:
-        output_path.write_text(rendered, encoding="utf-8")
-        print(
-            json.dumps(
-                {
-                    "status": "written",
-                    "path": str(output_path),
-                    "item_key": args.item_key,
-                    "citation_key": args.citation_key,
-                    "mode": action,
-                },
-                indent=2,
-            )
-        )
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)  # R8: only on write
+            output_path.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            return _error(f"Failed to write note: {exc}", **base_report)
+        print(json.dumps({"status": "written", **base_report}, indent=2))
         return 0
 
-    print(
-        json.dumps(
-            {
-                "status": "dry_run",
-                "path": str(output_path),
-                "item_key": args.item_key,
-                "citation_key": args.citation_key,
-                "mode": action,
-                "chars": len(rendered),
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps({"status": "dry_run", **base_report, "chars": len(rendered)}, indent=2))
     return 0
 
 

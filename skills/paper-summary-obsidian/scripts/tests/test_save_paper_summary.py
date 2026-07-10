@@ -14,9 +14,27 @@ from pathlib import Path
 import pytest
 
 import save_paper_summary as sps
-from conftest import TEMPLATE_FIXTURE
+from conftest import DATA_DIR, TEMPLATE_FIXTURE
 
 SCRIPT = Path(sps.__file__)
+EXISTING_NOTE_FIXTURE = DATA_DIR / "existing_note_fixture.md"
+
+# A fresh summary/metadata used to drive update-mode replacement.
+NEW_SUMMARY = (
+    "1. Research Question and Motivation\n- New RQ headline [p. 1]\n"
+    "2. Data and Methods\n- New data headline [p. 2]\n"
+    "3. Results\n- New result headline [p. 3]\n"
+    "4. Limitations and Extensions\n- New limitation headline [p. 4]\n"
+    "5. Synthesis of findings\nNew synthesis line one.\nNew synthesis line two.\n"
+)
+NEW_METADATA = {
+    "title": "An Example Paper on Roads",
+    "authors": ["Ada Lovelace", "Alan Turing"],
+    "date_published": "2021-05-01",
+    "itemType": "journalArticle",
+    "journal": "Journal of Examples",
+    "url": "https://example.com/roads",  # was empty in the fixture -> should fill
+}
 
 
 def _run_script(tmp_path, *, summary, metadata, output_dir, on_exists="skip", write=False,
@@ -83,8 +101,10 @@ def test_render_note_project_and_links_default_empty():
     assert "links:" in lines             # bare key, empty value
 
 
-def test_synthesis_first_line_marker_moves_to_key_takeaways():
-    summary = "5. Comments\nSynthesis of findings\nOne.\nTwo.\n"
+def test_synthesis_section_moves_to_key_takeaways():
+    # Section 5 that IS the synthesis (marker leads the content) is lifted into
+    # Key takeaways; a mid-prose mention is not (see the first-line-only test).
+    summary = "5. Synthesis of findings\nOne.\nTwo.\n"
     note = sps.render_note("K", "cite", summary, {"title": "T", "authors": ["A"]})
     key_block = note.split("%% end notes %%")[0]
     assert "One." in key_block and "Two." in key_block
@@ -211,25 +231,21 @@ def test_emits_date_published_hyphen():
 # R8 (U5): save-script robustness items
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.xfail(reason="R8 (U5): year only extracted from string start", strict=True)
 def test_year_extracted_from_anywhere():
     assert sps._extract_year("July 2020") == "2020"
 
 
-@pytest.mark.xfail(reason="R8 (U5): bold-labelled bullet promoted to a header", strict=True)
 def test_bold_labelled_bullet_stays_bullet():
     out = sps._normalize_section_markdown("- **Main estimate**: beta = 0.31 (se 0.05)")
     assert not out.lstrip().startswith("####"), f"should stay a bullet: {out!r}"
 
 
-@pytest.mark.xfail(reason="R8 (U5): mid-prose synthesis relocated", strict=True)
 def test_synthesis_only_triggers_on_first_line():
     text = "Some prose mentioning the synthesis of findings in Smith (2020) here."
     _summary, moved = sps._extract_synthesis_summary(text)
     assert moved is False
 
 
-@pytest.mark.xfail(reason="R8 (U5): file:// link has four slashes", strict=True)
 def test_pdf_link_is_well_formed():
     meta = {"title": "T", "authors": ["A"],
             "attachments": [{"path": "/Users/x/paper.pdf", "is_pdf": True}]}
@@ -239,7 +255,6 @@ def test_pdf_link_is_well_formed():
     assert "file:///Users/x/paper.pdf" in link_line
 
 
-@pytest.mark.xfail(reason="R8 (U5): special chars in PDF path not URL-encoded", strict=True)
 def test_pdf_link_encodes_special_chars():
     meta = {"title": "T", "authors": ["A"],
             "attachments": [{"path": "/Users/x/paper#2 100%.pdf", "is_pdf": True}]}
@@ -249,20 +264,17 @@ def test_pdf_link_encodes_special_chars():
     assert "%25" in link_line, f"'%' not encoded: {link_line!r}"
 
 
-@pytest.mark.xfail(reason="R8 (U5): citation key with '/' escapes the output dir", strict=True)
 def test_citation_key_path_separator_sanitized(tmp_path):
     p, _action = sps._prepare_output_path(tmp_path, "a/b", "skip")
     assert p.parent == tmp_path, f"path escaped output dir: {p}"
 
 
-@pytest.mark.xfail(reason="R8 (U5): versioned stamp lacks seconds", strict=True)
 def test_versioned_stamp_includes_seconds(tmp_path):
     (tmp_path / "@k.md").write_text("existing", encoding="utf-8")
     p, _action = sps._prepare_output_path(tmp_path, "k", "versioned")
     assert re.search(r"-\d{8}-\d{6}\.md$", p.name), f"no seconds in stamp: {p.name}"
 
 
-@pytest.mark.xfail(reason="R8 (U5): dry-run creates the output directory", strict=True)
 def test_dry_run_has_no_side_effects(tmp_path):
     out = tmp_path / "does_not_exist_yet"
     proc = _run_script(
@@ -271,3 +283,145 @@ def test_dry_run_has_no_side_effects(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert not out.exists(), "dry-run must not create the output directory"
+
+
+# --------------------------------------------------------------------------- #
+# R10 (U5): structural template contract
+# --------------------------------------------------------------------------- #
+
+def test_template_contract_passes_for_fixture():
+    assert sps.check_template_contract(TEMPLATE_FIXTURE.read_text(encoding="utf-8")) == []
+
+
+def test_template_drift_names_missing_landmark(tmp_path):
+    broken = TEMPLATE_FIXTURE.read_text(encoding="utf-8").replace(
+        "🎯 Results", "Results (renamed)"
+    )
+    broken_path = tmp_path / "broken_template.md"
+    broken_path.write_text(broken, encoding="utf-8")
+    proc = _run_script(
+        tmp_path, summary="1. RQ\nbody\n", metadata={"title": "T", "authors": ["A"]},
+        output_dir=tmp_path / "vault", on_exists="skip", write=False, template=broken_path,
+    )
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert "template_drift" in payload["message"]
+    assert any("🎯 Results" in item for item in payload["missing"])
+
+
+# --------------------------------------------------------------------------- #
+# R8 (U5): degenerate-parse and empty-metadata warnings surface in JSON
+# --------------------------------------------------------------------------- #
+
+def test_unstructured_summary_reports_zero_sections_and_warns(tmp_path):
+    proc = _run_script(
+        tmp_path, summary="Just a blob of prose with no section markers.\n",
+        metadata={"title": "T", "authors": ["A"]},
+        output_dir=tmp_path / "vault", on_exists="overwrite", write=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["sections_found"] == 0
+    assert payload["warnings"], "a degenerate parse must surface a warning"
+
+
+def test_empty_metadata_warns(tmp_path):
+    proc = _run_script(
+        tmp_path, summary="1. RQ\nbody\n", metadata={},
+        output_dir=tmp_path / "vault", on_exists="overwrite", write=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert any("metadata" in w.lower() for w in payload["warnings"])
+
+
+# --------------------------------------------------------------------------- #
+# R11 (U5): section-scoped update merge
+# --------------------------------------------------------------------------- #
+
+def _updated_note():
+    existing = EXISTING_NOTE_FIXTURE.read_text(encoding="utf-8")
+    rendered = sps.render_note("ITEMKEY", "exampleRoads2021", NEW_SUMMARY, NEW_METADATA)
+    return existing, sps.update_existing_note(existing, rendered)
+
+
+def test_update_replaces_generated_regions():
+    _existing, merged = _updated_note()
+    # New generated s1-s4 bodies and synthesis are present...
+    assert "New RQ headline" in merged
+    assert "New data headline" in merged
+    assert "New result headline" in merged
+    assert "New limitation headline" in merged
+    assert "New synthesis line one." in merged
+    # ...and the old generated bodies are gone.
+    assert "Old RQ bullet" not in merged
+    assert "Old result bullet" not in merged
+    assert "Old synthesis line one." not in merged
+
+
+def test_update_preserves_human_owned_content():
+    _existing, merged = _updated_note()
+    assert "My own one-line takeaway I wrote by hand." in merged  # contribution::
+    assert "My hand-written comment linking to [[Another Note]]." in merged  # Comments (s5)
+    assert "Connects to my earlier reading on infrastructure." in merged  # additional heading
+
+
+def test_update_fills_empty_url_but_not_edited_title():
+    _existing, merged = _updated_note()
+    fm = _frontmatter(merged)
+    assert 'title: "An Example Paper on Roads (my edited title)"' in fm  # never overwritten
+    url_line = next(ln for ln in fm.splitlines() if ln.startswith("url:"))
+    assert "https://example.com/roads" in url_line  # empty url filled
+
+
+def test_update_preserves_multiline_contribution_value():
+    existing = EXISTING_NOTE_FIXTURE.read_text(encoding="utf-8")
+    # A two-line contribution the user wrote by hand.
+    existing = existing.replace(
+        "contribution:: My own one-line takeaway I wrote by hand.",
+        "contribution:: First line of my takeaway.\nSecond line of my takeaway.",
+    )
+    rendered = sps.render_note("ITEMKEY", "exampleRoads2021", NEW_SUMMARY, NEW_METADATA)
+    merged = sps.update_existing_note(existing, rendered)
+    assert "First line of my takeaway." in merged
+    assert "Second line of my takeaway." in merged
+    assert "New synthesis line one." in merged
+
+
+def test_update_refuses_when_contribution_anchor_missing():
+    existing = EXISTING_NOTE_FIXTURE.read_text(encoding="utf-8")
+    broken = existing.replace("contribution:: My own one-line takeaway I wrote by hand.", "")
+    rendered = sps.render_note("ITEMKEY", "exampleRoads2021", NEW_SUMMARY, NEW_METADATA)
+    with pytest.raises(sps.UpdateError) as exc:
+        sps.update_existing_note(broken, rendered)
+    assert "contribution" in str(exc.value)
+
+
+def test_update_refuses_when_anchor_missing():
+    existing = EXISTING_NOTE_FIXTURE.read_text(encoding="utf-8")
+    # Hand-delete a generated fold heading.
+    broken = existing.replace(sps.PRIMARY_HEADERS["s3"] + "\n", "")
+    rendered = sps.render_note("ITEMKEY", "exampleRoads2021", NEW_SUMMARY, NEW_METADATA)
+    with pytest.raises(sps.UpdateError) as exc:
+        sps.update_existing_note(broken, rendered)
+    assert "🎯 Results" in str(exc.value)
+
+
+def test_update_end_to_end_write_preserves_human_regions(tmp_path):
+    # Exercise the full CLI update path against a *copy* of the fixture note.
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note_copy = vault / "@exampleRoads2021.md"
+    note_copy.write_text(EXISTING_NOTE_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    proc = _run_script(
+        tmp_path, summary=NEW_SUMMARY, metadata=NEW_METADATA,
+        output_dir=vault, on_exists="update", write=True, citation_key="exampleRoads2021",
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "written" and payload["mode"] == "update"
+    written = note_copy.read_text(encoding="utf-8")
+    assert "New result headline" in written
+    assert "My hand-written comment linking to [[Another Note]]." in written
+    assert "Old result bullet" not in written

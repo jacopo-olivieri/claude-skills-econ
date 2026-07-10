@@ -5,5 +5,9 @@
   "author": {
     "name": "Jacopo Olivieri"
   },
-  "skills": ["./skills/research-codebase-audit"]
+  "skills": [
+    "./skills/research-codebase-audit",
+    "./skills/paper-summary",
+    "./skills/paper-summary-obsidian"
+  ]
 }

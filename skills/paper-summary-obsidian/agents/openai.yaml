@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Summary Obsidian"
+  short_description: "Save existing summaries as Obsidian paper notes"
+  default_prompt: "Use $paper-summary-obsidian to save this existing paper summary as an Obsidian paper note using Zotero metadata."

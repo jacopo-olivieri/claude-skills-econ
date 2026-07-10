@@ -13,9 +13,20 @@ set -euo pipefail
 #
 # Skills under skills/deprecated/ or skills/in-progress/ are intentionally NOT
 # linked (they are drafts / retired and should not load).
+#
+# Two link mechanisms coexist, and this script owns only one of them:
+#   1. Direct link (this script): skills/<name> -> ~/.claude/skills/<name>.
+#      The default for Claude-only skills (e.g. research-codebase-audit).
+#   2. ~/.agents indirection chain (owned elsewhere, e.g. paper-summary):
+#      skills/<name> <- ~/.agents/skills/<name> <- ~/.codex|.claude/skills/<name>.
+#      Skills wired this way reach both Codex and Claude through ~/.agents.
+# To avoid the two mechanisms fighting, this script SKIPS any skill that is
+# already wired through ~/.agents/skills/<name> (a symlink into this repo).
+# Those skills are cut over to ~/.codex / ~/.claude by their own setup, not here.
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$HOME/.claude/skills"
+AGENTS_SKILLS="$HOME/.agents/skills"
 
 # Guard: if $DEST is itself a symlink into this repo, linking would write the
 # per-skill symlinks back into skills/. Bail rather than pollute the working copy.
@@ -37,6 +48,20 @@ while IFS= read -r -d '' skill_md; do
   src="$(dirname "$skill_md")"
   name="$(basename "$src")"
   target="$DEST/$name"
+
+  # Skip skills wired through the ~/.agents indirection chain: if
+  # ~/.agents/skills/<name> is a symlink pointing into this repo, that chain
+  # owns the skill's installation. Direct-linking it here would fight the chain.
+  agents_link="$AGENTS_SKILLS/$name"
+  if [ -L "$agents_link" ]; then
+    resolved="$(readlink "$agents_link")"
+    case "$resolved" in
+      "$REPO"|"$REPO"/*)
+        echo "skipped $name (wired via ~/.agents/skills)"
+        continue
+        ;;
+    esac
+  fi
 
   # Replace a real dir of the same name with a symlink to the repo copy.
   if [ -e "$target" ] && [ ! -L "$target" ]; then

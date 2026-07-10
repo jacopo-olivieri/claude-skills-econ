@@ -3,11 +3,11 @@ name: paper-summary
 description: >-
   Produce evidence-grounded full summaries of academic economics papers using a
   staged workflow: resolve or acquire the PDF, convert the full paper to
-  markdown with Marker, split it into section files, analyse sections
-  sequentially into shared notes, and return a polished five-part summary. Use
-  when the user wants a full paper summary.
+  markdown, split it into section files, analyse sections sequentially into
+  shared notes, and return a polished five-part summary. Use when the user wants
+  a full paper summary.
 disable-model-invocation: true
-allowed-tools: Bash(python3 *) Bash(marker_single *) Bash(rg *)
+allowed-tools: Bash(python3 *) Bash(docling *) Bash(mineru *) Bash(rg *)
 ---
 
 # Paper Summary
@@ -42,7 +42,7 @@ Set the effort for each stage once, here:
 
 | Stage | Effort | Notes |
 |---|---|---|
-| Preparation | medium | Raise to high only when the descriptor is ambiguous, Marker output is messy, or section recovery is uncertain. |
+| Preparation | medium | Raise to high only when the descriptor is ambiguous, the conversion is messy, or section recovery is uncertain. |
 | Main-text section analysis | high | Every section, for summary quality. |
 | Appendix analysis | medium | Escalate to high only if the appendix materially changes methods, robustness, or interpretation. |
 | Final structure edit | xhigh | The global consistency, synthesis, and two-tier restyle pass. |
@@ -62,16 +62,16 @@ Set the effort for each stage once, here:
 ### 1. Preparation
 
 Complete preparation before any analysis. This stage owns paper resolution,
-open-access acquisition when no local PDF is found, full-document Marker
-conversion, and workspace creation via the helper script. Follow
+open-access acquisition when no local PDF is found, full-document conversion,
+and workspace creation via the helper script. Follow
 [references/pdf_workflow.md](references/pdf_workflow.md), which includes the
-acquisition-hardening checks:
+converter choice (see below) and the acquisition-hardening checks:
 
-- confirm `marker_single` is on `PATH` before converting;
+- confirm the chosen converter is on `PATH` before converting;
 - confirm a downloaded file begins with the `%PDF` magic bytes before trusting
   it;
 - after conversion, sanity-check `paper.md` with a words-per-page estimate; a
-  very low count signals a scanned/image PDF that Marker could not read;
+  very low count signals a scanned/image PDF the converter could not read;
 - if `sections/appendix.md` is very large, skim it rather than analysing it in
   full (see the appendix guidance below).
 
@@ -135,10 +135,33 @@ section files. Its mandate:
 
 Return the final `notes.md` content in chat and include the saved path.
 
-## Non-negotiable workflow rules
+## PDF-to-markdown converter
 
-- Always convert the full PDF with `marker_single`; never use page-targeted
-  extraction. Treat the Marker markdown as the canonical working text.
+- **Default: `docling` (fast).** It is ~40× faster than Marker on this hardware
+  with the cleanest section-heading structure (which the splitter depends on):
+
+  ```bash
+  docling "$PDF" --to md --no-ocr --image-export-mode placeholder \
+    --output "$WORKSPACE/conversion"
+  ```
+
+- **Theory-heavy papers: `mineru`.** When a paper's structural-model equations
+  need to be in the notes, use mineru instead — it preserves LaTeX equations and
+  tables (docling flattens display equations):
+
+  ```bash
+  mineru -p "$PDF" -o "$WORKSPACE/conversion" -m txt -b pipeline
+  ```
+
+- **User override:** if the user names a converter (e.g. "summarise this paper
+  and use MinerU", or "use docling"), use the one they name, regardless of the
+  default.
+- Whichever you use, write the output under `$WORKSPACE/conversion/`; the `init`
+  helper is converter-agnostic and picks the largest `.md` there. Convert the
+  full document — never page-targeted extraction — and treat the converted
+  markdown as the canonical working text.
+
+## Non-negotiable workflow rules
 - Split the paper by its actual top-level main-text sections; combine abstract
   and introduction into one file; collapse all appendix material into
   `appendix.md`.
@@ -162,7 +185,7 @@ Prefer tool-native file reads/writes. Use shell only for:
 
 - `rg` for local PDF discovery;
 - `curl` for open-access PDF download;
-- `marker_single` for full-document conversion;
+- `docling` (default) or `mineru` (theory papers) for full-document conversion;
 - `python3 "$SKILL_DIR/scripts/paper_workspace.py"` for all writes under the
   papers directory.
 

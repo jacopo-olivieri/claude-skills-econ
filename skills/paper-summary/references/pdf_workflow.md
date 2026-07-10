@@ -42,32 +42,43 @@ words, then supportive geography or topic tokens.
   stop so the user can download it with institutional access. Do not continue to
   analysis without a local PDF.
 
-## 3. Convert the full PDF with Marker
+## 3. Convert the full PDF to markdown
 
-Marker must run **before** the workspace `init` step: `init` reads the Marker
-output, so the conversion has to exist first.
+Conversion must run **before** the workspace `init` step: `init` reads the
+converted markdown, so it has to exist first.
 
 - Set `paper_stem` to the PDF filename without `.pdf`, and `WORKSPACE` to
   `<papers_dir>/<paper_stem>`.
-- **Preflight:** confirm `marker_single` is on `PATH` before converting. If a
-  copy was just downloaded, confirm the file begins with the `%PDF` magic bytes
-  before trusting it.
+- **Preflight:** confirm the chosen converter is on `PATH`. If a copy was just
+  downloaded, confirm the file begins with the `%PDF` magic bytes before
+  trusting it.
+
+**Default — `docling` (fast, best heading structure):**
 
 ```bash
-marker_single "$PDF" \
-  --output_format markdown \
-  --output_dir "$WORKSPACE/marker_output" \
-  --disable_multiprocessing
+docling "$PDF" --to md --no-ocr --image-export-mode placeholder \
+  --output "$WORKSPACE/conversion"
 ```
 
-- Always convert the full document and treat the Marker markdown as the
-  canonical working text. Keep supplementary artefacts inside `marker_output/`.
+**Theory-heavy papers — `mineru` (preserves LaTeX equations + tables):**
+
+```bash
+mineru -p "$PDF" -o "$WORKSPACE/conversion" -m txt -b pipeline
+```
+
+Use `mineru` when the paper's structural-model equations need to be in the
+notes; docling flattens display equations to text. If the user names a converter
+("use MinerU", "use docling"), honour that regardless of the default.
+
+- Always convert the full document into `$WORKSPACE/conversion/` and treat the
+  result as the canonical working text. The `init` helper is converter-agnostic
+  (it picks the largest `.md` under the conversion directory).
 - You may use direct PDF inspection or `pdfplumber` only to diagnose obvious
-  extraction problems. Do not replace `paper.md` with a non-Marker extraction.
+  extraction problems. Do not replace `paper.md` with a hand extraction.
 
 ## 4. Create or refresh the paper workspace
 
-After Marker has written `$WORKSPACE/marker_output/`:
+After the converter has written `$WORKSPACE/conversion/`:
 
 ```bash
 python3 "$SKILL_DIR/scripts/paper_workspace.py" init \
@@ -75,8 +86,8 @@ python3 "$SKILL_DIR/scripts/paper_workspace.py" init \
   --notes-template "$SKILL_DIR/references/notes_template.md"
 ```
 
-The helper script locates the primary Marker markdown (the largest `.md` under
-`marker_output/`) and copies it to `paper.md`, rewrites `sections/*.md`, and
+The helper script locates the primary converted markdown (the largest `.md`
+under `conversion/`) and copies it to `paper.md`, rewrites `sections/*.md`, and
 reinitialises `notes.md` from [notes_template.md](notes_template.md). It reports
 a `word_count` and any `warnings` as JSON.
 
@@ -86,7 +97,7 @@ a `word_count` and any `warnings` as JSON.
   existing one.
 - **Scanned-PDF sanity check:** divide `word_count` by the paper's page count.
   A very low words-per-page estimate (well under ~150) usually means a
-  scanned/image PDF that Marker could not read as text. Flag this and stop
+  scanned/image PDF the converter could not read as text. Flag this and stop
   rather than summarising an empty extraction.
 - If the split `warnings` report that ≤1 main-text section was recovered, treat
   heading recovery as weak (see below).
@@ -103,7 +114,7 @@ split manually when it recovers headings faithfully. It produces:
 - `appendix.md` — all appendix, online-appendix, and appendix table/figure
   material.
 
-If Marker headings are weak (few sections recovered): prefer the paper's table
+If headings are weak (few sections recovered): prefer the paper's table
 of contents, then major numbered headings; if recovery is still poor, accept the
 coarsest faithful split and record the limitation in `notes.md`. If `appendix.md`
 is very large, skim it for material that changes interpretation rather than

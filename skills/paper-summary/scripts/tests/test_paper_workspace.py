@@ -20,8 +20,8 @@ SCRIPT = Path(pw.__file__)
 NOTES_TEMPLATE = "## 1. Research Question and Motivation\n\n## 5. Synthesis of findings\nLine 1.\nLine 2.\n"
 
 
-def _make_workspace(tmp_path, paper_text, *, stem="mypaper", marker_subdir="marker_output/nested"):
-    """Create a papers dir with a pre-Marker workspace, plus the PDF + template."""
+def _make_workspace(tmp_path, paper_text, *, stem="mypaper", marker_subdir="conversion/nested"):
+    """Create a papers dir with a pre-conversion workspace, plus the PDF + template."""
     paper_dir = tmp_path / "papers"
     workspace = paper_dir / stem
     marker_dir = workspace / marker_subdir
@@ -178,15 +178,27 @@ def test_init_recovers_sections_and_reports_word_count(tmp_path):
     assert (workspace / "notes.md").read_text(encoding="utf-8").strip() == NOTES_TEMPLATE.strip()
 
 
-def test_init_finds_marker_output_in_nonstandard_nested_dir(tmp_path):
+def test_init_finds_converted_markdown_in_nonstandard_nested_dir(tmp_path):
     paper_text = "# 1. Intro\nIntro.\n\n# 2. Data\nData.\n"
     paper_dir, workspace, pdf, template = _make_workspace(
-        tmp_path, paper_text, marker_subdir="marker_output/weird/deep/place"
+        tmp_path, paper_text, marker_subdir="conversion/weird/deep/place"
     )
     proc = _run_init(pdf, paper_dir, template)
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert "weird/deep/place" in payload["marker_markdown"]
+    assert "weird/deep/place" in payload["converted_markdown"]
+
+
+def test_init_accepts_legacy_marker_output_dir(tmp_path):
+    # Backward compatibility: an older Marker-based run wrote to marker_output/.
+    paper_text = "# 1. Intro\nIntro.\n\n# 2. Data\nData.\n"
+    paper_dir, workspace, pdf, template = _make_workspace(
+        tmp_path, paper_text, marker_subdir="marker_output/mypaper"
+    )
+    proc = _run_init(pdf, paper_dir, template)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert "marker_output" in payload["converted_markdown"]
 
 
 def test_init_warns_on_degenerate_split(tmp_path):

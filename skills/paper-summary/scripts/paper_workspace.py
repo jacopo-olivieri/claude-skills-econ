@@ -4,12 +4,15 @@
 Commands
 --------
 ``init``
-    Create or refresh a paper workspace from Marker output. Copies the primary
-    Marker markdown to ``paper.md``, splits it into ``sections/*.md``, and
-    initialises ``notes.md`` from the notes template. Refuses to clobber a
-    ``notes.md`` that has diverged from the template unless ``--force`` is
-    passed. Emits a JSON report including ``word_count`` (feeds the
-    short-paper fast path) and any ``warnings``.
+    Create or refresh a paper workspace from a PDF-to-markdown conversion. The
+    converter (docling by default, mineru for theory-heavy papers) writes into
+    ``<workspace>/conversion/``; init copies the primary markdown to
+    ``paper.md``, splits it into ``sections/*.md``, and initialises ``notes.md``
+    from the notes template. It is converter-agnostic — it picks the largest
+    ``.md`` under the conversion directory. Refuses to clobber a ``notes.md``
+    that has diverged from the template unless ``--force`` is passed. Emits a
+    JSON report including ``word_count`` (feeds the short-paper fast path) and
+    any ``warnings``.
 ``write-text``
     Write a staged text file into an existing workspace atomically. With
     ``--mark-processed <name>`` it appends a machine-readable progress marker so
@@ -108,14 +111,22 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def find_marker_markdown(workspace: Path) -> Path | None:
-    """Find the primary Marker markdown by globbing, not by assuming a layout.
+# Directories a PDF-to-markdown converter may write into, in preference order.
+# ``conversion`` is the standard target; ``marker_output`` is accepted for
+# backward compatibility with older Marker-based runs.
+CONVERSION_DIRS = ("conversion", "marker_output")
 
-    Marker's output directory nests under ``marker_output/`` and the file name
-    is not always ``<stem>/<stem>.md``. The largest ``.md`` under
-    ``marker_output/`` is the converted paper.
+
+def find_converted_markdown(workspace: Path) -> Path | None:
+    """Find the primary converted markdown by globbing, not by assuming a layout.
+
+    Converters (docling, mineru, Marker) nest their output differently and do not
+    all name the file ``<stem>.md``. The largest ``.md`` under the conversion
+    directory is the converted paper, so this is converter-agnostic.
     """
-    candidates = [p for p in workspace.glob("marker_output/**/*.md") if p.is_file()]
+    candidates: list[Path] = []
+    for sub in CONVERSION_DIRS:
+        candidates += [p for p in workspace.glob(f"{sub}/**/*.md") if p.is_file()]
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_size)
@@ -298,15 +309,15 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "Re-run with --force to discard it, or continue the existing run."
             )
 
-    marker_md = find_marker_markdown(workspace)
-    if marker_md is None:
+    converted_md = find_converted_markdown(workspace)
+    if converted_md is None:
         raise WorkspaceError(
-            f"No Marker markdown found under {workspace / 'marker_output'}. "
-            "Run marker_single first."
+            f"No converted markdown found under {workspace / 'conversion'}. "
+            "Convert the PDF first (docling by default, or mineru for theory papers)."
         )
 
     paper_md = workspace / "paper.md"
-    shutil.copy2(marker_md, paper_md)
+    shutil.copy2(converted_md, paper_md)
 
     sections_dir = workspace / "sections"
     sections_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +351,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "paper_md": str(paper_md),
                 "notes_md": str(notes_md),
                 "sections_dir": str(sections_dir),
-                "marker_markdown": str(marker_md),
+                "converted_markdown": str(converted_md),
                 "word_count": word_count,
                 "section_files": [
                     "00_abstract_and_introduction.md",

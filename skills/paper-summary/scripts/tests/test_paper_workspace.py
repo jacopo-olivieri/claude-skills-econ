@@ -275,6 +275,29 @@ def test_write_text_mark_processed_appends_resume_marker(tmp_path):
     assert pw.PROCESSED_MARKER_PREFIX + "03_results.md" in written
 
 
+def test_write_text_finalize_strips_resume_markers(tmp_path):
+    paper_dir = tmp_path / "papers"
+    workspace = paper_dir / "mypaper"
+    workspace.mkdir(parents=True)
+    staged = tmp_path / "staged.md"
+    staged.write_text(
+        "## 1. Research Question\n- A point [Section I]\n\n"
+        "<!-- paper-summary:processed 00_intro.md -->\n\n"
+        "<!-- paper-summary:processed 01_data.md -->\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "write-text",
+         "--workspace", str(workspace), "--paper-dir", str(paper_dir),
+         "--relative-path", "notes.md", "--input-file", str(staged), "--finalize"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    written = (workspace / "notes.md").read_text(encoding="utf-8")
+    assert "paper-summary:processed" not in written
+    assert "A point [Section I]" in written  # real content preserved
+
+
 def test_atomic_write_leaves_original_intact_on_failure(tmp_path, monkeypatch):
     target = tmp_path / "notes.md"
     target.write_text("original content", encoding="utf-8")

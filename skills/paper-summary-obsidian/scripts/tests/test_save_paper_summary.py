@@ -325,6 +325,23 @@ def test_unstructured_summary_reports_zero_sections_and_warns(tmp_path):
     assert payload["warnings"], "a degenerate parse must surface a warning"
 
 
+def test_save_strips_resume_markers_from_summary(tmp_path):
+    out = tmp_path / "vault"
+    summary = (
+        "1. Research Question\n- A point [Section I]\n\n"
+        "<!-- paper-summary:processed 00_intro.md -->\n"
+        "<!-- paper-summary:processed 01_data.md -->\n"
+    )
+    proc = _run_script(
+        tmp_path, summary=summary, metadata={"title": "T", "authors": ["A"]},
+        output_dir=out, on_exists="overwrite", write=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    note = (out / "@cite.md").read_text(encoding="utf-8")
+    assert "paper-summary:processed" not in note
+    assert "A point [Section I]" in note
+
+
 def test_empty_metadata_warns(tmp_path):
     proc = _run_script(
         tmp_path, summary="1. RQ\nbody\n", metadata={},

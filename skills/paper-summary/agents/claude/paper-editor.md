@@ -39,7 +39,9 @@ helper:
 python3 "$SKILL_DIR/scripts/paper_workspace.py" write-text \
   --workspace "$WORKSPACE" \
   --relative-path notes.md \
-  --input-file /tmp/paper-summary-notes.md
+  --input-file /tmp/paper-summary-notes.md \
+  --finalize
 ```
 
-Return the final `notes.md` content and the saved path.
+`--finalize` strips the resume markers so the finished summary is clean. Return
+the final `notes.md` content and the saved path.

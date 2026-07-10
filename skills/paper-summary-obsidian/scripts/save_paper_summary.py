@@ -158,6 +158,8 @@ SYNTHESIS_PREFIX_RE = re.compile(
     rf"^\s*(?:[#>\-\+\*]+\s*)?(?:\*\*|__)?\s*{_SYNTHESIS_MARKER}\b[^\n]*\n?",
     re.IGNORECASE,
 )
+# paper-summary's workspace-internal resume markers (a whole line each).
+_RESUME_MARKER_RE = re.compile(r"(?m)^[ \t]*<!--\s*paper-summary:processed\b.*?-->[ \t]*\n?")
 SYNTHESIS_LIST_MARKER_RE = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
 BOLD_NUMBERED_HEADER_RE = re.compile(
     r"^\s*(?:\*\*|__)\s*(\d+(?:\.\d+)*(?:[.)])?\s+.+?)\s*(?:\*\*|__)\s*$"
@@ -995,6 +997,11 @@ def main() -> int:
         summary_text = summary_path.read_text(encoding="utf-8")
     except OSError as exc:
         return _error(f"Failed to read summary file: {exc}")
+
+    # Defensively strip paper-summary's workspace-internal resume markers so they
+    # never leak into the saved note (they are normally removed by the
+    # paper-summary editor's --finalize save).
+    summary_text = _RESUME_MARKER_RE.sub("", summary_text)
 
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))

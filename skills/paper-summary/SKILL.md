@@ -133,7 +133,9 @@ section files. Its mandate:
   evidence nested beneath as anchored sub-bullets. Coverage is preserved, not
   cut; hierarchy is added.
 
-Return the final `notes.md` content in chat and include the saved path.
+Save the final `notes.md` with `write-text --finalize`, which strips the
+resume markers so the finished summary is clean. Return the final `notes.md`
+content in chat and include the saved path.
 
 ## PDF-to-markdown converter
 

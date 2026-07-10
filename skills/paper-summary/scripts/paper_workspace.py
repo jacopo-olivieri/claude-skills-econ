@@ -38,8 +38,17 @@ from pathlib import Path
 CONFIG_PATH = Path("~/.agents/config/paper-skills.json").expanduser()
 
 # Marker written to notes.md by `write-text --mark-processed <name>` so an
-# interrupted run can resume from the first unprocessed section.
+# interrupted run can resume from the first unprocessed section. It is a
+# workspace-internal resume aid, stripped from the finished summary by
+# `write-text --finalize` (and defensively by the Obsidian save script).
 PROCESSED_MARKER_PREFIX = "<!-- paper-summary:processed "
+PROCESSED_MARKER_RE = re.compile(r"^\s*<!--\s*paper-summary:processed\b.*?-->\s*$")
+
+
+def strip_progress_markers(text: str) -> str:
+    """Remove resume markers and collapse the blank lines they leave behind."""
+    lines = [ln for ln in text.splitlines() if not PROCESSED_MARKER_RE.match(ln)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).rstrip("\n") + "\n"
 
 
 class WorkspaceError(Exception):
@@ -386,6 +395,10 @@ def cmd_write_text(args: argparse.Namespace) -> int:
         raise WorkspaceError(f"Input file not found: {input_file}")
 
     text = input_file.read_text(encoding="utf-8")
+    if args.finalize:
+        # Final save of a completed run: remove the workspace-internal resume
+        # markers so the finished summary is clean.
+        text = strip_progress_markers(text)
     if args.mark_processed:
         marker = f"{PROCESSED_MARKER_PREFIX}{args.mark_processed} -->"
         if marker not in text:
@@ -448,6 +461,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--mark-processed",
         default=None,
         help="Section file name to record as processed (appends a resume marker).",
+    )
+    write_parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help="Strip resume markers before writing (use on the final editor save).",
     )
     write_parser.set_defaults(func=cmd_write_text)
 

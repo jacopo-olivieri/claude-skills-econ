@@ -1,0 +1,7 @@
+{
+  "stata_bin": "~/path/to/Stata.app/Contents/MacOS/stata",
+  "stata_docs_dir": "~/path/to/Stata/docs",
+  "stata_ado_base_dir": "~/path/to/Stata/ado/base",
+  "author": "Analyst",
+  "stata_version": "18"
+}

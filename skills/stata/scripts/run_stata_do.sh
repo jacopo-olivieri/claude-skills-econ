@@ -24,45 +24,11 @@ do_name=$(basename "$input_path")
 log_name=${do_name%.do}.log
 log_path=$do_dir/$log_name
 
-resolve_stata_bin() {
-  local known_path candidate
-  local -a candidates
-
-  if [ -n "${STATA_BIN:-}" ]; then
-    if [ -x "$STATA_BIN" ]; then
-      printf '%s\n' "$STATA_BIN"
-      return 0
-    fi
-    printf 'STATA_BIN is not executable: %s\n' "$STATA_BIN" >&2
-    return 1
-  fi
-
-  if command -v stata >/dev/null 2>&1; then
-    command -v stata
-    return 0
-  fi
-
-  known_path=/Applications/Stata/StataSE.app/Contents/MacOS/stata-se
-  if [ -x "$known_path" ]; then
-    printf '%s\n' "$known_path"
-    return 0
-  fi
-
-  shopt -s nullglob
-  candidates=(/Applications/Stata*/Stata{SE,MP,BE}.app/Contents/MacOS/stata-*)
-  shopt -u nullglob
-  for candidate in "${candidates[@]}"; do
-    if [ -x "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  printf 'Could not resolve an executable Stata binary. Set STATA_BIN explicitly.\n' >&2
-  return 1
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || {
+  printf 'Cannot resolve wrapper directory: %s\n' "$0" >&2
+  exit 2
 }
-
-stata_bin=$(resolve_stata_bin) || exit 2
+stata_bin=$(python3 "$script_dir/stata_config.py" stata-bin) || exit 2
 
 rm -f "$log_path"
 

@@ -11,18 +11,14 @@ Use this skill to write and run Stata work reproducibly and to consult the local
 
 Resolve the skill directory from the invoked `SKILL.md` path and reuse it as `SKILL_DIR`; do not assume a fixed installation path.
 
-Stata is installed under `/Applications/Stata`. The interactive zsh command `stata` is an alias on this machine, and aliases are unavailable in non-interactive shells. Resolve a concrete executable for one-off commands:
+The optional private config is `~/.agents/config/stata.json`; copy `config.example.json` there and replace only the values you need. The shared resolver applies command-line/environment/config/discovery precedence and fails clearly when a selected value is invalid. Resolve only the resources needed for the current task:
 
 ```bash
-if [ -n "${STATA_BIN:-}" ] && [ -x "$STATA_BIN" ]; then
-  :
-elif command -v stata >/dev/null 2>&1; then
-  STATA_BIN="$(command -v stata)"
-else
-  STATA_BIN="/Applications/Stata/StataSE.app/Contents/MacOS/stata-se"
-fi
-
-test -x "$STATA_BIN"
+STATA_BIN="$(python3 "$SKILL_DIR/scripts/stata_config.py" stata-bin)" || exit 2
+STATA_DOCS_DIR="$(python3 "$SKILL_DIR/scripts/stata_config.py" docs-dir)" || exit 2
+STATA_ADO_BASE_DIR="$(python3 "$SKILL_DIR/scripts/stata_config.py" ado-base-dir)" || exit 2
+STATA_AUTHOR="$(python3 "$SKILL_DIR/scripts/stata_config.py" author)" || exit 2
+STATA_VERSION="$(python3 "$SKILL_DIR/scripts/stata_config.py" stata-version)" || exit 2
 ```
 
 Use `scripts/run_stata_do.sh` for do-files. Use the resolved `$STATA_BIN` directly only for one-off commands such as:
@@ -33,25 +29,23 @@ Use `scripts/run_stata_do.sh` for do-files. Use the resolved `$STATA_BIN` direct
 
 ## Create do-files
 
-Create `.do` files as UTF-8 text. Start new project scripts with this header and setup shape, adapting the values to the task:
+Create `.do` files as UTF-8 text. Resolve `STATA_AUTHOR` and `STATA_VERSION` as above, then substitute their values for `<author>` and `<stata-version>` in this neutral task-specific header:
 
 ```stata
 ********************************************************************************
-* PROJECT: Weathering Poverty
-* AUTHOR: Jacopo Olivieri
-* AIM: Build village-level shares of negative, positive, and zero flood
-*      surprises from pre-survey decads and visualise their distribution.
-* DATE CREATED: 2026-02-23
-* LAST MODIFIED: 2026-02-23
+* PROJECT: <project name>
+* AUTHOR: <author>
+* AIM: <concise description of this do-file's purpose>
+* DATE CREATED: <YYYY-MM-DD>
+* LAST MODIFIED: <YYYY-MM-DD>
 * INPUTS:
-*   - $user/dta/combine_shock_before_2012.dta
-*   - $user/dta/stupDataPovertyTrapPanel.dta
+*   - <input dataset or source>
 * OUTPUTS:
-*   - $user/results/paper_draft/figures/appendix_shock_sign_distribution_area.pdf
+*   - <output dataset, table, or figure>
 ********************************************************************************
 
 * Setup
-version 18
+version <stata-version>
 clear all
 capture log close
 set more off, perm
@@ -112,15 +106,15 @@ fi
 
 ## Consult Stata documentation
 
-Manuals are under `/Applications/Stata/docs/`. Use `references/docs_index.md` to choose a PDF. Follow this order.
+Resolve `STATA_DOCS_DIR` and `STATA_ADO_BASE_DIR` with `stata_config.py` as shown above. Use `references/docs_index.md` to choose a PDF. Follow this order.
 
 ### 1. Read the command help file
 
 Check the installed `.sthlp` file first; it is the fastest source for syntax and options:
 
 ```bash
-# General pattern: /Applications/Stata/ado/base/<letter>/<command>.sthlp
-sed -n '1,240p' /Applications/Stata/ado/base/r/regress.sthlp
+# General pattern: $STATA_ADO_BASE_DIR/<letter>/<command>.sthlp
+sed -n '1,240p' "$STATA_ADO_BASE_DIR/r/regress.sthlp"
 ```
 
 The first directory letter normally matches the command name. Help files contain SMCL markup, so expect braces and directives in the raw text. For derivations, methods, or formulas, continue to the PDF manuals.
@@ -130,13 +124,13 @@ The first directory letter normally matches the command name. Help files contain
 Choose the manual from the index, then search it directly:
 
 ```bash
-pdfgrep -n -i -C 3 "xtreg" /Applications/Stata/docs/xt.pdf
+pdfgrep -n -i -C 3 "xtreg" "$STATA_DOCS_DIR/xt.pdf"
 ```
 
 Only if the index cannot identify a likely manual, fall back to an all-manual scan, which takes roughly 45 seconds:
 
 ```bash
-pdfgrep -Hn -i -m 20 "search term" /Applications/Stata/docs/*.pdf
+pdfgrep -Hn -i -m 20 "search term" "$STATA_DOCS_DIR"/*.pdf
 ```
 
 Common manuals:
@@ -166,7 +160,7 @@ Searches are literal and case-insensitive by default. Use `--regex` for regular 
 When search context is insufficient, convert only the relevant pages. `--page_range` is zero-based:
 
 ```bash
-marker_single /Applications/Stata/docs/d.pdf \
+marker_single "$STATA_DOCS_DIR/d.pdf" \
   --page_range 120-130 \
   --output_format markdown \
   --output_dir /tmp/stata-manual-snippets \

@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_DOCS_DIR = Path("/Applications/Stata/docs")
+from stata_config import StataConfigError, resolve_docs_dir
 
 
 def parse_pages(pages_arg: str | None, total_pages: int) -> set[int] | None:
@@ -123,7 +123,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Search local Stata PDF manuals")
     parser.add_argument("search_term", help="Text or regex to search for")
     parser.add_argument("--pdf", help="Single manual filename, e.g. d.pdf or r.pdf")
-    parser.add_argument("--docs-dir", default=str(DEFAULT_DOCS_DIR), help=f"Manual directory (default: {DEFAULT_DOCS_DIR})")
+    parser.add_argument(
+        "--docs-dir",
+        help="Manual directory (default: environment, private config, or discovery)",
+    )
     parser.add_argument("--pages", help="1-based page list/range, e.g. 1-50,120,140-160")
     parser.add_argument("--context", type=int, default=2, help="Lines before/after each hit (default: 2)")
     parser.add_argument("--max-results", type=int, default=30, help="Maximum hits to print (default: 30)")
@@ -131,9 +134,10 @@ def main() -> int:
     parser.add_argument("--case-sensitive", action="store_true", help="Use case-sensitive matching")
     args = parser.parse_args()
 
-    docs_dir = Path(args.docs_dir)
-    if not docs_dir.exists():
-        print(f"Docs directory not found: {docs_dir}", file=sys.stderr)
+    try:
+        docs_dir = resolve_docs_dir(args.docs_dir)
+    except StataConfigError as exc:
+        print(f"{exc.code}: {exc}", file=sys.stderr)
         return 1
 
     if not args.pdf:

@@ -1,5 +1,6 @@
 """Characterization tests for the deployed Stata batch wrapper."""
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -8,20 +9,29 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "run_stata_do.sh"
 
 
-def _fake_stata(tmp_path: Path) -> Path:
-    bin_dir = tmp_path / "fake Stata bin"
+def _fake_stata(
+    tmp_path: Path,
+    *,
+    directory: str = "fake Stata bin",
+    name: str = "stata fake",
+    label: str = "default",
+) -> Path:
+    bin_dir = tmp_path / directory
     bin_dir.mkdir()
-    executable = bin_dir / "stata fake"
+    executable = bin_dir / name
     executable.write_text(
         """#!/usr/bin/env bash
 set -u
+if [ -n "${FAKE_SELECTED:-}" ]; then
+  printf '%s\n' "__LABEL__" > "$FAKE_SELECTED"
+fi
 printf '%s\\n' "$PWD" > "$FAKE_CAPTURE"
 printf '<%s>\\n' "$@" >> "$FAKE_CAPTURE"
 if [ "${FAKE_WRITE_LOG:-1}" = 1 ]; then
   printf '%b' "${FAKE_LOG_CONTENT:-clean log\\n}" > "${4%.do}.log"
 fi
 exit "${FAKE_STATUS:-0}"
-""",
+""".replace("__LABEL__", label),
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -148,3 +158,89 @@ def test_paths_with_spaces_are_quoted_and_run_from_do_file_directory(tmp_path):
         "<do>",
         "<analysis file.do>",
     ]
+
+
+def test_wrapper_uses_config_before_path_through_resolver_and_two_hop_link(tmp_path):
+    configured = _fake_stata(
+        tmp_path,
+        directory="configured Stata",
+        name="stata configured",
+        label="configured",
+    )
+    path_fallback = _fake_stata(
+        tmp_path, directory="path fallback", name="stata", label="path"
+    )
+    home = tmp_path / "home"
+    config_path = home / ".agents/config/stata.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"stata_bin": str(configured)}), encoding="utf-8"
+    )
+    config_path.chmod(0o600)
+
+    agents_skill = tmp_path / "agents/skills/stata"
+    agents_skill.parent.mkdir(parents=True)
+    agents_skill.symlink_to(SCRIPT.parent.parent, target_is_directory=True)
+    claude_skill = tmp_path / "claude/skills/stata"
+    claude_skill.parent.mkdir(parents=True)
+    claude_skill.symlink_to(agents_skill, target_is_directory=True)
+    linked_script = claude_skill / "scripts/run_stata_do.sh"
+
+    work_dir = tmp_path / "linked project"
+    work_dir.mkdir()
+    do_file = work_dir / "analysis.do"
+    do_file.write_text("display 1\n", encoding="utf-8")
+    capture = tmp_path / "argv.txt"
+    selected = tmp_path / "selected.txt"
+    env = os.environ.copy()
+    env.pop("STATA_BIN", None)
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{path_fallback.parent}{os.pathsep}{env['PATH']}",
+            "FAKE_CAPTURE": str(capture),
+            "FAKE_SELECTED": str(selected),
+            "FAKE_LOG_CONTENT": "clean log\\n",
+        }
+    )
+
+    result = subprocess.run(
+        [str(linked_script), str(do_file)], capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert selected.read_text(encoding="utf-8").strip() == "configured"
+
+
+def test_invalid_reached_config_fails_without_using_path_fallback(tmp_path):
+    path_fallback = _fake_stata(
+        tmp_path, directory="path fallback", name="stata", label="path"
+    )
+    home = tmp_path / "home"
+    config_path = home / ".agents/config/stata.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("not json", encoding="utf-8")
+    config_path.chmod(0o600)
+    work_dir = tmp_path / "project"
+    work_dir.mkdir()
+    do_file = work_dir / "analysis.do"
+    do_file.write_text("display 1\n", encoding="utf-8")
+    selected = tmp_path / "selected.txt"
+    env = os.environ.copy()
+    env.pop("STATA_BIN", None)
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{path_fallback.parent}{os.pathsep}{env['PATH']}",
+            "FAKE_CAPTURE": str(tmp_path / "argv.txt"),
+            "FAKE_SELECTED": str(selected),
+        }
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), str(do_file)], capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 2
+    assert "malformed-config:" in result.stderr
+    assert not selected.exists()

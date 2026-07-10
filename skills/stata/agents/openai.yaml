@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stata"
+  short_description: "Run do-files and query manuals efficiently"
+  default_prompt: "Use $stata for this Stata task: write or run a do-file, inspect a command, or look up the relevant local manual pages efficiently."

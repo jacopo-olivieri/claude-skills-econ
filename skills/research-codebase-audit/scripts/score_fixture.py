@@ -135,7 +135,8 @@ SIGNATURES = {
              ["never", "only", "already", "non-missing", "nonmissing",
               "excl", "does not fill", "doesn't fill", "not fill", "< .",
               "present"]],
-    "P-18": [["has_wages", "py/build_income.py"],
+    "P-18": [["has_wages", "wage indicator", "wage-indicator", "wage flag",
+              "wage_flag", "wages indicator", "wages flag"],
              ["overwrit", "overwrite", "erase", "clobber", "last", "reset",
               "final", "each iteration", "replaces"],
              ["loop", "iteration", "wave"]],
@@ -403,6 +404,9 @@ def check_decoy(terms, quals, tagged_rows, summary_text):
     for kind, id_col, d in tagged_rows:
         # Precision decoys are forbidden as surviving issues, not as an audit
         # trail showing that a tempting candidate was reviewed and cleared.
+        status = (d.get("Status") or "").strip()
+        if status == "not_error" or status.startswith("duplicate_of:"):
+            continue
         if qualifies(kind, d) and trips(row_text(d)):
             found.append(describe(kind, id_col, d))
     if summary_text and trips(summary_text.lower()):
@@ -587,9 +591,20 @@ def check_channel_definition_use(audit):
                 for site in ("definition", "consumer")
             )
         )
-        return ("baseline_diag_ok" in text
-                or ("baseline-wave" in text and "diagnostic" in text)
-                or at_fixture_site)
+        semantic_match = (
+            any(term in text for term in ("diagnostic", "diagnostics"))
+            and any(term in text for term in (
+                "baseline", "wave 1", "wave-1", "wave one", "first wave",
+            ))
+            and any(term in text for term in (
+                "narrow", "filter", "restrict", "exclude", "drop", "remove",
+            ))
+            and any(term in text for term in (
+                "sample", "observation", "case", "analytic population",
+                "estimation population",
+            ))
+        )
+        return "baseline_diag_ok" in text or at_fixture_site or semantic_match
 
     issue_rows = [row for row in final_rows
                   if row.get("Status") in {"candidate", "confirmed", "confirmation_needed", "blocked"}

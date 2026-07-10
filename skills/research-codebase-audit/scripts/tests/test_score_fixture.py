@@ -477,18 +477,55 @@ def test_cleared_decoy_row_does_not_turn_gate_red(tmp_path):
     assert "D-01 decoy: ABSENT" in res.stdout
 
 
-def test_p18_source_anchored_loop_overwrite_description_still_hits(tmp_path):
+@pytest.mark.parametrize("status", ["not_error", "duplicate_of:E-0002"])
+@pytest.mark.parametrize("description", [
+    ("artifacts/fig_placebo.pdf is missing even though the placebo figure "
+     "block references it."),
+    ("farm_components wrongly omits remittances from the four-component "
+     "income list."),
+])
+def test_cleared_or_duplicate_decoy_rows_do_not_turn_gate_red(
+        tmp_path, status, description):
+    errors = hit_error_rows() + [rb.error_row(
+        "E-0099", etype="sample_filter_or_flag_error", status=status,
+        severity="", desc=description)]
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+
+    res = run_scorer(audit)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "D-01 decoy: ABSENT" in res.stdout
+    assert "D-02 decoy: ABSENT" in res.stdout
+
+
+def test_p18_wage_indicator_loop_overwrite_description_hits(tmp_path):
     errors = [row for row in hit_error_rows() if row[0] != "E-0018"]
     errors.append(rb.error_row(
         "E-0018", etype="sample_filter_or_flag_error", severity="2",
-        source="`py/build_income.py`", location="`py/build_income.py:24-26`",
-        desc=("The loop assigns the indicator anew on each iteration instead "
-              "of accumulating prior matches, so the final iteration "
-              "overwrites earlier true values.")))
+        source="`py/prepare_panel.py`", location="`py/prepare_panel.py:24-26`",
+        desc=("The wage indicator is reset on each wave iteration instead "
+              "of accumulating prior matches, so the final wave overwrites "
+              "earlier true values.")))
     audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
     res = run_scorer(audit)
     assert res.returncode == 0, res.stdout + res.stderr
     assert re.match(r"P-18: HIT", plant_line(res, "P-18"))
+
+
+def test_p18_source_file_cannot_substitute_for_wage_mechanism(tmp_path):
+    errors = [row for row in hit_error_rows() if row[0] != "E-0018"]
+    errors.append(rb.error_row(
+        "E-0018", etype="sample_filter_or_flag_error", severity="2",
+        source="`py/build_income.py`", location="`py/build_income.py:24-26`",
+        desc=("The loop assigns an eligibility indicator anew on each "
+              "iteration, so the final iteration overwrites earlier true "
+              "values.")))
+    audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
+
+    res = run_scorer(audit)
+
+    assert res.returncode == 1
+    assert re.match(r"P-18: MISS", plant_line(res, "P-18"))
 
 
 def test_intentional_subset_decoy_turns_gate_red(tmp_path):
@@ -735,6 +772,32 @@ def test_definition_use_channel_rejects_d03_claim_issue_row(tmp_path):
     status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "D-03" in note and "issue row" in note
+
+
+def test_definition_use_channel_rejects_d03_semantic_paraphrase(tmp_path):
+    claims = hit_claims_rows() + [rb.claims_row(
+        "C-0090", status="inconsistent", severity="2",
+        ctype="data_construction",
+        issue="The wave 1 diagnostic wrongly narrows the estimation sample.")]
+    audit = write_final_registers(tmp_path, claims, hit_error_rows())
+
+    status, note = sf.check_channel_definition_use(audit)
+
+    assert status == "FAIL"
+    assert "D-03" in note and "issue row" in note
+
+
+def test_definition_use_channel_ignores_benign_wave1_diagnostic_issue(tmp_path):
+    claims = hit_claims_rows() + [rb.claims_row(
+        "C-0090", status="inconsistent", severity="2",
+        ctype="transcription",
+        issue=("The wave 1 diagnostic label is stale, but the estimation "
+               "sample remains unchanged."))]
+    audit = write_final_registers(tmp_path, claims, hit_error_rows())
+
+    status, note = sf.check_channel_definition_use(audit)
+
+    assert status == "PASS", note
 
 
 def test_definition_use_channel_rejects_d03_issue_at_source_location(tmp_path):

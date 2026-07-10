@@ -1,0 +1,11 @@
+{
+  "_README": "Copy this file to ~/.agents/config/paper-skills.json and replace the placeholder paths with your real ones. Both paper-summary and paper-summary-obsidian read this single shared file for their default paths and fail loudly if it is missing. No personal paths live in this repo.",
+  "_keys": {
+    "papers_dir": "Base directory where paper workspaces are created (paper-summary).",
+    "vault_papers_dir": "Obsidian vault folder where rendered paper notes are written (paper-summary-obsidian).",
+    "vault_template": "Path to the live Obsidian Zotero note template the save script validates against (paper-summary-obsidian)."
+  },
+  "papers_dir": "~/Documents/papers",
+  "vault_papers_dir": "~/Documents/obsidian-vault/sources/papers",
+  "vault_template": "~/Documents/obsidian-vault/templates/template zotero.md"
+}

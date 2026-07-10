@@ -1,0 +1,41 @@
+{
+  "_README": "Single source of truth for the five-part summary structure (R9). Consumed by paper-summary-obsidian/scripts/save_paper_summary.py (which keeps these values as an embedded fallback so a missing file does not brick the save) and cited by notes_template.md and both SKILL.md files. Section numbers 1-5 map to the numbered summary markers; fold_heading is the exact Obsidian note heading; aliases are the accepted fuzzy matches for a section marker's title.",
+  "synthesis_marker": "synthesis of findings",
+  "sections": [
+    {
+      "number": 1,
+      "canonical": "Research Question and Motivation",
+      "fold_heading": "### 💬 Research Question and Motivation %% fold %%",
+      "aliases": ["research question and motivation", "research question", "motivation"]
+    },
+    {
+      "number": 2,
+      "canonical": "Data and Empirical Strategy",
+      "fold_heading": "### 📌 Data and Empirical Strategy %% fold %%",
+      "aliases": ["data and methods", "data and empirical strategy", "data and identification", "data", "methods", "empirical strategy", "identification strategy"]
+    },
+    {
+      "number": 3,
+      "canonical": "Results",
+      "fold_heading": "### 🎯 Results %% fold %%",
+      "aliases": ["results: main findings", "results and discussion", "results", "main findings", "findings"]
+    },
+    {
+      "number": 4,
+      "canonical": "Limitations and Extensions",
+      "fold_heading": "### ✒️ Limitations and Extensions %% fold %%",
+      "aliases": ["limitations and extensions", "limitations", "extensions", "future research"]
+    },
+    {
+      "number": 5,
+      "canonical": "Comments and Ideas",
+      "fold_heading": "### 🧩 Comments and Ideas %% fold %%",
+      "aliases": ["synthesis of findings", "synthesis", "comments and ideas", "comments", "conclusion", "discussion"]
+    }
+  ],
+  "additional_headings": [
+    "### 🗺️ Background, context and connections %% fold %%",
+    "### 🚧 Digging and disclaimers %% fold %%",
+    "### ❓ Problem formulation %% fold %%"
+  ]
+}

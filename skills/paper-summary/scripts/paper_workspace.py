@@ -1,15 +1,83 @@
 #!/usr/bin/env python3
+"""Manage paper-summary workspace files inside the papers directory.
+
+Commands
+--------
+``init``
+    Create or refresh a paper workspace from Marker output. Copies the primary
+    Marker markdown to ``paper.md``, splits it into ``sections/*.md``, and
+    initialises ``notes.md`` from the notes template. Refuses to clobber a
+    ``notes.md`` that has diverged from the template unless ``--force`` is
+    passed. Emits a JSON report including ``word_count`` (feeds the
+    short-paper fast path) and any ``warnings``.
+``write-text``
+    Write a staged text file into an existing workspace atomically. With
+    ``--mark-processed <name>`` it appends a machine-readable progress marker so
+    an interrupted run can resume from the first unprocessed section.
+
+All defaults are read from ``~/.agents/config/paper-skills.json`` (key
+``papers_dir``); the script fails loudly with a JSON error naming that path when
+it is missing. Errors are reported as ``{"status": "error", "message": ...}``
+JSON rather than raw tracebacks.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 
-DEFAULT_PAPER_DIR = Path("/Users/jacopoolivieri/Documents/05_sources/04_papers")
+CONFIG_PATH = Path("~/.agents/config/paper-skills.json").expanduser()
 
+# Marker written to notes.md by `write-text --mark-processed <name>` so an
+# interrupted run can resume from the first unprocessed section.
+PROCESSED_MARKER_PREFIX = "<!-- paper-summary:processed "
+
+
+class WorkspaceError(Exception):
+    """A user-facing error that is reported as JSON, not a traceback."""
+
+
+# --------------------------------------------------------------------------- #
+# Config
+# --------------------------------------------------------------------------- #
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        raise WorkspaceError(
+            f"Config file not found: {CONFIG_PATH}. Copy the repo's "
+            "config.example.json there and set papers_dir, vault_papers_dir, "
+            "and vault_template."
+        )
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkspaceError(f"Could not read config {CONFIG_PATH}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise WorkspaceError(f"Config {CONFIG_PATH} must be a JSON object.")
+    return data
+
+
+def resolve_papers_dir(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    value = load_config().get("papers_dir")
+    if not value:
+        raise WorkspaceError(
+            f"'papers_dir' is not set in {CONFIG_PATH}. Add it (see "
+            "config.example.json)."
+        )
+    return Path(value).expanduser().resolve()
+
+
+# --------------------------------------------------------------------------- #
+# Text helpers
+# --------------------------------------------------------------------------- #
 
 def clean_title(title: str) -> str:
     title = title.replace("\\*", "").replace("*", "").strip()
@@ -24,24 +92,93 @@ def slugify(title: str) -> str:
     return title or "section"
 
 
-def marker_markdown_path(workspace: Path, paper_stem: str) -> Path:
-    return workspace / "marker_output" / paper_stem / f"{paper_stem}.md"
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file in same dir + replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=path.suffix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
+
+def find_marker_markdown(workspace: Path) -> Path | None:
+    """Find the primary Marker markdown by globbing, not by assuming a layout.
+
+    Marker's output directory nests under ``marker_output/`` and the file name
+    is not always ``<stem>/<stem>.md``. The largest ``.md`` under
+    ``marker_output/`` is the converted paper.
+    """
+    candidates = [p for p in workspace.glob("marker_output/**/*.md") if p.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_size)
+
+
+# --------------------------------------------------------------------------- #
+# Section splitting (R1 appendix anchoring, R6 Roman/no-dot headings)
+# --------------------------------------------------------------------------- #
 
 def heading_matches(text: str) -> list[tuple[int, int, str]]:
     pattern = re.compile(r"(?m)^(#{1,6})\s+(.+?)\s*$")
     return [(m.start(), m.end(), clean_title(m.group(2))) for m in pattern.finditer(text)]
 
 
+_ARABIC_HEADING_RE = re.compile(r"^(\d+)[.)]?\s")
+# Roman requires a `.`/`)` delimiter (not a bare space) to avoid matching
+# ordinary words that happen to be Roman letters (e.g. "Mix Models").
+_ROMAN_HEADING_RE = re.compile(
+    r"^(m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3}))[.)]\s",
+    re.IGNORECASE,
+)
+_LEADING_SECTION_NUMBER_RE = re.compile(r"^(?:\d+|[ivxlcdm]+)[.)]?\s*", re.IGNORECASE)
+
+_ROMAN_VALUES = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+
+
+def _roman_to_int(roman: str) -> int:
+    total = 0
+    prev = 0
+    for ch in reversed(roman.lower()):
+        value = _ROMAN_VALUES[ch]
+        if value < prev:
+            total -= value
+        else:
+            total += value
+            prev = value
+    return total
+
+
+def heading_number(title: str) -> int | None:
+    """Return the leading section number (Arabic or Roman), or None."""
+    m = _ARABIC_HEADING_RE.match(title)
+    if m:
+        return int(m.group(1))
+    m = _ROMAN_HEADING_RE.match(title)
+    if m and m.group(1):
+        value = _roman_to_int(m.group(1))
+        # Cap at a plausible section count so ordinary words that happen to be
+        # valid Roman numerals + a delimiter (e.g. "C. elegans" -> 100,
+        # "MMXV. Overview" -> 2015) are not mistaken for section numbers.
+        if 1 <= value <= 49:
+            return value
+    return None
+
+
 def is_numbered_heading(title: str) -> bool:
-    return re.match(r"^\d+\.\s+", title) is not None
+    return heading_number(title) is not None
 
 
-# Appendix/references tokens. R1: these must match as whole words anchored at
-# the start of the heading title (after any leading section number), so a
-# heading like "2. Estimating Preferences" (which contains "references") or
-# "3. Results and Appendix Tables" (mid-title "Appendix") no longer truncates
-# the main text into appendix.md.
+# Appendix/references tokens. R1: match as whole words anchored at the start of
+# the heading title (after any leading Arabic section number), so headings like
+# "2. Estimating Preferences" (contains "references") or "3. Results and
+# Appendix Tables" (mid-title "Appendix") no longer truncate the main text.
 APPENDIX_START_TOKENS = (
     "online appendix",
     "supplementary appendix",
@@ -50,17 +187,25 @@ APPENDIX_START_TOKENS = (
     "references",
 )
 
-_LEADING_NUMBER_RE = re.compile(r"^\s*\d+[.)]?\s*")
+# Strip a leading section number before anchoring: Arabic (optional delimiter)
+# or a Roman numeral that carries a `.`/`)` delimiter (so ordinary words are
+# left intact). This mirrors the splitter's heading-number handling.
+_LEADING_NUMBER_RE = re.compile(
+    r"^\s*(?:\d+[.)]?|(?:m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3}))[.)])\s*",
+    re.IGNORECASE,
+)
 
 
 def is_appendix_heading(title: str) -> bool:
-    # Strip a leading Arabic section number before anchoring. (Roman-numeral
-    # heading support is added with the R6 splitter work in U4.)
     stripped = _LEADING_NUMBER_RE.sub("", title.lower()).strip()
     return any(
         re.match(rf"{re.escape(token)}\b", stripped) is not None
         for token in APPENDIX_START_TOKENS
     )
+
+
+def _section_name(title: str) -> str:
+    return _LEADING_SECTION_NUMBER_RE.sub("", title).strip()
 
 
 def split_paper(text: str) -> tuple[str, list[tuple[str, str]], str]:
@@ -85,14 +230,16 @@ def split_paper(text: str) -> tuple[str, list[tuple[str, str]], str]:
     if not numbered:
         return main_text.strip() + "\n", [], appendix_text.strip() + ("\n" if appendix_text else "")
 
+    # Intro (00) is everything before the first heading numbered 2 (Arabic 2 or
+    # Roman II); each subsequent numbered heading becomes its own section file.
     section_two_index = next(
-        (idx for idx, (_start, _end, title) in enumerate(numbered) if title.startswith("2.")),
+        (idx for idx, (_start, _end, title) in enumerate(numbered) if heading_number(title) == 2),
         None,
     )
 
     if section_two_index is None:
         intro_end = len(main_text)
-        remaining = []
+        remaining: list[tuple[int, int, str]] = []
     else:
         intro_end = numbered[section_two_index][0]
         remaining = numbered[section_two_index:]
@@ -103,8 +250,7 @@ def split_paper(text: str) -> tuple[str, list[tuple[str, str]], str]:
     for idx, (start, _end, title) in enumerate(remaining, start=1):
         content_end = remaining[idx][0] if idx < len(remaining) else len(main_text)
         body = main_text[start:content_end].strip()
-        section_name = re.sub(r"^\d+\.\s*", "", title).strip()
-        filename = f"{idx:02d}_{slugify(section_name)}.md"
+        filename = f"{idx:02d}_{slugify(_section_name(title))}.md"
         sections.append((filename, body + "\n"))
 
     appendix_text = appendix_text.strip()
@@ -118,27 +264,46 @@ def ensure_within(base: Path, path: Path) -> Path:
     base = base.resolve()
     path = path.resolve()
     if path != base and base not in path.parents:
-        raise ValueError(f"{path} is outside {base}")
+        raise WorkspaceError(f"{path} is outside {base}")
     return path
 
+
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
 
 def cmd_init(args: argparse.Namespace) -> int:
     pdf = Path(args.pdf).expanduser().resolve()
     if not pdf.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf}")
+        raise WorkspaceError(f"PDF not found: {pdf}")
 
-    paper_dir = Path(args.paper_dir).expanduser().resolve()
+    paper_dir = resolve_papers_dir(args.paper_dir)
     notes_template = Path(args.notes_template).expanduser().resolve()
     if not notes_template.exists():
-        raise FileNotFoundError(f"Notes template not found: {notes_template}")
+        raise WorkspaceError(f"Notes template not found: {notes_template}")
+    template_text = notes_template.read_text(encoding="utf-8")
 
     paper_stem = pdf.stem
     workspace = paper_dir / paper_stem
     workspace.mkdir(parents=True, exist_ok=True)
 
-    marker_md = marker_markdown_path(workspace, paper_stem)
-    if not marker_md.exists():
-        raise FileNotFoundError(f"Marker markdown not found: {marker_md}")
+    # R5: refuse to overwrite a notes.md that has diverged from the template
+    # (i.e. contains accumulated work) unless --force is passed.
+    notes_md = workspace / "notes.md"
+    if notes_md.exists() and not args.force:
+        existing = notes_md.read_text(encoding="utf-8")
+        if existing.strip() != template_text.strip():
+            raise WorkspaceError(
+                f"{notes_md} has diverged from the template (it contains notes). "
+                "Re-run with --force to discard it, or continue the existing run."
+            )
+
+    marker_md = find_marker_markdown(workspace)
+    if marker_md is None:
+        raise WorkspaceError(
+            f"No Marker markdown found under {workspace / 'marker_output'}. "
+            "Run marker_single first."
+        )
 
     paper_md = workspace / "paper.md"
     shutil.copy2(marker_md, paper_md)
@@ -149,28 +314,40 @@ def cmd_init(args: argparse.Namespace) -> int:
         old_file.unlink()
 
     paper_text = paper_md.read_text(encoding="utf-8")
+    word_count = len(paper_text.split())
     intro_text, sections, appendix_text = split_paper(paper_text)
 
-    (sections_dir / "00_abstract_and_introduction.md").write_text(intro_text, encoding="utf-8")
+    _atomic_write(sections_dir / "00_abstract_and_introduction.md", intro_text)
     for filename, body in sections:
-        (sections_dir / filename).write_text(body, encoding="utf-8")
-    (sections_dir / "appendix.md").write_text(appendix_text, encoding="utf-8")
+        _atomic_write(sections_dir / filename, body)
+    _atomic_write(sections_dir / "appendix.md", appendix_text)
 
-    notes_md = workspace / "notes.md"
-    shutil.copy2(notes_template, notes_md)
+    _atomic_write(notes_md, template_text)
+
+    warnings: list[str] = []
+    if len(sections) <= 1:
+        warnings.append(
+            f"Recovered only {len(sections)} main-text section(s) beyond the "
+            "introduction; heading detection may be weak. Inspect paper.md and "
+            "record the limitation in notes.md."
+        )
 
     print(
         json.dumps(
             {
+                "status": "ok",
                 "workspace": str(workspace),
                 "paper_md": str(paper_md),
                 "notes_md": str(notes_md),
                 "sections_dir": str(sections_dir),
+                "marker_markdown": str(marker_md),
+                "word_count": word_count,
                 "section_files": [
                     "00_abstract_and_introduction.md",
                     *[filename for filename, _body in sections],
                     "appendix.md",
                 ],
+                "warnings": warnings,
             },
             indent=2,
         )
@@ -180,20 +357,31 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_write_text(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).expanduser().resolve()
-    paper_dir = Path(args.paper_dir).expanduser().resolve()
-    relative_path = Path(args.relative_path)
+    paper_dir = resolve_papers_dir(args.paper_dir)
+    relative = args.relative_path.strip()
+    if not relative:
+        raise WorkspaceError("--relative-path must name a file inside the workspace.")
+    relative_path = Path(relative)
     if relative_path.is_absolute():
-        raise ValueError("--relative-path must be relative to the workspace")
+        raise WorkspaceError("--relative-path must be relative to the workspace.")
 
     ensure_within(paper_dir, workspace)
     target = ensure_within(workspace, workspace / relative_path)
+    if target == workspace.resolve():
+        raise WorkspaceError("--relative-path must name a file, not the workspace root.")
+
     input_file = Path(args.input_file).expanduser().resolve()
     if not input_file.exists():
-        raise FileNotFoundError(f"Input file not found: {input_file}")
+        raise WorkspaceError(f"Input file not found: {input_file}")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(input_file.read_text(encoding="utf-8"), encoding="utf-8")
-    print(str(target))
+    text = input_file.read_text(encoding="utf-8")
+    if args.mark_processed:
+        marker = f"{PROCESSED_MARKER_PREFIX}{args.mark_processed} -->"
+        if marker not in text:
+            text = text.rstrip("\n") + f"\n\n{marker}\n"
+
+    _atomic_write(target, text)
+    print(json.dumps({"status": "ok", "path": str(target)}, indent=2))
     return 0
 
 
@@ -210,25 +398,30 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--pdf", required=True, help="Absolute path to the source PDF.")
     init_parser.add_argument(
         "--paper-dir",
-        default=str(DEFAULT_PAPER_DIR),
-        help="Base directory for paper workspaces.",
+        default=None,
+        help="Base directory for paper workspaces (default: papers_dir from config).",
     )
     init_parser.add_argument(
         "--notes-template",
         required=True,
         help="Path to the notes template used to initialise notes.md.",
     )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing notes.md even if it has diverged from the template.",
+    )
     init_parser.set_defaults(func=cmd_init)
 
     write_parser = subparsers.add_parser(
         "write-text",
-        help="Write a staged text file into an existing paper workspace.",
+        help="Write a staged text file into an existing paper workspace (atomic).",
     )
     write_parser.add_argument("--workspace", required=True, help="Paper workspace path.")
     write_parser.add_argument(
         "--paper-dir",
-        default=str(DEFAULT_PAPER_DIR),
-        help="Base directory that the workspace must live under.",
+        default=None,
+        help="Base directory the workspace must live under (default: papers_dir from config).",
     )
     write_parser.add_argument(
         "--relative-path",
@@ -240,6 +433,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Staged text file whose contents will be copied into the workspace.",
     )
+    write_parser.add_argument(
+        "--mark-processed",
+        default=None,
+        help="Section file name to record as processed (appends a resume marker).",
+    )
     write_parser.set_defaults(func=cmd_write_text)
 
     return parser
@@ -248,7 +446,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except WorkspaceError as exc:
+        print(json.dumps({"status": "error", "message": str(exc)}, indent=2))
+        return 1
+    except OSError as exc:
+        # Filesystem/permission failures are reported as JSON, not a traceback.
+        print(json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"}, indent=2))
+        return 1
 
 
 if __name__ == "__main__":

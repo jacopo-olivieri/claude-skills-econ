@@ -7,8 +7,8 @@
 - Required outputs
 - 1. Resolve the paper locally first
 - 2. Acquire an open-access copy if no local PDF exists
-- 3. Create or refresh the paper workspace
-- 4. Convert the full PDF with Marker
+- 3. Convert the full PDF with Marker
+- 4. Create or refresh the paper workspace
 - 5. Split `paper.md` into section files
 - 6. Initialise and update `notes.md`
 - Verification and anti-hallucination rules
@@ -69,25 +69,14 @@ Canonical example:
 - If no open-access PDF is available, return the publisher or landing-page URL and stop so the user can download it manually with institutional access.
 - Do not continue to analysis without a local PDF.
 
-## 3. Create or refresh the paper workspace
+## 3. Convert the full PDF with Marker
+
+Marker must run **before** the workspace `init` step below: `init` reads the
+Marker output, so the conversion has to exist first.
 
 - Set `paper_stem` to the selected PDF filename without the `.pdf` suffix.
-- Create or refresh the workspace with:
-
-```bash
-python3 /Users/jacopoolivieri/.codex/skills/paper-summary/scripts/paper_workspace.py init \
-  --pdf "$PDF" \
-  --notes-template /Users/jacopoolivieri/.codex/skills/paper-summary/references/notes_template.md
-```
-
-- The helper script owns:
-  - workspace directory creation
-  - copying the primary Marker markdown output to `paper.md`
-  - rewriting `sections/*.md`
-  - reinitialising `notes.md` from [notes_template.md](notes_template.md)
-- Reinitialise `notes.md` for each new summary run unless the user explicitly asks to continue or revise an existing summary.
-
-## 4. Convert the full PDF with Marker
+- Set `WORKSPACE` to `<papers_dir>/<paper_stem>` (the papers directory comes
+  from the config file, not a hardcoded path).
 
 ```bash
 marker_single "$PDF" \
@@ -98,9 +87,25 @@ marker_single "$PDF" \
 
 - Always convert the full document.
 - Treat the Marker markdown as the canonical working text for the summary.
-- Save or copy the primary Marker markdown output to `$WORKSPACE/paper.md`.
 - Keep supplementary Marker artefacts inside `marker_output/`.
 - You may use direct PDF inspection or `pdfplumber` only to verify obvious extraction problems. Do not replace `paper.md` with a non-Marker extraction.
+
+## 4. Create or refresh the paper workspace
+
+- After Marker has written `$WORKSPACE/marker_output/`, create or refresh the
+  workspace with:
+
+```bash
+python3 /Users/jacopoolivieri/.codex/skills/paper-summary/scripts/paper_workspace.py init \
+  --pdf "$PDF" \
+  --notes-template /Users/jacopoolivieri/.codex/skills/paper-summary/references/notes_template.md
+```
+
+- The helper script owns:
+  - locating the primary Marker markdown (largest `.md` under `marker_output/`) and copying it to `paper.md`
+  - rewriting `sections/*.md`
+  - reinitialising `notes.md` from [notes_template.md](notes_template.md)
+- `init` refuses to overwrite a `notes.md` that has diverged from the template unless `--force` is passed, so an accidental re-run does not wipe accumulated notes. Reinitialise for each new summary run unless the user asks to continue or revise an existing summary.
 
 ## 5. Split `paper.md` into section files
 

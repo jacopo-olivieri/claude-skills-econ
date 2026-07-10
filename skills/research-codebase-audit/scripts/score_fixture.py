@@ -59,7 +59,7 @@ Rules encoded here:
     are worker-dependent (KTD-8), so this line feeds diagnosis, not the
     verdict.
   * Definition/use channel: P-21 and D-03 are located by their fixture source
-    sites in ``defuse_bundles.md`` and traced through b4 mapping/inventory,
+    sites in ``definition_use_bundles.md`` and traced through b4 mapping/inventory,
     code recheck ledger, and final code-error register. P-21 must finish as a
     confirmed severity>=2 issue (or explicit duplicate to an equivalent one);
     D-03 must finish ``not_error`` with no surviving issue row.
@@ -79,6 +79,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+import definition_use as du
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -207,13 +209,12 @@ REGISTERS = [
     ("code_error_register.md", "Error ID"),
     ("output_register.md", "Output ID"),
 ]
-DEFUSE_MAPPING_COLS = ["Bundle ID", "Error ID", "Mapping Kind"]
 LEDGER_COLS = [
     "ID", "Current Status", "Current Severity", "Evidence Checked",
     "Evidence Level", "Verdict", "Proposed Register Change",
     "Pipeline/Output Impact", "Proposed Note",
 ]
-DEFUSE_LOCATORS = {
+DEFINITION_USE_LOCATORS = {
     "P-21": {
         "variable": "consent_ok",
         "definition": "do/build_panel.do:15",
@@ -466,41 +467,25 @@ def _table_with_headers(text, required, exact=False):
     return None, None
 
 
-def _clean_cell(value):
-    return value.strip().strip("`").strip()
-
-
-def _du_tokens(text):
-    """Extract complete DU identifiers without accepting prefix substrings."""
-    return set(re.findall(
-        r"(?<![A-Za-z0-9_-])DU-[A-Za-z0-9]+(?![A-Za-z0-9_-])",
-        text or "",
-    ))
-
-
-def check_channel_defuse(audit):
+def check_channel_definition_use(audit):
     """Trace P-21 and D-03 through artifact, b4, ledger, and final register."""
-    artifact = audit / "_run" / "defuse_bundles.md"
+    artifact = audit / "_run" / "definition_use_bundles.md"
     if not artifact.is_file():
         return "FAIL", f"definition/use artifact not found: {artifact}"
     text = artifact.read_text(encoding="utf-8", errors="replace")
-    section = text.partition("## Candidate findings")[2]
-    if not section:
-        return "FAIL", "definition/use artifact lacks Candidate findings"
-    section = section.split("\n## ", 1)[0]
-    required = ["Bundle ID", "Variable", "Definition Site", "Consumer Site"]
-    headers, rows = _table_with_headers(section, required)
-    if headers is None:
-        return "FAIL", "definition/use artifact standard-candidate table is missing"
-    artifact_rows = [dict(zip(headers, row)) for row in rows]
+    try:
+        parsed_artifact = du.parse_artifact(text)
+    except du.DefinitionUseFormatError as exc:
+        return "FAIL", f"definition/use artifact is malformed: {exc}"
+    artifact_rows = parsed_artifact.standard_rows
     located = {}
-    for label, locator in DEFUSE_LOCATORS.items():
+    for label, locator in DEFINITION_USE_LOCATORS.items():
         matches = []
         for row in artifact_rows:
-            if (_clean_cell(row.get("Variable", "")) == locator["variable"]
-                    and _clean_cell(row.get("Definition Site", "")) == locator["definition"]
-                    and _clean_cell(row.get("Consumer Site", "")) == locator["consumer"]):
-                matches.append(_clean_cell(row.get("Bundle ID", "")))
+            if (du.normalize_cell(row.get("Variable", "")) == locator["variable"]
+                    and du.normalize_cell(row.get("Definition Site", "")) == locator["definition"]
+                    and du.normalize_cell(row.get("Consumer Site", "")) == locator["consumer"]):
+                matches.append(du.normalize_cell(row.get("Bundle ID", "")))
         if len(matches) != 1 or not re.fullmatch(r"DU-[0-9A-Za-z]+", matches[0] if matches else ""):
             return ("FAIL", f"{label} bundle not uniquely located at "
                     f"{locator['definition']} -> {locator['consumer']}")
@@ -510,10 +495,10 @@ def check_channel_defuse(audit):
     if not plan.is_file():
         return "FAIL", f"code recheck plan missing: {plan}"
     plan_text = plan.read_text(encoding="utf-8", errors="replace")
-    _, mapping_rows = _table_with_headers(plan_text, DEFUSE_MAPPING_COLS, exact=True)
-    if mapping_rows is None:
-        return "FAIL", "Definition/use bundle mapping table missing"
-    mappings = [dict(zip(DEFUSE_MAPPING_COLS, row)) for row in mapping_rows]
+    try:
+        mappings = du.parse_mappings(plan_text)
+    except du.DefinitionUseFormatError as exc:
+        return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
     _, inventory_rows = _table_with_headers(
         plan_text, ["ID", "Reason", "Likely Evidence"])
     if inventory_rows is None:
@@ -523,14 +508,15 @@ def check_channel_defuse(audit):
     mapped_ids = {}
     for label, bid in located.items():
         matches = [row for row in mappings
-                   if _clean_cell(row.get("Bundle ID", "")) == bid]
+                   if du.normalize_cell(row.get("Bundle ID", "")) == bid]
         if len(matches) != 1:
             return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
-        eid = _clean_cell(matches[0].get("Error ID", ""))
-        inv = [row for row in inventory if _clean_cell(row.get("ID", "")) == eid]
+        eid = du.normalize_cell(matches[0].get("Error ID", ""))
+        inv = [row for row in inventory
+               if du.normalize_cell(row.get("ID", "")) == eid]
         if len(inv) != 1:
             return "FAIL", f"{label} mapped Error ID {eid} absent from b4 inventory"
-        if bid not in _du_tokens(inv[0].get("Likely Evidence", "")):
+        if bid not in du.extract_bundle_tokens(inv[0].get("Likely Evidence", "")):
             return "FAIL", f"{label} {bid} absent from inventory Likely Evidence"
         mapped_ids[label] = eid
 
@@ -544,10 +530,12 @@ def check_channel_defuse(audit):
                 ledger_rows.extend(dict(zip(LEDGER_COLS, row)) for row in rows)
     ledgers = {}
     for label, eid in mapped_ids.items():
-        matches = [row for row in ledger_rows if _clean_cell(row.get("ID", "")) == eid]
+        matches = [row for row in ledger_rows
+                   if du.normalize_cell(row.get("ID", "")) == eid]
         if len(matches) != 1:
             return "FAIL", f"{label} mapped Error ID {eid} has {len(matches)} ledger dispositions"
-        if located[label] not in _du_tokens(matches[0].get("Evidence Checked", "")):
+        if located[label] not in du.extract_bundle_tokens(
+                matches[0].get("Evidence Checked", "")):
             return "FAIL", f"{label} {located[label]} absent from ledger Evidence Checked"
         ledgers[label] = matches[0]
 
@@ -595,7 +583,7 @@ def check_channel_defuse(audit):
         at_fixture_site = (
             row.get("Error Type") == "sample_filter_or_flag_error"
             and any(
-                re.search(re.escape(DEFUSE_LOCATORS["D-03"][site]) + r"(?!\d)", text)
+                re.search(re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)", text)
                 for site in ("definition", "consumer")
             )
         )
@@ -855,7 +843,7 @@ def main() -> int:
     print(f"U2 manifest artifact: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U2 manifest artifact check failed")
-    status, note = check_channel_defuse(audit)
+    status, note = check_channel_definition_use(audit)
     print(f"Definition/use channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("definition/use channel check failed")

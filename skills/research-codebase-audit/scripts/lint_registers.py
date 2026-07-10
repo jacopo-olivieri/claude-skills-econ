@@ -19,6 +19,8 @@ import re
 import sys
 from pathlib import Path
 
+import definition_use as du
+
 # --------------------------------------------------------------- constants
 
 CLAIMS_COLS = [
@@ -95,9 +97,6 @@ CONVENTION_CATEGORIES = {
     "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
     "id_or_merge_key", "enumerated_member_list",
 }
-DEFUSE_MAPPING_COLS = ["Bundle ID", "Error ID", "Mapping Kind"]
-DEFUSE_MAPPING_KINDS = {"new_candidate", "existing_row"}
-
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
 RANGE_RE = re.compile(r"([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
 COORD_RE = re.compile(r"Merge-coordinator range:\s*([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
@@ -1226,103 +1225,49 @@ def parse_recheck_plan(lint, audit, stream):
     return plan, inventory, clusters
 
 
-def _clean_code(value):
-    return value.strip().strip("`").strip()
-
-
-def _du_tokens(text):
-    """Extract complete DU identifiers without accepting prefix substrings."""
-    return set(re.findall(
-        r"(?<![A-Za-z0-9_-])DU-[A-Za-z0-9]+(?![A-Za-z0-9_-])",
-        text or "",
-    ))
-
-
-def parse_defuse_artifact(lint, audit):
+def parse_definition_use_artifact(lint, audit):
     """Return standard Bundle IDs from the required b4 detector artifact."""
-    path = audit / "_run" / "defuse_bundles.md"
+    path = audit / "_run" / "definition_use_bundles.md"
     text = read_text(lint, path)
     if text is None:
         lint.fail(f"{path}: missing required b4 definition/use artifact")
         return None
-    match = re.search(r"^- Standard candidates:\s*(\d+)\s*$", text, re.M)
-    if not match:
-        lint.fail(f"{path}: missing machine-readable 'Standard candidates: <n>' count")
+    try:
+        artifact = du.parse_artifact(text)
+    except du.DefinitionUseFormatError as exc:
+        lint.fail(f"{path}: {exc}")
         return None
-    section = text.partition("## Candidate findings")[2]
-    if not section:
-        lint.fail(f"{path}: missing '## Candidate findings' section")
-        return None
-    section = section.split("\n## ", 1)[0]
-    rows = None
-    for headers, candidate_rows, _ in parse_tables(section):
-        if "Bundle ID" in headers and "Identity Tuple" in headers:
-            rows = candidate_rows
-            break
-    if rows is None:
-        lint.fail(f"{path}: standard candidate table not found")
-        return None
-    ids = []
-    id_index = headers.index("Bundle ID")
-    for row in rows:
-        if len(row) != len(headers):
-            lint.fail(f"{path}: malformed standard candidate row")
-            continue
-        bid = _clean_code(row[id_index])
-        if re.fullmatch(r"DU-[0-9A-Za-z]+", bid):
-            ids.append(bid)
-    if len(ids) != int(match.group(1)):
-        lint.fail(f"{path}: Standard candidates count is {match.group(1)} but "
-                  f"the table contains {len(ids)} Bundle IDs")
-    check_unique(lint, path, ids, "standard Bundle ID")
-    return ids
+    return [row["Bundle ID"] for row in artifact.standard_rows]
 
 
-def parse_defuse_mappings(lint, plan):
+def parse_definition_use_mappings(lint, plan):
     """Return rows from the code recheck plan's exact mapping table."""
     text = read_text(lint, plan)
     if text is None:
         return []
-    rows = None
-    for headers, candidate_rows, _ in parse_tables(text):
-        if headers == DEFUSE_MAPPING_COLS:
-            rows = candidate_rows
-            break
-    if rows is None:
-        lint.fail(f"{plan}: missing Definition/use bundle mapping table with columns "
-                  f"{' | '.join(DEFUSE_MAPPING_COLS)}")
+    try:
+        return du.parse_mappings(text)
+    except du.DefinitionUseFormatError as exc:
+        lint.fail(f"{plan}: {exc}")
         return []
-    out = []
-    for row in rows:
-        if len(row) != len(DEFUSE_MAPPING_COLS):
-            lint.fail(f"{plan}: malformed definition/use mapping row")
-            continue
-        d = dict(zip(DEFUSE_MAPPING_COLS, row))
-        d = {key: _clean_code(value) for key, value in d.items()}
-        # Empty markdown tables may contain no rows; ignore an explicit
-        # all-blank placeholder if an authoring tool inserted one.
-        if not any(d.values()):
-            continue
-        out.append(d)
-    return out
 
 
-def check_defuse_b4(lint, audit, plan, inventory):
-    bundle_ids = parse_defuse_artifact(lint, audit)
+def check_definition_use_b4(lint, audit, plan, inventory):
+    bundle_ids = parse_definition_use_artifact(lint, audit)
     if bundle_ids is None:
         return
-    mappings = parse_defuse_mappings(lint, plan)
+    mappings = parse_definition_use_mappings(lint, plan)
     by_bundle = {}
     for row in mappings:
         bid, eid, kind = row["Bundle ID"], row["Error ID"], row["Mapping Kind"]
         by_bundle.setdefault(bid, []).append(row)
-        if kind not in DEFUSE_MAPPING_KINDS:
+        if kind not in du.MAPPING_KINDS:
             lint.fail(f"{plan}: Bundle ID {bid} has invalid Mapping Kind '{kind}'")
         if not re.fullmatch(ID_RE["E"], eid):
             lint.fail(f"{plan}: Bundle ID {bid} has invalid Error ID '{eid}'")
         if bid not in bundle_ids:
             lint.fail(f"{plan}: mapping names {bid}, which is not a standard bundle "
-                      "in defuse_bundles.md")
+                      "in definition_use_bundles.md")
     for bid in bundle_ids:
         count = len(by_bundle.get(bid, []))
         if count == 0:
@@ -1348,7 +1293,8 @@ def check_defuse_b4(lint, audit, plan, inventory):
             lint.fail(f"{plan}: Bundle ID {bid} maps to {eid}, which is absent "
                       "from the b4 inventory")
             continue
-        if bid not in _du_tokens(inv_rows[0].get("Likely Evidence", "")):
+        if bid not in du.extract_bundle_tokens(
+                inv_rows[0].get("Likely Evidence", "")):
             lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
                       f"mapped Bundle ID {bid}")
         if rows[0]["Mapping Kind"] == "new_candidate":
@@ -1379,9 +1325,9 @@ def _all_code_recheck_ledger_rows(lint, audit):
     return rows
 
 
-def check_defuse_b6(lint, audit):
+def check_definition_use_b6(lint, audit):
     plan = recheck_plan_path(audit, "code")
-    mappings = parse_defuse_mappings(lint, plan)
+    mappings = parse_definition_use_mappings(lint, plan)
     if not mappings:
         return
     mapped = {}
@@ -1413,7 +1359,7 @@ def check_defuse_b6(lint, audit):
             continue
         path, ledger = dispositions[0]
         evidence = ledger.get("Evidence Checked", "")
-        evidence_du_ids = _du_tokens(evidence)
+        evidence_du_ids = du.extract_bundle_tokens(evidence)
         for bid in bundle_ids:
             if bid not in evidence_du_ids:
                 lint.fail(f"{path}: mapped Bundle ID {bid} missing from {eid} "
@@ -1564,7 +1510,7 @@ def stage_b4(lint, audit, stream, manifest=None):
         return
     plan, inventory, clusters = parsed
     if stream == "code":
-        check_defuse_b4(lint, audit, plan, inventory)
+        check_definition_use_b4(lint, audit, plan, inventory)
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
@@ -1740,7 +1686,7 @@ def stage_b6(lint, audit, stream, manifest):
     if total_new != splits:
         lint.fail(f"recheck merge: {total_new} new row(s) across registers but 'Splits declared: {splits}'")
     if stream == "code":
-        check_defuse_b6(lint, audit)
+        check_definition_use_b6(lint, audit)
 
 
 def non_link_identical(lint, st_rows, st_cols, sn_rows, base_cols, idc, link_col, rewrite_pairs, label):

@@ -342,7 +342,7 @@ def test_conventions_artifact_wrong_header_warns(tmp_path):
 # ---------------------- U2 definition/use handoffs (b4-code and b6-code)
 
 
-def _defuse_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
+def _definition_use_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
                evidence=None, include_artifact=True):
     mappings = mappings if mappings is not None else [
         (bid, "E-0101", "new_candidate") for bid in bundle_ids]
@@ -355,19 +355,19 @@ def _defuse_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
         clusters=[("K1", "definition/use", "E-0101",
                    "`audit/_code_error_recheck/k1.md`")],
         bundle_ids=bundle_ids, mappings=mappings,
-        include_defuse_artifact=include_artifact,
+        include_definition_use_artifact=include_artifact,
     )
 
 
-def test_b4_code_missing_defuse_artifact_fails(tmp_path):
-    a = _defuse_b4(tmp_path, bundle_ids=(), mappings=[],
+def test_b4_code_missing_definition_use_artifact_fails(tmp_path):
+    a = _definition_use_b4(tmp_path, bundle_ids=(), mappings=[],
                    include_artifact=False)
     res = rb.lint(a, "b4-code")
     assert res.returncode == 1
-    assert "defuse_bundles.md" in res.stdout and "missing" in res.stdout
+    assert "definition_use_bundles.md" in res.stdout and "missing" in res.stdout
 
 
-def test_b4_code_explicit_empty_defuse_artifact_passes(tmp_path):
+def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
     row = rb.error_row("E-0101", status="confirmed", severity="1")
     a = rb.make_b4(
         tmp_path, "code", canon_errors=[row],
@@ -378,6 +378,18 @@ def test_b4_code_explicit_empty_defuse_artifact_passes(tmp_path):
     )
     res = rb.lint(a, "b4-code")
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
+    a = _definition_use_b4(tmp_path)
+    path = a.audit / "_run" / "definition_use_bundles.md"
+    path.write_text(path.read_text().replace(
+        "- Standard candidates: 1", "- Standard candidates: 2"))
+
+    res = rb.lint(a, "b4-code")
+
+    assert res.returncode == 1
+    assert "Standard candidates count" in res.stdout
 
 
 def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
@@ -393,7 +405,7 @@ def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
     (package / "do").mkdir(parents=True)
     (package / "do" / "analysis.do").write_text("summarize wage\n")
     emitted = rb.run_script(
-        "emit_defuse_bundles.py", package, "--audit-dir", a.audit)
+        "emit_definition_use_bundles.py", package, "--audit-dir", a.audit)
     assert emitted.returncode == 0, emitted.stdout + emitted.stderr
     res = rb.lint(a, "b4-code")
     assert res.returncode == 0, res.stdout + res.stderr
@@ -406,15 +418,15 @@ def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
     ([('DU-aaa111', 'E-0999', 'new_candidate')], "DU-aaa111", "absent from the b4 inventory"),
     ([('DU-aaa111', 'E-0101', 'new_candidate')], "static source", "Likely Evidence"),
 ])
-def test_b4_code_rejects_broken_defuse_handoff(tmp_path, mappings, evidence, token):
-    a = _defuse_b4(tmp_path, mappings=mappings, evidence=evidence)
+def test_b4_code_rejects_broken_definition_use_handoff(tmp_path, mappings, evidence, token):
+    a = _definition_use_b4(tmp_path, mappings=mappings, evidence=evidence)
     res = rb.lint(a, "b4-code")
     assert res.returncode == 1
     assert token in res.stdout
 
 
 def test_b4_code_rejects_longer_prefix_in_inventory_evidence(tmp_path):
-    a = _defuse_b4(tmp_path, evidence="checked DU-aaa1114")
+    a = _definition_use_b4(tmp_path, evidence="checked DU-aaa1114")
     res = rb.lint(a, "b4-code")
     assert res.returncode == 1
     assert "Likely Evidence" in res.stdout and "DU-aaa111" in res.stdout
@@ -426,7 +438,7 @@ def test_b4_code_rejects_longer_prefix_in_inventory_evidence(tmp_path):
 ])
 def test_b4_code_new_candidate_mapping_enforces_row_shape(
         tmp_path, etype, status, token):
-    a = _defuse_b4(tmp_path)
+    a = _definition_use_b4(tmp_path)
     a.write_register(
         "code_error_register.md", rb.ERROR_COLS,
         [rb.error_row("E-0101", etype=etype, status=status, severity="2")])
@@ -435,7 +447,7 @@ def test_b4_code_new_candidate_mapping_enforces_row_shape(
     assert token in res.stdout
 
 
-def _defuse_b6(tmp_path, *, verdict="confirmed_error", final_status="confirmed",
+def _definition_use_b6(tmp_path, *, verdict="confirmed_error", final_status="confirmed",
                evidence="checked DU-aaa111 at do/build_panel.do:20",
                extra_ledger=(), bundle_ids=("DU-aaa111",)):
     before = [rb.error_row("E-0101", status="candidate", severity="2",
@@ -454,20 +466,20 @@ def _defuse_b6(tmp_path, *, verdict="confirmed_error", final_status="confirmed",
     )
 
 
-def test_b6_code_accepts_complete_defuse_handoff(tmp_path):
-    a = _defuse_b6(tmp_path)
+def test_b6_code_accepts_complete_definition_use_handoff(tmp_path):
+    a = _definition_use_b6(tmp_path)
     res = rb.lint(a, "b6-code")
     assert res.returncode == 0, res.stdout + res.stderr
 
 
 @pytest.mark.parametrize("stage", ["b4-code", "b6-code"])
-def test_many_defuse_bundles_may_map_to_one_canonical_error(tmp_path, stage):
+def test_many_definition_use_bundles_may_map_to_one_canonical_error(tmp_path, stage):
     bundle_ids = ("DU-aaa111", "DU-bbb222")
     evidence = "checked DU-aaa111 and DU-bbb222"
     if stage == "b4-code":
-        a = _defuse_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+        a = _definition_use_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
     else:
-        a = _defuse_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+        a = _definition_use_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
 
     res = rb.lint(a, stage)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -475,15 +487,15 @@ def test_many_defuse_bundles_may_map_to_one_canonical_error(tmp_path, stage):
 
 @pytest.mark.parametrize("stage", ["b4-code", "b6-code"])
 @pytest.mark.parametrize("omitted", ["DU-aaa111", "DU-bbb222"])
-def test_many_to_one_defuse_handoff_requires_every_bundle_in_evidence(
+def test_many_to_one_definition_use_handoff_requires_every_bundle_in_evidence(
         tmp_path, stage, omitted):
     bundle_ids = ("DU-aaa111", "DU-bbb222")
     present = next(bid for bid in bundle_ids if bid != omitted)
     evidence = f"checked {present}"
     if stage == "b4-code":
-        a = _defuse_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+        a = _definition_use_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
     else:
-        a = _defuse_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+        a = _definition_use_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
 
     res = rb.lint(a, stage)
     assert res.returncode == 1
@@ -491,14 +503,14 @@ def test_many_to_one_defuse_handoff_requires_every_bundle_in_evidence(
 
 
 def test_b6_code_requires_bundle_id_in_evidence_checked(tmp_path):
-    a = _defuse_b6(tmp_path, evidence="checked do/build_panel.do:20")
+    a = _definition_use_b6(tmp_path, evidence="checked do/build_panel.do:20")
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
     assert "DU-aaa111" in res.stdout and "Evidence Checked" in res.stdout
 
 
 def test_b6_code_rejects_longer_prefix_in_evidence_checked(tmp_path):
-    a = _defuse_b6(tmp_path, evidence="checked DU-aaa1114")
+    a = _definition_use_b6(tmp_path, evidence="checked DU-aaa1114")
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
     assert "DU-aaa111" in res.stdout and "Evidence Checked" in res.stdout
@@ -507,14 +519,14 @@ def test_b6_code_rejects_longer_prefix_in_evidence_checked(tmp_path):
 def test_b6_code_requires_unique_disposition(tmp_path):
     duplicate = rb.ledger_row("E-0101", evidence="DU-aaa111",
                               verdict="confirmed_error")
-    a = _defuse_b6(tmp_path, extra_ledger=[duplicate])
+    a = _definition_use_b6(tmp_path, extra_ledger=[duplicate])
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
     assert "exactly one disposition" in res.stdout
 
 
 def test_b6_code_requires_ledger_final_status_agreement(tmp_path):
-    a = _defuse_b6(tmp_path, verdict="not_error", final_status="confirmed")
+    a = _definition_use_b6(tmp_path, verdict="not_error", final_status="confirmed")
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
     assert "verdict 'not_error'" in res.stdout and "final status 'confirmed'" in res.stdout

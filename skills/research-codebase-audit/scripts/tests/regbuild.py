@@ -23,6 +23,11 @@ SCRIPTS_DIR = TESTS_DIR.parent
 SKILL_DIR = SCRIPTS_DIR.parent
 FIXTURE_DIR = SKILL_DIR / "fixture"
 
+# Path-loaded standalone scripts import sibling modules exactly as they do
+# under direct CLI execution.
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
 
 def load_script(name):
     """Import a scripts/ module by path (the scripts dir is not a package)."""
@@ -248,37 +253,50 @@ def recheck_plan_text(stream, inventory, clusters, mappings=()):
             + "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
 
 
-def defuse_artifact(bundle_ids=()):
-    rows = []
-    for i, bid in enumerate(bundle_ids, start=1):
-        rows.append([
-            f"`{bid}`", f"`(do/build_panel.do, {10+i}, {20+i}, consent_ok)`",
-            "consent_ok", "boolean_gen", f"`do/build_panel.do:{10+i}`",
-            "`gen consent_ok = consent != \"\"`",
-            f"`do/build_panel.do:{20+i}`",
-            "`keep if consent_ok == 1 & wave == 1`",
-            "`consent_ok == 1 & wave == 1`", "context", "review narrowing",
-        ])
-    table = md_table([
+def definition_use_artifact(bundle_ids=(), *, standard_bundle_ids=None,
+                            advisory_bundle_ids=(), files_scanned=1,
+                            producer_groups=None):
+    standard_bundle_ids = (bundle_ids if standard_bundle_ids is None
+                           else standard_bundle_ids)
+    producer_groups = (len(standard_bundle_ids) if producer_groups is None
+                       else producer_groups)
+
+    def rows_for(bundle_ids, variable):
+        rows = []
+        for i, bid in enumerate(bundle_ids, start=1):
+            rows.append([
+                f"`{bid}`", f"`(do/build_panel.do, {10+i}, {20+i}, {variable})`",
+                variable, "boolean_gen", f"`do/build_panel.do:{10+i}`",
+                f"`gen {variable} = consent != \"\"`",
+                f"`do/build_panel.do:{20+i}`",
+                f"`keep if {variable} == 1 & wave == 1`",
+                f"`{variable} == 1 & wave == 1`", "context", "review narrowing",
+            ])
+        return rows
+
+    standard_rows = rows_for(standard_bundle_ids, "consent_ok")
+    advisory_rows = rows_for(advisory_bundle_ids, "advisory_ok")
+    cols = [
         "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
         "Definition Site", "Producer Statement", "Consumer Site",
         "Consumer Statement", "Full Guard", "Code/Comment Context",
         "Obligation Question",
-    ], rows)
+    ]
+    standard_table = md_table(cols, standard_rows)
+    advisory_table = md_table(cols, advisory_rows)
     return (
         "# Stata definition/use bundles\n\n## Scan summary\n\n"
-        "- Stata files scanned: 1\n"
-        f"- Standard candidates: {len(rows)}\n"
-        "- Advisory candidates: 0\n\n"
-        "## Candidate findings\n\n" + table + "\n"
-        "## Advisory candidates\n\nNo advisory definition/use bundles found.\n"
+        f"- Stata files scanned: {files_scanned}\n"
+        f"- Standard producer groups (file + variable): {producer_groups}\n"
+        f"- Standard candidates: {len(standard_rows)}\n"
+        f"- Advisory candidates: {len(advisory_rows)}\n\n"
+        "## Candidate findings\n\n" + standard_table + "\n"
+        "## Advisory candidates\n\n" + advisory_table
     )
-
-
 def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
             canon_errors=(), inventory=None, clusters=None,
             review_depth="standard", bundle_ids=(), mappings=(),
-            include_defuse_artifact=True) -> AuditDir:
+            include_definition_use_artifact=True) -> AuditDir:
     """A minimal audit dir that reaches the b4-<stream> boundary.
 
     Canonical registers sit at ``audit/`` (b4 reads them via canon_ids). The
@@ -297,8 +315,8 @@ def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
         a.write_register("code_error_register.md", ERROR_COLS,
                          list(canon_errors), title="Code-error register")
         plan_name = "plans/code_error_recheck_plan.md"
-        if include_defuse_artifact:
-            a.write("_run/defuse_bundles.md", defuse_artifact(bundle_ids))
+        if include_definition_use_artifact:
+            a.write("_run/definition_use_bundles.md", definition_use_artifact(bundle_ids))
     if inventory is None or clusters is None:
         auto_inv, auto_clu = _auto_recheck(stream, canon_claims, canon_errors)
         inventory = auto_inv if inventory is None else inventory

@@ -85,14 +85,23 @@ def channel_artifact(*, p21=True, d03=True):
         ])
     return (
         "# Stata definition/use bundles\n\n## Scan summary\n\n"
-        f"- Standard candidates: {len(rows)}\n\n## Candidate findings\n\n"
+        "- Stata files scanned: 2\n"
+        "- Standard producer groups (file + variable): 2\n"
+        f"- Standard candidates: {len(rows)}\n"
+        "- Advisory candidates: 0\n\n## Candidate findings\n\n"
         + rb.md_table([
             "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
             "Definition Site", "Producer Statement", "Consumer Site",
             "Consumer Statement", "Full Guard", "Code/Comment Context",
             "Obligation Question",
         ], rows)
-        + "\n## Advisory candidates\n\nnone\n"
+        + "\n## Advisory candidates\n\n"
+        + rb.md_table([
+            "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+            "Definition Site", "Producer Statement", "Consumer Site",
+            "Consumer Statement", "Full Guard", "Code/Comment Context",
+            "Obligation Question",
+        ], [])
     )
 
 
@@ -292,8 +301,8 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
                           manifest_artifact=MANIFEST_ARTIFACT,
                           conventions=None, ledger_rows=None,
                           claims_original_cols=False,
-                          defuse_artifact="default", defuse_plan="default",
-                          defuse_ledgers="default"):
+                          definition_use_artifact="default", definition_use_plan="default",
+                          definition_use_ledgers="default"):
     audit = tmp_path / "audit"
     audit.mkdir(parents=True)
     if claims_original_cols:
@@ -319,22 +328,22 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
     if manifest_artifact is not None:
         (audit / "_run").mkdir(exist_ok=True)
         (audit / "_run" / "manifest_check.md").write_text(manifest_artifact)
-    if defuse_artifact == "default":
-        defuse_artifact = channel_artifact()
-    if defuse_artifact is not None:
+    if definition_use_artifact == "default":
+        definition_use_artifact = channel_artifact()
+    if definition_use_artifact is not None:
         (audit / "_run").mkdir(exist_ok=True)
-        (audit / "_run" / "defuse_bundles.md").write_text(defuse_artifact)
-    if defuse_plan == "default":
-        defuse_plan = channel_plan()
-    if defuse_plan is not None:
+        (audit / "_run" / "definition_use_bundles.md").write_text(definition_use_artifact)
+    if definition_use_plan == "default":
+        definition_use_plan = channel_plan()
+    if definition_use_plan is not None:
         (audit / "plans").mkdir(exist_ok=True)
-        (audit / "plans" / "code_error_recheck_plan.md").write_text(defuse_plan)
-    if defuse_ledgers == "default":
-        defuse_ledgers = channel_ledgers()
-    if defuse_ledgers is not None:
+        (audit / "plans" / "code_error_recheck_plan.md").write_text(definition_use_plan)
+    if definition_use_ledgers == "default":
+        definition_use_ledgers = channel_ledgers()
+    if definition_use_ledgers is not None:
         (audit / "_code_error_recheck").mkdir(exist_ok=True)
         (audit / "_code_error_recheck" / "k1.md").write_text(
-            rb.register_text("Recheck ledger", rb.LEDGER_COLS, defuse_ledgers))
+            rb.register_text("Recheck ledger", rb.LEDGER_COLS, definition_use_ledgers))
     if conventions is not None:
         (audit / "_run").mkdir(exist_ok=True)
         (audit / "_run" / "conventions.md").write_text(conventions)
@@ -621,21 +630,21 @@ def test_p21_below_min_severity_is_miss(tmp_path):
 # ------------------------------------ U2 definition/use channel attribution
 
 
-def test_defuse_channel_passes_for_p21_and_d03(tmp_path):
+def test_definition_use_channel_passes_for_p21_and_d03(tmp_path):
     audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "PASS", note
     assert P21_DU in note and D03_DU in note
 
 
-def test_defuse_channel_accepts_real_fixture_emitter_artifact(tmp_path):
+def test_definition_use_channel_accepts_real_fixture_emitter_artifact(tmp_path):
     """Integration: score the committed emitter's real P-21/D-03 artifact."""
     audit = write_final_registers(tmp_path, hit_claims_rows(), hit_error_rows())
     emitted = rb.run_script(
-        "emit_defuse_bundles.py", rb.FIXTURE_DIR / "planted",
+        "emit_definition_use_bundles.py", rb.FIXTURE_DIR / "planted",
         "--audit-dir", audit)
     assert emitted.returncode == 0, emitted.stdout + emitted.stderr
-    text = (audit / "_run" / "defuse_bundles.md").read_text()
+    text = (audit / "_run" / "definition_use_bundles.md").read_text()
     section = text.partition("## Candidate findings")[2].split("\n## ", 1)[0]
     headers, rows = sf._table_with_headers(
         section, ["Bundle ID", "Variable", "Definition Site", "Consumer Site"])
@@ -648,96 +657,109 @@ def test_defuse_channel_accepts_real_fixture_emitter_artifact(tmp_path):
         rb.register_text(
             "Recheck ledger", rb.LEDGER_COLS,
             channel_ledgers(p21_du=p21_du, d03_du=d03_du)))
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "PASS", note
 
 
-def test_defuse_channel_rejects_longer_prefix_inventory_evidence(tmp_path):
+def test_definition_use_channel_rejects_longer_prefix_inventory_evidence(tmp_path):
     plan = channel_plan().replace(
         f"| E-0021 | definition/use issue | {P21_DU} |",
         f"| E-0021 | definition/use issue | {P21_DU}4 |",
     )
     audit = write_final_registers(
-        tmp_path, hit_claims_rows(), hit_error_rows(), defuse_plan=plan)
-    status, note = sf.check_channel_defuse(audit)
+        tmp_path, hit_claims_rows(), hit_error_rows(), definition_use_plan=plan)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "Likely Evidence" in note and P21_DU in note
 
 
-def test_defuse_channel_rejects_longer_prefix_ledger_evidence(tmp_path):
+def test_definition_use_channel_rejects_longer_prefix_ledger_evidence(tmp_path):
     ledgers = channel_ledgers()
     ledgers[0][3] = P21_DU + "4"
     audit = write_final_registers(
-        tmp_path, hit_claims_rows(), hit_error_rows(), defuse_ledgers=ledgers)
-    status, note = sf.check_channel_defuse(audit)
+        tmp_path, hit_claims_rows(), hit_error_rows(), definition_use_ledgers=ledgers)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "Evidence Checked" in note and P21_DU in note
 
 
 @pytest.mark.parametrize("kwargs, expected", [
-    ({"defuse_artifact": None}, "artifact"),
-    ({"defuse_artifact": channel_artifact(p21=False)}, "P-21"),
-    ({"defuse_plan": channel_plan(map_p21=False)}, "mapping"),
-    ({"defuse_plan": channel_plan(p21_evidence=False)}, "Likely Evidence"),
-    ({"defuse_ledgers": channel_ledgers(p21_evidence=False)}, "Evidence Checked"),
-    ({"defuse_ledgers": channel_ledgers(p21_verdict="not_error")}, "confirmed_error"),
-    ({"defuse_ledgers": channel_ledgers(d03_verdict="confirmed_error")}, "not_error"),
+    ({"definition_use_artifact": None}, "artifact"),
+    ({"definition_use_artifact": channel_artifact(p21=False)}, "P-21"),
+    ({"definition_use_plan": channel_plan(map_p21=False)}, "mapping"),
+    ({"definition_use_plan": channel_plan(p21_evidence=False)}, "Likely Evidence"),
+    ({"definition_use_ledgers": channel_ledgers(p21_evidence=False)}, "Evidence Checked"),
+    ({"definition_use_ledgers": channel_ledgers(p21_verdict="not_error")}, "confirmed_error"),
+    ({"definition_use_ledgers": channel_ledgers(d03_verdict="confirmed_error")}, "not_error"),
 ])
-def test_defuse_channel_rejects_broken_handoff_or_verdict(tmp_path, kwargs, expected):
+def test_definition_use_channel_rejects_broken_handoff_or_verdict(tmp_path, kwargs, expected):
     audit = write_final_registers(
         tmp_path, hit_claims_rows(), hit_error_rows(), **kwargs)
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert expected in note
 
 
-def test_defuse_channel_rejects_d03_issue_final_status(tmp_path):
+def test_definition_use_channel_reports_malformed_artifact(tmp_path):
+    malformed = channel_artifact().replace(
+        "- Standard candidates: 2", "- Standard candidates: 3")
+    audit = write_final_registers(
+        tmp_path, hit_claims_rows(), hit_error_rows(),
+        definition_use_artifact=malformed)
+
+    status, note = sf.check_channel_definition_use(audit)
+
+    assert status == "FAIL"
+    assert "malformed" in note and "Standard candidates count" in note
+
+
+def test_definition_use_channel_rejects_d03_issue_final_status(tmp_path):
     errors = [r for r in hit_error_rows() if r[0] != "E-0090"]
     errors.append(rb.error_row(
         "E-0090", etype="sample_filter_or_flag_error", status="confirmed",
         severity="2", source="`do/analysis.do`", location="`do/analysis.do:13-16`",
         desc="baseline_diag_ok baseline-wave diagnostic is an error"))
     audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "D-03" in note and "not_error" in note
 
 
-def test_defuse_channel_rejects_d03_claim_issue_row(tmp_path):
+def test_definition_use_channel_rejects_d03_claim_issue_row(tmp_path):
     claims = hit_claims_rows() + [rb.claims_row(
         "C-0090", status="inconsistent", severity="2",
         ctype="data_construction",
         issue=("baseline_diag_ok baseline-wave-only diagnostic wrongly "
                "narrows the estimation sample"))]
     audit = write_final_registers(tmp_path, claims, hit_error_rows())
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "D-03" in note and "issue row" in note
 
 
-def test_defuse_channel_rejects_d03_issue_at_source_location(tmp_path):
+def test_definition_use_channel_rejects_d03_issue_at_source_location(tmp_path):
     errors = hit_error_rows() + [rb.error_row(
         "E-0091", etype="sample_filter_or_flag_error", status="confirmed",
         severity="2", source="`do/analysis.do`", location="`do/analysis.do:13`",
         desc="A temporary marker is incorrectly reported as narrowing the sample")]
     audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "D-03" in note and "issue row" in note
 
 
-def test_defuse_channel_rejects_p21_nonissue_final_status(tmp_path):
+def test_definition_use_channel_rejects_p21_nonissue_final_status(tmp_path):
     errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
     errors.append(rb.error_row(
         "E-0021", etype="sample_filter_or_flag_error", status="not_error",
         severity="", desc="consent_ok reviewed and cleared"))
     audit = write_final_registers(tmp_path, hit_claims_rows(), errors)
-    status, note = sf.check_channel_defuse(audit)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "P-21" in note and "confirmed" in note
 
 
-def test_defuse_channel_accepts_explicit_duplicate_to_equivalent_issue(tmp_path):
+def test_definition_use_channel_accepts_explicit_duplicate_to_equivalent_issue(tmp_path):
     errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
     errors.extend([
         rb.error_row("E-0021", etype="sample_filter_or_flag_error",
@@ -754,12 +776,12 @@ def test_defuse_channel_accepts_explicit_duplicate_to_equivalent_issue(tmp_path)
         "E-0021", evidence=P21_DU, verdict="confirmed_error",
         change="set status=duplicate_of:E-0022")
     audit = write_final_registers(
-        tmp_path, hit_claims_rows(), errors, defuse_ledgers=ledgers)
-    status, note = sf.check_channel_defuse(audit)
+        tmp_path, hit_claims_rows(), errors, definition_use_ledgers=ledgers)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "PASS", note
 
 
-def test_defuse_channel_duplicate_rejects_not_error_verdict(tmp_path):
+def test_definition_use_channel_duplicate_rejects_not_error_verdict(tmp_path):
     errors = [r for r in hit_error_rows() if r[0] != "E-0021"]
     errors.extend([
         rb.error_row("E-0021", etype="sample_filter_or_flag_error",
@@ -772,16 +794,16 @@ def test_defuse_channel_duplicate_rejects_not_error_verdict(tmp_path):
     ledgers = channel_ledgers(p21_verdict="not_error")
     ledgers[0][6] = "set status=duplicate_of:E-0022"
     audit = write_final_registers(
-        tmp_path, hit_claims_rows(), errors, defuse_ledgers=ledgers)
-    status, note = sf.check_channel_defuse(audit)
+        tmp_path, hit_claims_rows(), errors, definition_use_ledgers=ledgers)
+    status, note = sf.check_channel_definition_use(audit)
     assert status == "FAIL"
     assert "confirmed_error" in note
 
 
-def test_broken_defuse_channel_turns_integrated_gate_red(tmp_path):
+def test_broken_definition_use_channel_turns_integrated_gate_red(tmp_path):
     audit = write_final_registers(
         tmp_path, hit_claims_rows(), hit_error_rows(),
-        defuse_plan=channel_plan(map_d03=False))
+        definition_use_plan=channel_plan(map_d03=False))
     res = run_scorer(audit)
     assert res.returncode == 1
     assert "Definition/use channel: FAIL" in res.stdout

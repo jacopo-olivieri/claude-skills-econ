@@ -16,8 +16,8 @@ def make_pkg(tmp_path, text):
 def run_emitter(tmp_path, text):
     root = make_pkg(tmp_path, text)
     audit = root / "review-output"
-    res = rb.run_script("emit_defuse_bundles.py", root, "--audit-dir", audit)
-    artifact = audit / "_run" / "defuse_bundles.md"
+    res = rb.run_script("emit_definition_use_bundles.py", root, "--audit-dir", audit)
+    artifact = audit / "_run" / "definition_use_bundles.md"
     return res, artifact.read_text(encoding="utf-8") if artifact.is_file() else None
 
 
@@ -153,7 +153,7 @@ drop if eligible == 0 & missing(score)
 
 
 def test_injected_hash_collision_fails_loudly(tmp_path, monkeypatch):
-    emitter = rb.load_script("emit_defuse_bundles")
+    emitter = rb.load_script("emit_definition_use_bundles")
     root = make_pkg(tmp_path, """
 gen eligible = (score >= 10)
 keep if eligible == 1 & wave == 1
@@ -175,8 +175,8 @@ def test_zero_bundle_artifact_is_populated_and_excludes_audit_workspace(tmp_path
         "gen bad = (x == 1)\nkeep if bad == 1 & wave == 1\n",
         encoding="utf-8",
     )
-    res = rb.run_script("emit_defuse_bundles.py", root, "--audit-dir", audit)
-    art = (audit / "_run" / "defuse_bundles.md").read_text(encoding="utf-8")
+    res = rb.run_script("emit_definition_use_bundles.py", root, "--audit-dir", audit)
+    art = (audit / "_run" / "definition_use_bundles.md").read_text(encoding="utf-8")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Stata files scanned: 1" in art
     assert "Standard candidates: 0" in art

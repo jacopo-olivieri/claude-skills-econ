@@ -155,8 +155,8 @@ status carries no findings; if the artifact reports no candidates, nothing is ad
 
 **Definition/use detector (conductor-invoked script; adds mechanical candidates before the plan
 is frozen).** Beside `check_manifests.py`, run
-`emit_defuse_bundles.py <package_root> --audit-dir audit`. The script always writes
-`audit/_run/defuse_bundles.md`, including when no qualifying Stata bundle exists. For every
+`emit_definition_use_bundles.py <package_root> --audit-dir audit`. The script always writes
+`audit/_run/definition_use_bundles.md`, including when no qualifying Stata bundle exists. For every
 standard (non-advisory) `DU-…` row, add exactly one row to a
 `## Definition/use bundle mapping` table in `code_error_recheck_plan.md`:
 

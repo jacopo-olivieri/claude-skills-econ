@@ -80,3 +80,20 @@ done < <(
 )
 
 echo "done: $linked skill(s) linked into $DEST"
+
+# Link any Claude subagent definitions (skills/*/agents/claude/*.md) into
+# ~/.claude/agents so Claude Code can invoke them by name. These are install-time
+# artifacts, not part of the plugin manifest.
+AGENTS_DEST="$HOME/.claude/agents"
+mkdir -p "$AGENTS_DEST"
+agents_linked=0
+while IFS= read -r -d '' agent_md; do
+  ln -sfn "$agent_md" "$AGENTS_DEST/$(basename "$agent_md")"
+  agents_linked=$((agents_linked + 1))
+done < <(
+  find "$REPO/skills" -path '*/agents/claude/*.md' \
+    -not -path '*/deprecated/*' \
+    -not -path '*/in-progress/*' \
+    -print0
+)
+echo "done: $agents_linked Claude agent definition(s) linked into $AGENTS_DEST"

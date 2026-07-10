@@ -7,6 +7,7 @@ description: >-
   sequentially into shared notes, and return a polished five-part summary. Use
   when the user wants a full paper summary.
 disable-model-invocation: true
+allowed-tools: Bash(python3 *) Bash(marker_single *) Bash(rg *)
 ---
 
 # Paper Summary

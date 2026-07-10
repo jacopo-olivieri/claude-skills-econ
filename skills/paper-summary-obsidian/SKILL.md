@@ -7,6 +7,7 @@ description: >-
   update, or sync an Obsidian paper note from a Zotero item; do not use to
   summarise a paper from scratch.
 disable-model-invocation: true
+allowed-tools: Bash(python3 *)
 ---
 
 # Paper Summary Obsidian

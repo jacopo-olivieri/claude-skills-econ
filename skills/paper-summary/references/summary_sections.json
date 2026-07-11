@@ -1,5 +1,5 @@
 {
-  "_README": "Single source of truth for the five-part summary structure (R9). Consumed by paper-summary-obsidian/scripts/save_paper_summary.py (which keeps these values as an embedded fallback so a missing file does not brick the save) and cited by notes_template.md and both SKILL.md files. Section numbers 1-5 map to the numbered summary markers; fold_heading is the exact Obsidian note heading; aliases are the accepted fuzzy matches for a section marker's title.",
+  "_README": "Single source of truth for the five-part summary structure (R9). Consumed by paper-summary-obsidian/scripts/save_paper_summary.py (companion skill, distributed separately; it keeps these values as an embedded fallback so a missing file does not brick the save) and cited by notes_template.md and both SKILL.md files. Section numbers 1-5 map to the numbered summary markers; fold_heading is the exact Obsidian note heading; aliases are the accepted fuzzy matches for a section marker's title.",
   "synthesis_marker": "synthesis of findings",
   "sections": [
     {

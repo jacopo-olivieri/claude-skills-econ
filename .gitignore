@@ -1,6 +1,12 @@
 __pycache__/
 *.pyc
-docs/
+docs/*
+!docs/maintaining.md
 .pytest_cache/
 .worktrees/
 CLAUDE.local.md
+
+# Local-only eval scorecards (recorded under docs/rca-scorecards/)
+skills/research-codebase-audit/fixture/score-*.md
+skills/research-codebase-audit/fixture/measurement-*.md
+skills/research-codebase-audit/fixture/last_run_score.md

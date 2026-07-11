@@ -1,6 +1,6 @@
-# Repo conventions — claude-skills-econ
+# Repo conventions — empirical-research-skills
 
-This repo is a shareable, plugin-installable collection of Claude Code skills for
+This repo is a shareable, plugin-installable collection of agent skills for
 economics/research. When working in it:
 
 ## Layout
@@ -20,6 +20,10 @@ economics/research. When working in it:
    `TEMPLATE-SKILL.md`). Make `description` trigger-focused ("Use when …").
 2. Add its path to `plugin.json`.
 3. Run `bash scripts/link-skills.sh` to symlink it into `~/.claude/skills`.
+
+## Machine-specific maintenance
+Shared-skill migration (`link-shared-skill.sh`) and Stata live-test invocations
+are documented in `docs/maintaining.md`.
 
 ## Only publish self-authored skills
 `~/.claude/skills` on this machine also contains third-party skills installed

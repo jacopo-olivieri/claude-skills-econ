@@ -13,8 +13,9 @@ allowed-tools: Bash(python3 *) Bash(docling *) Bash(mineru *) Bash(rg *)
 # Paper Summary
 
 Turn an economics paper into an evidence-anchored, five-part summary held in a
-reusable local workspace. The companion skill `paper-summary-obsidian` saves a
-finished summary into the Obsidian vault (see Handoff below).
+reusable local workspace. The companion skill `paper-summary-obsidian`
+(distributed separately) can save a finished summary into an Obsidian vault
+(see Handoff below).
 
 ## Scope
 
@@ -171,10 +172,11 @@ content in chat and include the saved path.
   `Intuition:` use, synthesis length, two-tier style) lives in
   [references/notes_template.md](references/notes_template.md). Follow it there.
 
-## Handoff to paper-summary-obsidian
+## Handoff to a save skill (optional)
 
-To save a finished summary into the Obsidian vault, hand off to the
-`paper-summary-obsidian` skill with:
+If the `paper-summary-obsidian` companion skill (distributed separately) is
+installed, a finished summary can be saved into the Obsidian vault by handing
+off to it with:
 
 - the summary text — the workspace's `notes.md`;
 - the paper's Zotero item key (and citation key).

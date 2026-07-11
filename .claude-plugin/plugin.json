@@ -1,6 +1,6 @@
 {
-  "name": "claude-skills-econ",
-  "description": "Jacopo Olivieri's Claude Code skills for economics & research.",
+  "name": "empirical-research-skills",
+  "description": "Agent skills for economics and empirical research, for Claude Code and Codex.",
   "version": "0.1.0",
   "author": {
     "name": "Jacopo Olivieri"
@@ -8,7 +8,6 @@
   "skills": [
     "./skills/research-codebase-audit",
     "./skills/paper-summary",
-    "./skills/paper-summary-obsidian",
     "./skills/stata"
   ]
 }

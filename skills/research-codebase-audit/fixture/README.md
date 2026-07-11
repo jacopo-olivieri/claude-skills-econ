@@ -100,7 +100,10 @@ python scripts/score_fixture.py --audit-dir /path/to/pkg/audit
 
 Exit 0 = GATE GREEN, 1 = GATE RED. Type adjudication and the
 `expected_confirmed_examples` cleanliness checks remain hand-scored; record the
-scorer output in the dated scorecard either way.
+scorer output in the dated scorecard either way. Dated scorecards
+(`score-<date>-*.md`, `measurement-*.md`, `last_run_score.md`) are development
+records kept locally under `docs/rca-scorecards/`; they are not committed to
+this fixture directory.
 
 ## Test harness
 

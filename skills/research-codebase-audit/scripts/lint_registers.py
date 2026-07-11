@@ -19,6 +19,8 @@ import re
 import sys
 from pathlib import Path
 
+import definition_use as du
+
 # --------------------------------------------------------------- constants
 
 CLAIMS_COLS = [
@@ -95,7 +97,6 @@ CONVENTION_CATEGORIES = {
     "missing_value_sentinel", "unit_or_scale_factor", "path_separator",
     "id_or_merge_key", "enumerated_member_list",
 }
-
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
 RANGE_RE = re.compile(r"([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
 COORD_RE = re.compile(r"Merge-coordinator range:\s*([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
@@ -686,6 +687,37 @@ def parse_plan(lint, path, key_col):
     return None, []
 
 
+def check_manifest_worker_shards(lint, manifest, stage_key, plan, key_col,
+                                 allocations=None):
+    """A worker stage with planned work must record manifest shard evidence.
+
+    The boundary lint runs before the conductor changes ``running`` to
+    ``done``, so stage status cannot guard this check.  ``allocations`` lets
+    b3b reuse the plan it already parsed; b6 supplies no allocation so the
+    recheck cluster table is read here.
+    """
+    if allocations is None:
+        allocations, _ = parse_plan(lint, plan, key_col)
+    if allocations is None:
+        return
+    worker_count = len(allocations)
+    if not worker_count:
+        return
+
+    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
+    entry = stages.get(stage_key) if isinstance(stages, dict) else None
+    if not isinstance(entry, dict):
+        lint.fail(
+            f"manifest stage '{stage_key}' is missing, but {plan} lists "
+            f"{worker_count} planned worker(s)"
+        )
+    elif not entry.get("shards"):
+        lint.fail(
+            f"manifest stage '{stage_key}' has no shards, but "
+            f"{plan} lists {worker_count} planned worker(s)"
+        )
+
+
 def alloc_ranges(lint, path, alloc, range_cols):
     ranges = []
     for row in alloc:
@@ -987,7 +1019,7 @@ def stage_b3(lint, audit, stream):
                 lint.fail(f"{report_path}: '{reg}' must carry list-valued '{key}'")
 
 
-def stage_b3b(lint, audit, stream):
+def stage_b3b(lint, audit, stream, manifest):
     """Second-read recall sweep merge: new rows only, all unverified candidates, no b3 row
     deleted or mutated. Compares staging against the pre-sweep (b3b) snapshot."""
     snap = audit / "_run" / "snapshots" / SNAP_KEY[f"b3b-{stream}"]
@@ -1010,6 +1042,9 @@ def stage_b3b(lint, audit, stream):
         b1_plan = audit / "plans" / "code_error_review_plan.md"
         b1_alloc, b1_coord = parse_plan(lint, b1_plan, "Chunk ID")
         b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Error ID Range"]) if b1_alloc else []
+    check_manifest_worker_shards(
+        lint, manifest, f"{stream}_b3b", plan, "Worker ID", alloc,
+    )
     # machinery (a): b3b ranges disjoint from b1 ranges, the merge-coordinator range, and each other
     check_disjoint(lint, plan, ranges + b1_ranges + b1_coord)
 
@@ -1196,6 +1231,175 @@ def parse_recheck_plan(lint, audit, stream):
     return plan, inventory, clusters
 
 
+def parse_definition_use_artifact(lint, audit):
+    """Return standard Bundle IDs from the required b4 detector artifact."""
+    path = audit / "_run" / "definition_use_bundles.md"
+    text = read_text(lint, path)
+    if text is None:
+        lint.fail(f"{path}: missing required b4 definition/use artifact")
+        return None
+    try:
+        artifact = du.parse_artifact(text)
+    except du.DefinitionUseFormatError as exc:
+        lint.fail(f"{path}: {exc}")
+        return None
+    return [row["Bundle ID"] for row in artifact.standard_rows]
+
+
+def parse_definition_use_mappings(lint, plan):
+    """Return rows from the code recheck plan's exact mapping table."""
+    text = read_text(lint, plan)
+    if text is None:
+        return []
+    try:
+        return du.parse_mappings(text)
+    except du.DefinitionUseFormatError as exc:
+        lint.fail(f"{plan}: {exc}")
+        return []
+
+
+def check_definition_use_b4(lint, audit, plan, inventory):
+    bundle_ids = parse_definition_use_artifact(lint, audit)
+    if bundle_ids is None:
+        return
+    mappings = parse_definition_use_mappings(lint, plan)
+    by_bundle = {}
+    for row in mappings:
+        bid, eid, kind = row["Bundle ID"], row["Error ID"], row["Mapping Kind"]
+        by_bundle.setdefault(bid, []).append(row)
+        if kind not in du.MAPPING_KINDS:
+            lint.fail(f"{plan}: Bundle ID {bid} has invalid Mapping Kind '{kind}'")
+        if not re.fullmatch(ID_RE["E"], eid):
+            lint.fail(f"{plan}: Bundle ID {bid} has invalid Error ID '{eid}'")
+        if bid not in bundle_ids:
+            lint.fail(f"{plan}: mapping names {bid}, which is not a standard bundle "
+                      "in definition_use_bundles.md")
+    for bid in bundle_ids:
+        count = len(by_bundle.get(bid, []))
+        if count == 0:
+            lint.fail(f"{plan}: standard Bundle ID {bid} is unmapped")
+        elif count != 1:
+            lint.fail(f"{plan}: standard Bundle ID {bid} is mapped {count} times "
+                      "(expected exactly once)")
+
+    inv_by_id = {}
+    for row in inventory:
+        inv_by_id.setdefault(row.get("ID", ""), []).append(row)
+    register = load_register(lint, audit / "code_error_register.md", ERROR_COLS)
+    canonical = {}
+    if register:
+        canonical = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                     dict(zip(ERROR_COLS, row)) for row in register[1]}
+    for bid, rows in by_bundle.items():
+        if len(rows) != 1 or bid not in bundle_ids:
+            continue
+        eid = rows[0]["Error ID"]
+        inv_rows = inv_by_id.get(eid, [])
+        if len(inv_rows) != 1:
+            lint.fail(f"{plan}: Bundle ID {bid} maps to {eid}, which is absent "
+                      "from the b4 inventory")
+            continue
+        if bid not in du.extract_bundle_tokens(
+                inv_rows[0].get("Likely Evidence", "")):
+            lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
+                      f"mapped Bundle ID {bid}")
+        if rows[0]["Mapping Kind"] == "new_candidate":
+            canonical_row = canonical.get(eid)
+            if canonical_row is None:
+                continue  # canon_ids reports this independently
+            if canonical_row.get("Status") != "candidate":
+                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be a "
+                          "candidate canonical row")
+            if canonical_row.get("Error Type") != "sample_filter_or_flag_error":
+                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be typed "
+                          "sample_filter_or_flag_error")
+
+
+def _all_code_recheck_ledger_rows(lint, audit):
+    rows = []
+    root = audit / "_code_error_recheck"
+    if not root.is_dir():
+        return rows
+    for path in sorted(root.rglob("*.md")):
+        text = read_text(lint, path)
+        if text is None:
+            continue
+        for headers, table_rows, _ in parse_tables(text):
+            if headers == LEDGER_COLS:
+                rows.extend((path, dict(zip(headers, row)))
+                            for row in table_rows if len(row) == len(headers))
+    return rows
+
+
+def check_definition_use_b6(lint, audit):
+    plan = recheck_plan_path(audit, "code")
+    mappings = parse_definition_use_mappings(lint, plan)
+    if not mappings:
+        return
+    mapped = {}
+    for row in mappings:
+        mapped.setdefault(row["Error ID"], []).append(row["Bundle ID"])
+    ledger_rows = _all_code_recheck_ledger_rows(lint, audit)
+    ledgers_by_id = {}
+    for path, row in ledger_rows:
+        ledgers_by_id.setdefault(row.get("ID", ""), []).append((path, row))
+    final = load_register(lint, audit / "_staging" / "code_error_register.md",
+                          ERROR_COLS)
+    final_by_id = {}
+    if final:
+        final_by_id = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                       dict(zip(ERROR_COLS, row)) for row in final[1]}
+
+    expected_status = {
+        "confirmed_error": "confirmed",
+        "not_error": "not_error",
+        "confirmation_needed": "confirmation_needed",
+        "blocked": "blocked",
+        "deferred": "blocked",
+    }
+    for eid, bundle_ids in mapped.items():
+        dispositions = ledgers_by_id.get(eid, [])
+        if len(dispositions) != 1:
+            lint.fail(f"{plan}: mapped Error ID {eid} has {len(dispositions)} ledger "
+                      "rows (expected exactly one disposition)")
+            continue
+        path, ledger = dispositions[0]
+        evidence = ledger.get("Evidence Checked", "")
+        evidence_du_ids = du.extract_bundle_tokens(evidence)
+        for bid in bundle_ids:
+            if bid not in evidence_du_ids:
+                lint.fail(f"{path}: mapped Bundle ID {bid} missing from {eid} "
+                          "Evidence Checked")
+        final_row = final_by_id.get(eid)
+        if final_row is None:
+            lint.fail(f"{plan}: mapped Error ID {eid} absent from final staging register")
+            continue
+        status = final_row.get("Status", "")
+        verdict = ledger.get("Verdict", "")
+        duplicate = re.fullmatch(r"duplicate_of:(E-\d{4})", status)
+        if duplicate:
+            target = duplicate.group(1)
+            proposal = (ledger.get("Proposed Register Change", "") + " "
+                        + ledger.get("Proposed Note", ""))
+            target_row = final_by_id.get(target)
+            if verdict != "confirmed_error":
+                lint.fail(f"{path}: duplicate disposition for {eid} requires ledger "
+                          f"verdict 'confirmed_error', found '{verdict}'")
+            if status not in proposal:
+                lint.fail(f"{path}: duplicate disposition for {eid} does not explicitly "
+                          f"name equivalent canonical issue row {target}")
+            if target_row is None or target_row.get("Status") != "confirmed":
+                lint.fail(f"{path}: duplicate target {target} is not a confirmed final "
+                          "code-error issue row")
+            continue
+        wanted = expected_status.get(verdict)
+        if wanted is None:
+            lint.fail(f"{path}: mapped Error ID {eid} has invalid code verdict '{verdict}'")
+        elif status != wanted:
+            lint.fail(f"{path}: mapped Error ID {eid} verdict '{verdict}' requires "
+                      f"final status '{wanted}', found final status '{status}'")
+
+
 def canon_ids(lint, audit, stream):
     ids = set()
     if stream == "claims":
@@ -1311,6 +1515,8 @@ def stage_b4(lint, audit, stream, manifest=None):
     if parsed is None:
         return
     plan, inventory, clusters = parsed
+    if stream == "code":
+        check_definition_use_b4(lint, audit, plan, inventory)
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
@@ -1428,6 +1634,10 @@ def register_files(audit, stream):
 
 
 def stage_b6(lint, audit, stream, manifest):
+    check_manifest_worker_shards(
+        lint, manifest, f"{stream}_b5", recheck_plan_path(audit, stream),
+        "Cluster ID",
+    )
     snap = audit / "_run" / "snapshots" / SNAP_KEY[f"b6-{stream}"]
     staging = audit / "_staging"
     summary = audit / ("claims_recheck_summary.md" if stream == "claims" else "code_error_recheck_summary.md")
@@ -1481,6 +1691,8 @@ def stage_b6(lint, audit, stream, manifest):
                     lint.fail(f"{staging / f}: 'candidate' status must not survive the recheck merge")
     if total_new != splits:
         lint.fail(f"recheck merge: {total_new} new row(s) across registers but 'Splits declared: {splits}'")
+    if stream == "code":
+        check_definition_use_b6(lint, audit)
 
 
 def non_link_identical(lint, st_rows, st_cols, sn_rows, base_cols, idc, link_col, rewrite_pairs, label):
@@ -1954,7 +2166,7 @@ def main() -> int:
         if args.shard is not None:
             stage_b3b_shard(lint, audit, stream, args.shard)
         else:
-            stage_b3b(lint, audit, stream)
+            stage_b3b(lint, audit, stream, manifest)
     elif n == "b4":
         stage_b4(lint, audit, stream, manifest)
     elif n == "b5":

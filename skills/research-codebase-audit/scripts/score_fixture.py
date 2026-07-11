@@ -58,6 +58,11 @@ Rules encoded here:
     only, never gate-settling — the b3c consolidation and grep-term choice
     are worker-dependent (KTD-8), so this line feeds diagnosis, not the
     verdict.
+  * Definition/use channel: P-21 and D-03 are located by their fixture source
+    sites in ``definition_use_bundles.md`` and traced through b4 mapping/inventory,
+    code recheck ledger, and final code-error register. P-21 must finish as a
+    confirmed severity>=2 issue (or explicit duplicate to an equivalent one);
+    D-03 must finish ``not_error`` with no surviving issue row.
 
 Not enforced here (still scorecard/reviewer territory): expected_type
 adjudication and the ``expected_confirmed_examples`` cleanliness checks.
@@ -74,6 +79,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+import definition_use as du
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -128,9 +135,11 @@ SIGNATURES = {
              ["never", "only", "already", "non-missing", "nonmissing",
               "excl", "does not fill", "doesn't fill", "not fill", "< .",
               "present"]],
-    "P-18": [["has_wages"],
+    "P-18": [["has_wages", "wage indicator", "wage-indicator", "wage flag",
+              "wage_flag", "wages indicator", "wages flag"],
              ["overwrit", "overwrite", "erase", "clobber", "last", "reset",
-              "final", "each iteration", "replaces"]],
+              "final", "each iteration", "replaces"],
+             ["loop", "iteration", "wave"]],
     "P-19": [["winsor"],
              ["wage_earnings", "wage earnings"],
              ["crop_sales", "crop sales"]],
@@ -201,6 +210,23 @@ REGISTERS = [
     ("code_error_register.md", "Error ID"),
     ("output_register.md", "Output ID"),
 ]
+LEDGER_COLS = [
+    "ID", "Current Status", "Current Severity", "Evidence Checked",
+    "Evidence Level", "Verdict", "Proposed Register Change",
+    "Pipeline/Output Impact", "Proposed Note",
+]
+DEFINITION_USE_LOCATORS = {
+    "P-21": {
+        "variable": "consent_ok",
+        "definition": "do/build_panel.do:15",
+        "consumer": "do/build_panel.do:18",
+    },
+    "D-03": {
+        "variable": "baseline_diag_ok",
+        "definition": "do/analysis.do:13",
+        "consumer": "do/analysis.do:14",
+    },
+}
 
 
 # --------------------------------------------------------------- md parsing
@@ -376,7 +402,12 @@ def check_decoy(terms, quals, tagged_rows, summary_text):
         return False
     found = []
     for kind, id_col, d in tagged_rows:
-        if trips(row_text(d)):
+        # Precision decoys are forbidden as surviving issues, not as an audit
+        # trail showing that a tempting candidate was reviewed and cleared.
+        status = (d.get("Status") or "").strip()
+        if status == "not_error" or status.startswith("duplicate_of:"):
+            continue
+        if qualifies(kind, d) and trips(row_text(d)):
             found.append(describe(kind, id_col, d))
     if summary_text and trips(summary_text.lower()):
         found.append("register_cross_link_summary.md")
@@ -431,6 +462,169 @@ def check_artifact_manifest(audit):
         return "PASS", f"_run/manifest_check.md names {MANIFEST_PLANT}"
     return "FAIL", (f"_run/manifest_check.md does not name {MANIFEST_PLANT} "
                     "in its Candidate findings")
+
+
+def _table_with_headers(text, required, exact=False):
+    for headers, rows in parse_tables(text):
+        if (headers == required if exact else set(required) <= set(headers)):
+            return headers, [r for r in rows if len(r) == len(headers)]
+    return None, None
+
+
+def check_channel_definition_use(audit):
+    """Trace P-21 and D-03 through artifact, b4, ledger, and final register."""
+    artifact = audit / "_run" / "definition_use_bundles.md"
+    if not artifact.is_file():
+        return "FAIL", f"definition/use artifact not found: {artifact}"
+    text = artifact.read_text(encoding="utf-8", errors="replace")
+    try:
+        parsed_artifact = du.parse_artifact(text)
+    except du.DefinitionUseFormatError as exc:
+        return "FAIL", f"definition/use artifact is malformed: {exc}"
+    artifact_rows = parsed_artifact.standard_rows
+    located = {}
+    for label, locator in DEFINITION_USE_LOCATORS.items():
+        matches = []
+        for row in artifact_rows:
+            if (du.normalize_cell(row.get("Variable", "")) == locator["variable"]
+                    and du.normalize_cell(row.get("Definition Site", "")) == locator["definition"]
+                    and du.normalize_cell(row.get("Consumer Site", "")) == locator["consumer"]):
+                matches.append(du.normalize_cell(row.get("Bundle ID", "")))
+        if len(matches) != 1 or not re.fullmatch(r"DU-[0-9A-Za-z]+", matches[0] if matches else ""):
+            return ("FAIL", f"{label} bundle not uniquely located at "
+                    f"{locator['definition']} -> {locator['consumer']}")
+        located[label] = matches[0]
+
+    plan = audit / "plans" / "code_error_recheck_plan.md"
+    if not plan.is_file():
+        return "FAIL", f"code recheck plan missing: {plan}"
+    plan_text = plan.read_text(encoding="utf-8", errors="replace")
+    try:
+        mappings = du.parse_mappings(plan_text)
+    except du.DefinitionUseFormatError as exc:
+        return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
+    _, inventory_rows = _table_with_headers(
+        plan_text, ["ID", "Reason", "Likely Evidence"])
+    if inventory_rows is None:
+        return "FAIL", "b4 inventory missing"
+    inventory = [dict(zip(["ID", "Reason", "Likely Evidence"], row))
+                 for row in inventory_rows]
+    mapped_ids = {}
+    for label, bid in located.items():
+        matches = [row for row in mappings
+                   if du.normalize_cell(row.get("Bundle ID", "")) == bid]
+        if len(matches) != 1:
+            return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
+        eid = du.normalize_cell(matches[0].get("Error ID", ""))
+        inv = [row for row in inventory
+               if du.normalize_cell(row.get("ID", "")) == eid]
+        if len(inv) != 1:
+            return "FAIL", f"{label} mapped Error ID {eid} absent from b4 inventory"
+        if bid not in du.extract_bundle_tokens(inv[0].get("Likely Evidence", "")):
+            return "FAIL", f"{label} {bid} absent from inventory Likely Evidence"
+        mapped_ids[label] = eid
+
+    ledger_rows = []
+    ledger_root = audit / "_code_error_recheck"
+    if ledger_root.is_dir():
+        for path in sorted(ledger_root.rglob("*.md")):
+            ledger_text = path.read_text(encoding="utf-8", errors="replace")
+            _, rows = _table_with_headers(ledger_text, LEDGER_COLS, exact=True)
+            if rows is not None:
+                ledger_rows.extend(dict(zip(LEDGER_COLS, row)) for row in rows)
+    ledgers = {}
+    for label, eid in mapped_ids.items():
+        matches = [row for row in ledger_rows
+                   if du.normalize_cell(row.get("ID", "")) == eid]
+        if len(matches) != 1:
+            return "FAIL", f"{label} mapped Error ID {eid} has {len(matches)} ledger dispositions"
+        if located[label] not in du.extract_bundle_tokens(
+                matches[0].get("Evidence Checked", "")):
+            return "FAIL", f"{label} {located[label]} absent from ledger Evidence Checked"
+        ledgers[label] = matches[0]
+
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", "final code-error register missing"
+    final_rows = load_rows(final_path, "Error ID")
+    final_by_id = {row.get("Error ID", ""): row for row in final_rows}
+
+    p_eid = mapped_ids["P-21"]
+    p_ledger = ledgers["P-21"]
+    p_row = final_by_id.get(p_eid)
+    if p_ledger.get("Verdict") != "confirmed_error":
+        return "FAIL", (f"P-21 {p_eid} ledger verdict must be confirmed_error; "
+                        f"found {p_ledger.get('Verdict', '')}")
+    if p_row is None:
+        return "FAIL", f"P-21 mapped Error ID {p_eid} missing from final register"
+    p_status = p_row.get("Status", "")
+    duplicate = re.fullmatch(r"duplicate_of:(E-\d{4})", p_status)
+    if duplicate:
+        target_id = duplicate.group(1)
+        proposal = (p_ledger.get("Proposed Register Change", "") + " "
+                    + p_ledger.get("Proposed Note", ""))
+        target = final_by_id.get(target_id)
+        if p_status not in proposal or target is None:
+            return "FAIL", f"P-21 duplicate mapping does not explicitly name {target_id}"
+        p_issue = target
+    else:
+        p_issue = p_row
+    if (p_issue.get("Status") != "confirmed" or severity(p_issue) < 2
+            or not sig_match(row_text(p_issue), SIGNATURES["P-21"])):
+        return "FAIL", "P-21 did not land in an equivalent confirmed severity>=2 issue row"
+
+    d_eid = mapped_ids["D-03"]
+    d_ledger = ledgers["D-03"]
+    d_row = final_by_id.get(d_eid)
+    if d_ledger.get("Verdict") != "not_error":
+        return "FAIL", (f"D-03 {d_eid} ledger verdict must be not_error; "
+                        f"found {d_ledger.get('Verdict', '')}")
+    if d_row is None or d_row.get("Status") != "not_error":
+        found = d_row.get("Status", "missing") if d_row else "missing"
+        return "FAIL", f"D-03 mapped Error ID {d_eid} must finish not_error; found {found}"
+    def is_d03(row):
+        text = row_text(row).replace("`", "")
+        at_fixture_site = (
+            row.get("Error Type") == "sample_filter_or_flag_error"
+            and any(
+                re.search(re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)", text)
+                for site in ("definition", "consumer")
+            )
+        )
+        semantic_match = (
+            any(term in text for term in ("diagnostic", "diagnostics"))
+            and any(term in text for term in (
+                "baseline", "wave 1", "wave-1", "wave one", "first wave",
+            ))
+            and any(term in text for term in (
+                "narrow", "filter", "restrict", "exclude", "drop", "remove",
+            ))
+            and any(term in text for term in (
+                "sample", "observation", "case", "analytic population",
+                "estimation population",
+            ))
+        )
+        return "baseline_diag_ok" in text or at_fixture_site or semantic_match
+
+    issue_rows = [row for row in final_rows
+                  if row.get("Status") in {"candidate", "confirmed", "confirmation_needed", "blocked"}
+                  and is_d03(row)]
+    claims_path = audit / "claims_register.md"
+    if claims_path.is_file():
+        issue_rows.extend(
+            row for row in load_rows(claims_path, "Claim ID")
+            if is_d03(row) and (
+                row.get("Status") in {"inconsistent", "confirmation_needed"}
+                or bool(row.get("Severity", "").strip())))
+    outputs_path = audit / "output_register.md"
+    if outputs_path.is_file():
+        issue_rows.extend(
+            row for row in load_rows(outputs_path, "Output ID")
+            if is_d03(row) and row.get("Status") in {"inconsistent", "unclear"})
+    if issue_rows:
+        return "FAIL", "D-03 baseline diagnostic survives as an issue row"
+    return ("PASS", f"P-21 {located['P-21']} -> {p_eid} confirmed; "
+            f"D-03 {located['D-03']} -> {d_eid} not_error")
 
 
 def _find_claims_table(lint_mod, audit):
@@ -664,6 +858,10 @@ def main() -> int:
     print(f"U2 manifest artifact: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U2 manifest artifact check failed")
+    status, note = check_channel_definition_use(audit)
+    print(f"Definition/use channel: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("definition/use channel check failed")
     if lint_mod is not None:
         for label, fn, red in (
             ("U4 anchoring advisory", check_artifact_anchoring,

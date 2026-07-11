@@ -153,6 +153,26 @@ resolves it (a worker dispositions every candidate; a legitimate line the crude 
 over-flagged closes as `not_error`). The script never hard-fails on package content and its exit
 status carries no findings; if the artifact reports no candidates, nothing is added — non-blocking.
 
+**Definition/use detector (conductor-invoked script; adds mechanical candidates before the plan
+is frozen).** Beside `check_manifests.py`, run
+`emit_definition_use_bundles.py <package_root> --audit-dir audit`. The script always writes
+`audit/_run/definition_use_bundles.md`, including when no qualifying Stata bundle exists. For every
+standard (non-advisory) `DU-…` row, add exactly one row to a
+`## Definition/use bundle mapping` table in `code_error_recheck_plan.md`:
+
+`| Bundle ID | Error ID | Mapping Kind |`
+
+`Mapping Kind` is exactly `new_candidate` or `existing_row`. A new candidate is typed
+`sample_filter_or_flag_error`, minted from an unused Error-ID range, and added to the canonical
+register before the plan is frozen; an existing-row mapping reuses the equivalent canonical
+Error ID. Every mapped Error ID must appear in the b4 inventory, and that inventory row's
+`Likely Evidence` must name every `DU-…` mapped to it. Multiple bundles may map to one canonical
+row, but each standard Bundle ID appears in the mapping exactly once. Recode advisory rows stay
+visible in the artifact and are not mapped. The detector is mechanical: comments and apparent
+intent are evidence for recheck, never reasons for the conductor to suppress a standard row.
+`lint_registers.py --stage b4-code` enforces the artifact-to-inventory handoff; a valid explicit
+zero-bundle artifact passes, while a missing artifact never means zero.
+
 ## b5 — Recheck cluster workers (parallel)
 
 `prompts/recheck-cluster-worker.md` with stream = code and `{CONTRACT_PATH}` set to
@@ -164,3 +184,7 @@ No new IDs; no hunting for unrelated errors.
 Snapshot → `prompts/merge-recheck.md` (stream = code, `{CONTRACT_PATH}` =
 `audit/_run/contracts/merge_recheck.md`) → staging +
 `audit/code_error_recheck_summary.md` → `lint_registers.py --stage b6-code` → atomic rename.
+The b6 lint also closes the definition/use channel: every mapped Bundle ID must occur in the
+mapped Error ID's ledger `Evidence Checked`, that Error ID must have exactly one ledger
+disposition, and the final register status must agree with it. A duplicate disposition must name
+the equivalent canonical confirmed issue row explicitly. Advisory bundles are excluded.

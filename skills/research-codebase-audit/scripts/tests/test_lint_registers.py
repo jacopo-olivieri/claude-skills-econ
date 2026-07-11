@@ -6,6 +6,8 @@ holds only the planted package and scorecards), so lintable boundaries are
 built synthetically via ``regbuild``.
 """
 
+import json
+
 import pytest
 
 import regbuild as rb
@@ -55,6 +57,206 @@ def test_b6_claims_red_on_blocked_without_blocked_check(tmp_path):
     res = rb.lint(a, "b6-claims")
     assert res.returncode == 1
     assert "Blocked Check" in res.stdout
+
+
+# ----------------------------- U3 manifest worker-shard integrity (R10)
+
+
+def _b3b_manifest_boundary(tmp_path, stream, *, workers,
+                           stage_present=True, stage_status="done",
+                           shards_present=True, populated_shards=False):
+    """A clean no-shard b3b merge with configurable manifest evidence."""
+    a = rb.AuditDir(tmp_path)
+    key = f"{stream}_b3b"
+    entry = {"status": stage_status, "retries": 0}
+    if shards_present:
+        shard_path = ("audit/_work_second_read/w1.md" if stream == "claims"
+                      else "audit/_code_errors_second_read/w1.md")
+        entry["shards"] = ({shard_path: {"status": "done", "retries": 0}}
+                           if populated_shards else {})
+    a.write_manifest(stages={key: entry} if stage_present else {})
+    if stream == "claims":
+        plan = (
+            "# Claims second-read plan\n\n"
+            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | Output ID Range | Known Findings |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+        )
+        if workers:
+            plan += (
+                "| W1 | sec 4 | `audit/_work_second_read/w1.md` | "
+                "C-2000–C-2099 | O-2000–O-2099 | C-0142 |\n"
+            )
+        a.write("plans/claims_second_read_plan.md", plan)
+        a.write_claims_plan()
+        files = ["claims_register.md", "output_register.md"]
+        a.write_register("_staging/claims_register.md", rb.CLAIMS_COLS, [])
+        a.write_register("_staging/output_register.md", rb.OUTPUT_COLS, [])
+        report = {
+            name: {"shard_rows": 0, "dedup_removed": 0, "added": 0}
+            for name in files
+        }
+        report_name = "merge_report_claims_b3b.json"
+    else:
+        plan = (
+            "# Code-error second-read plan\n\n"
+            "| Worker ID | Script Scope | Shard File | Error ID Range | Known Findings |\n"
+            "| --- | --- | --- | --- | --- |\n"
+        )
+        if workers:
+            plan += (
+                "| W1 | `py/x.py` | `audit/_code_errors_second_read/w1.md` | "
+                "E-2000–E-2099 | E-0142 |\n"
+            )
+        a.write("plans/code_error_second_read_plan.md", plan)
+        a.write(
+            "plans/code_error_review_plan.md",
+            "# Code-error review plan\n\n"
+            "| Chunk ID | Script Scope | Error ID Range | Shard File |\n"
+            "| --- | --- | --- | --- |\n"
+            "| K1 | `py/x.py` | E-0100–E-0999 | `audit/_code_errors/k1.md` |\n\n"
+            "Merge-coordinator range: E-9000–E-9099\n",
+        )
+        files = ["code_error_register.md"]
+        a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [])
+        report = {
+            "code_error_register.md": {
+                "shard_rows": 0, "dedup_removed": 0, "added": 0,
+            },
+        }
+        report_name = "merge_report_code_b3b.json"
+    a.snapshot(key, files)
+    a.write(f"_run/{report_name}", json.dumps(report))
+    return a
+
+
+def _b6_manifest_boundary(tmp_path, stream, *, workers,
+                          stage_present=True, stage_status="done",
+                          shards_present=True, populated_shards=False):
+    """A clean b6 merge whose recheck plan has zero or one cluster."""
+    inventory = [("C-0101" if stream == "claims" else "E-0101",
+                  "issue-flagged", "static")] if workers else []
+    shard = ("`audit/_recheck/k1.md`" if stream == "claims"
+             else "`audit/_code_error_recheck/k1.md`")
+    clusters = [("K1", "cluster one", inventory[0][0], shard)] if workers else []
+    if stream == "claims":
+        a = rb.make_b6_claims(tmp_path, [])
+        plan_name = "plans/claims_recheck_plan.md"
+    else:
+        a = rb.make_b6_code(
+            tmp_path, before_rows=[], final_rows=[], inventory=inventory,
+            clusters=clusters, mappings=[], ledger_rows=[],
+        )
+        plan_name = "plans/code_error_recheck_plan.md"
+    a.write(plan_name, rb.recheck_plan_text(stream, inventory, clusters))
+    key = f"{stream}_b5"
+    entry = {"status": stage_status, "retries": 0}
+    if shards_present:
+        shard_path = ("audit/_recheck/k1.md" if stream == "claims"
+                      else "audit/_code_error_recheck/k1.md")
+        entry["shards"] = ({shard_path: {"status": "done", "retries": 0}}
+                           if populated_shards else {})
+    a.write_manifest(stages={key: entry} if stage_present else {})
+    return a
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+@pytest.mark.parametrize("shards_present", [True, False], ids=["empty", "absent"])
+def test_done_worker_stage_rejects_empty_manifest_shards(
+        tmp_path, stage, shards_present):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(tmp_path, stream, workers=True, shards_present=shards_present)
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 1
+    manifest_key = f"{stream}_{'b3b' if boundary == 'b3b' else 'b5'}"
+    assert manifest_key in res.stdout
+    assert "1 planned worker" in res.stdout
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+def test_planned_worker_stage_requires_manifest_entry(tmp_path, stage):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(tmp_path, stream, workers=True, stage_present=False)
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 1
+    manifest_key = f"{stream}_{'b3b' if boundary == 'b3b' else 'b5'}"
+    assert manifest_key in res.stdout
+    assert "1 planned worker" in res.stdout
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+@pytest.mark.parametrize("shards_present", [True, False], ids=["empty", "absent"])
+def test_running_worker_stage_rejects_empty_manifest_shards(
+        tmp_path, stage, shards_present):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=True, stage_status="running",
+        shards_present=shards_present,
+    )
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 1
+    manifest_key = f"{stream}_{'b3b' if boundary == 'b3b' else 'b5'}"
+    assert manifest_key in res.stdout
+    assert "1 planned worker" in res.stdout
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+def test_running_worker_stage_accepts_populated_manifest_shards(tmp_path, stage):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=True, stage_status="running",
+        populated_shards=True,
+    )
+
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+@pytest.mark.parametrize("manifest_shape", ["missing-stage", "absent", "empty"])
+def test_worker_stage_allows_empty_shards_when_plan_has_no_workers(
+        tmp_path, stage, manifest_shape):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(
+        tmp_path, stream, workers=False,
+        stage_present=manifest_shape != "missing-stage",
+        shards_present=manifest_shape != "absent",
+    )
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("stage", [
+    "b3b-code", "b3b-claims", "b6-code", "b6-claims",
+])
+def test_done_worker_stage_accepts_populated_manifest_shards(tmp_path, stage):
+    boundary, stream = stage.split("-")
+    maker = _b3b_manifest_boundary if boundary == "b3b" else _b6_manifest_boundary
+    a = maker(tmp_path, stream, workers=True, populated_shards=True)
+    res = rb.lint(a, stage)
+
+    assert res.returncode == 0, res.stdout + res.stderr
 
 
 # ------------------------------------------- U1 advisory heuristic (pinned)
@@ -195,6 +397,259 @@ def test_conventions_artifact_wrong_header_warns(tmp_path):
     res = rb.lint(a, "b4-code")
     assert any("expected header" in ln for ln in warning_lines(res, "conventions.md")), \
         res.stdout
+
+
+# ---------------------- U2 definition/use handoffs (b4-code and b6-code)
+
+
+def _definition_use_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
+               evidence=None, include_artifact=True):
+    mappings = mappings if mappings is not None else [
+        (bid, "E-0101", "new_candidate") for bid in bundle_ids]
+    evidence = evidence if evidence is not None else "; ".join(bundle_ids)
+    errors = [rb.error_row("E-0101", status="candidate", severity="2",
+                           etype="sample_filter_or_flag_error")]
+    return rb.make_b4(
+        tmp_path, "code", canon_errors=errors,
+        inventory=[("E-0101", "definition/use candidate", evidence)],
+        clusters=[("K1", "definition/use", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+        bundle_ids=bundle_ids, mappings=mappings,
+        include_definition_use_artifact=include_artifact,
+    )
+
+
+def test_b4_code_missing_definition_use_artifact_fails(tmp_path):
+    a = _definition_use_b4(tmp_path, bundle_ids=(), mappings=[],
+                   include_artifact=False)
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 1
+    assert "definition_use_bundles.md" in res.stdout and "missing" in res.stdout
+
+
+def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
+    row = rb.error_row("E-0101", status="confirmed", severity="1")
+    a = rb.make_b4(
+        tmp_path, "code", canon_errors=[row],
+        inventory=[("E-0101", "sampled", "static source")],
+        clusters=[("K1", "sample", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+        bundle_ids=[], mappings=[],
+    )
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
+    a = _definition_use_b4(tmp_path)
+    path = a.audit / "_run" / "definition_use_bundles.md"
+    path.write_text(path.read_text().replace(
+        "- Standard candidates: 1", "- Standard candidates: 2"))
+
+    res = rb.lint(a, "b4-code")
+
+    assert res.returncode == 1
+    assert "Standard candidates count" in res.stdout
+
+
+def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
+    """Integration: b4 parses the committed emitter's actual empty artifact."""
+    row = rb.error_row("E-0101", status="confirmed", severity="1")
+    a = rb.make_b4(
+        tmp_path, "code", canon_errors=[row],
+        inventory=[("E-0101", "sampled", "static source")],
+        clusters=[("K1", "sample", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+    )
+    package = tmp_path / "package"
+    (package / "do").mkdir(parents=True)
+    (package / "do" / "analysis.do").write_text("summarize wage\n")
+    emitted = rb.run_script(
+        "emit_definition_use_bundles.py", package, "--audit-dir", a.audit)
+    assert emitted.returncode == 0, emitted.stdout + emitted.stderr
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("mappings, evidence, token", [
+    ([], "DU-aaa111", "unmapped"),
+    ([('DU-aaa111', 'E-0101', 'new_candidate'),
+      ('DU-aaa111', 'E-0101', 'existing_row')], "DU-aaa111", "mapped 2 times"),
+    ([('DU-aaa111', 'E-0999', 'new_candidate')], "DU-aaa111", "absent from the b4 inventory"),
+    ([('DU-aaa111', 'E-0101', 'new_candidate')], "static source", "Likely Evidence"),
+])
+def test_b4_code_rejects_broken_definition_use_handoff(tmp_path, mappings, evidence, token):
+    a = _definition_use_b4(tmp_path, mappings=mappings, evidence=evidence)
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 1
+    assert token in res.stdout
+
+
+def test_b4_code_rejects_longer_prefix_in_inventory_evidence(tmp_path):
+    a = _definition_use_b4(tmp_path, evidence="checked DU-aaa1114")
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 1
+    assert "Likely Evidence" in res.stdout and "DU-aaa111" in res.stdout
+
+
+@pytest.mark.parametrize("etype, status, token", [
+    ("aggregation_or_unit_error", "candidate", "sample_filter_or_flag_error"),
+    ("sample_filter_or_flag_error", "confirmed", "must be a candidate"),
+])
+def test_b4_code_new_candidate_mapping_enforces_row_shape(
+        tmp_path, etype, status, token):
+    a = _definition_use_b4(tmp_path)
+    a.write_register(
+        "code_error_register.md", rb.ERROR_COLS,
+        [rb.error_row("E-0101", etype=etype, status=status, severity="2")])
+    res = rb.lint(a, "b4-code")
+    assert res.returncode == 1
+    assert token in res.stdout
+
+
+def _definition_use_b6(tmp_path, *, verdict="confirmed_error", final_status="confirmed",
+               evidence="checked DU-aaa111 at do/build_panel.do:20",
+               extra_ledger=(), bundle_ids=("DU-aaa111",)):
+    before = [rb.error_row("E-0101", status="candidate", severity="2",
+                           etype="sample_filter_or_flag_error")]
+    final = [rb.error_row("E-0101", status=final_status,
+                          severity="" if final_status == "not_error" else "2",
+                          etype="sample_filter_or_flag_error")]
+    ledger = rb.ledger_row("E-0101", evidence=evidence, verdict=verdict)
+    return rb.make_b6_code(
+        tmp_path, before_rows=before, final_rows=final,
+        inventory=[("E-0101", "definition/use", "; ".join(bundle_ids))],
+        clusters=[("K1", "definition/use", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+        mappings=[(bid, "E-0101", "new_candidate") for bid in bundle_ids],
+        ledger_rows=[ledger, *extra_ledger],
+    )
+
+
+def test_b6_code_accepts_complete_definition_use_handoff(tmp_path):
+    a = _definition_use_b6(tmp_path)
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("stage", ["b4-code", "b6-code"])
+def test_many_definition_use_bundles_may_map_to_one_canonical_error(tmp_path, stage):
+    bundle_ids = ("DU-aaa111", "DU-bbb222")
+    evidence = "checked DU-aaa111 and DU-bbb222"
+    if stage == "b4-code":
+        a = _definition_use_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+    else:
+        a = _definition_use_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+
+    res = rb.lint(a, stage)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("stage", ["b4-code", "b6-code"])
+@pytest.mark.parametrize("omitted", ["DU-aaa111", "DU-bbb222"])
+def test_many_to_one_definition_use_handoff_requires_every_bundle_in_evidence(
+        tmp_path, stage, omitted):
+    bundle_ids = ("DU-aaa111", "DU-bbb222")
+    present = next(bid for bid in bundle_ids if bid != omitted)
+    evidence = f"checked {present}"
+    if stage == "b4-code":
+        a = _definition_use_b4(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+    else:
+        a = _definition_use_b6(tmp_path, bundle_ids=bundle_ids, evidence=evidence)
+
+    res = rb.lint(a, stage)
+    assert res.returncode == 1
+    assert omitted in res.stdout
+
+
+def test_b6_code_requires_bundle_id_in_evidence_checked(tmp_path):
+    a = _definition_use_b6(tmp_path, evidence="checked do/build_panel.do:20")
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 1
+    assert "DU-aaa111" in res.stdout and "Evidence Checked" in res.stdout
+
+
+def test_b6_code_rejects_longer_prefix_in_evidence_checked(tmp_path):
+    a = _definition_use_b6(tmp_path, evidence="checked DU-aaa1114")
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 1
+    assert "DU-aaa111" in res.stdout and "Evidence Checked" in res.stdout
+
+
+def test_b6_code_requires_unique_disposition(tmp_path):
+    duplicate = rb.ledger_row("E-0101", evidence="DU-aaa111",
+                              verdict="confirmed_error")
+    a = _definition_use_b6(tmp_path, extra_ledger=[duplicate])
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 1
+    assert "exactly one disposition" in res.stdout
+
+
+def test_b6_code_requires_ledger_final_status_agreement(tmp_path):
+    a = _definition_use_b6(tmp_path, verdict="not_error", final_status="confirmed")
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 1
+    assert "verdict 'not_error'" in res.stdout and "final status 'confirmed'" in res.stdout
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_b6_code_duplicate_must_name_confirmed_canonical_issue(tmp_path, explicit):
+    before = [
+        rb.error_row("E-0101", status="candidate", severity="2",
+                     etype="sample_filter_or_flag_error"),
+        rb.error_row("E-0102", status="confirmed", severity="2",
+                     etype="sample_filter_or_flag_error"),
+    ]
+    final = [
+        rb.error_row("E-0101", status="duplicate_of:E-0102", severity="",
+                     etype="sample_filter_or_flag_error"),
+        before[1],
+    ]
+    ledger = rb.ledger_row(
+        "E-0101", evidence="DU-aaa111", verdict="confirmed_error",
+        change=("set status=duplicate_of:E-0102" if explicit else "merge duplicate"))
+    a = rb.make_b6_code(
+        tmp_path, before_rows=before, final_rows=final,
+        inventory=[("E-0101", "definition/use", "DU-aaa111")],
+        clusters=[("K1", "definition/use", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+        mappings=[("DU-aaa111", "E-0101", "existing_row")],
+        ledger_rows=[ledger],
+    )
+    res = rb.lint(a, "b6-code")
+    if explicit:
+        assert res.returncode == 0, res.stdout + res.stderr
+    else:
+        assert res.returncode == 1
+        assert "does not explicitly name equivalent canonical issue row" in res.stdout
+
+
+def test_b6_code_duplicate_rejects_not_error_verdict(tmp_path):
+    before = [
+        rb.error_row("E-0101", status="candidate", severity="2",
+                     etype="sample_filter_or_flag_error"),
+        rb.error_row("E-0102", status="confirmed", severity="2",
+                     etype="sample_filter_or_flag_error"),
+    ]
+    final = [
+        rb.error_row("E-0101", status="duplicate_of:E-0102", severity="",
+                     etype="sample_filter_or_flag_error"),
+        before[1],
+    ]
+    ledger = rb.ledger_row(
+        "E-0101", evidence="DU-aaa111", verdict="not_error",
+        change="set status=duplicate_of:E-0102")
+    a = rb.make_b6_code(
+        tmp_path, before_rows=before, final_rows=final,
+        inventory=[("E-0101", "definition/use", "DU-aaa111")],
+        clusters=[("K1", "definition/use", "E-0101",
+                   "`audit/_code_error_recheck/k1.md`")],
+        mappings=[("DU-aaa111", "E-0101", "existing_row")],
+        ledger_rows=[ledger],
+    )
+    res = rb.lint(a, "b6-code")
+    assert res.returncode == 1
+    assert "duplicate" in res.stdout and "confirmed_error" in res.stdout
 
 
 # --------------------- U4 identifier-anchoring advisory (b5-claims ledger)

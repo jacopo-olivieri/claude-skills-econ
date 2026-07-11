@@ -4,8 +4,9 @@
 Python scripts, data, a TOML manifest, artifacts, README) with **21 planted findings**
 (`must_find` items P-01 through P-21) spanning the error taxonomy — including the three
 classes added by the design (seed, SE specification, weights), a transcription mismatch
-against a shipped artifact, hygiene/PII findings, and **two decoys** that must NOT be
-flagged (a commented-out figure, and an intentional subset of a stated member list).
+against a shipped artifact, hygiene/PII findings, and **three decoys** that must NOT be
+flagged (a commented-out figure, an intentional subset of a stated member list, and an
+intentional baseline-only diagnostic that exercises the detector/recheck channel).
 
 **Behavior-test plants (added 2026-07-06)** — P-12/P-13/P-14 exist to predict the Floods
 failure mode, keyed to the behavior each tests:
@@ -54,10 +55,18 @@ covers):
   severity floor of 2 is honest under the materiality rubric. Fresh domain (survey consent
   gating a published table); the excluded case family is named in the comment, not a
   missing-value idiom.
+- **D-03 detector-channel precision decoy** — in `do/analysis.do`, after the panel is
+  loaded, `baseline_diag_ok` gates a `preserve`/`restore`-contained baseline-wave-only
+  diagnostic. Its `keep if baseline_diag_ok == 1 & wave == 1` deliberately matches the
+  detector surface shape and therefore must be emitted and mapped through recheck, then
+  cleared `not_error`: the additional wave restriction is explicitly the diagnostic's
+  domain and `restore` prevents it from narrowing the estimation sample.
 
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
+The outer harness records that the fixture is synthetic; the package shown to blind reviewers
+does not make that claim, so the privacy check is judged from the public package as presented.
 
 ## Running the validation
 
@@ -71,13 +80,13 @@ see this folder's other files.
    ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 20 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 21 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
      `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
      rule).
    - **Precision**: nothing about the placebo figure / `fig_placebo.pdf`, nothing about the
-     farm-components subset (`must_not_find`), and the `expected_confirmed_examples` come
-     out clean rather than flagged.
+     farm-components subset, and no issue row for the intentional baseline diagnostic
+     (`must_not_find`); the `expected_confirmed_examples` come out clean rather than flagged.
 
 ### Automated scoring
 
@@ -91,7 +100,9 @@ sum — and the
 artifact-layer checks: the U2 parser artifact must name `pyproject.toml`; the U4
 and U5 advisory lints must have fired if the corresponding plant closed in the
 failure state; the U1 conventions-artifact check is informative only, never
-gate-settling — see KTD-8 in the 2026-07-07 plan). Point it at the finished run's
+gate-settling; and the definition/use channel check traces P-21 and D-03 from
+the detector artifact through b4 mapping/inventory, recheck ledger, and final
+register outcome). Point it at the finished run's
 final registers:
 
 ```

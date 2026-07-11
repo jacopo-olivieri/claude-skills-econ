@@ -1,6 +1,4 @@
-# Replication package — Rainfall Shocks and Household Income (synthetic fixture)
-
-Everything in this package is fabricated. It exists to exercise an audit pipeline.
+# Replication package — Rainfall Shocks and Household Income
 
 ## Data
 

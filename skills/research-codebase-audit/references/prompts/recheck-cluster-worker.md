@@ -116,7 +116,8 @@ mint IDs.
 **Evidence discipline.** `Evidence Checked` must cite exact anchors: a verbatim paper quote, a
 repo-relative file path + line range, an artifact path/cell/value, a data header or shape, or a
 command and its result. "Checked the source code" (or any anchor-free paraphrase) is not
-acceptable and is treated as no evidence.
+acceptable and is treated as no evidence. When the assigned inventory evidence carries one or
+more `DU-…` Bundle IDs, copy every such identifier verbatim into that row's `Evidence Checked`.
 
 Use the {STREAM} verdict vocabulary and the evidence levels from `{CONTRACT_PATH}`
 exactly. Think hard before each verdict; weigh the evidence for and against the first-pass

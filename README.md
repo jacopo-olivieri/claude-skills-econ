@@ -1,43 +1,50 @@
 # empirical-research-skills
 
-This repository contains agent skills for economics and empirical research.
-The skills are designed to work with both Claude Code and Codex.
+This repository contains agent skills for economics and empirical research. The skills are designed to work with both Claude Code and Codex.
 
-## Install
+## Installation
 
-**Via [skills.sh](https://skills.sh) (recommended):**
+### Recommended: install with `skills.sh`
+
+Run the following command:
 
 ```bash
 npx skills@latest add jacopo-olivieri/empirical-research-skills
 ```
 
-Pick the skills and the agents (Claude Code, Codex, etc.) you want; the
-installer wires them up for you.
+The installer will guide you through selecting:
 
-**Manually:** clone this repo and symlink any skill folder into your skills
-directory:
+* which skills to install;
+* which supported agents—such as Claude Code or Codex—should have access to them.
+
+It will then install and configure the selected skills automatically.
+
+### Manual installation
+
+1. Clone the repository:
 
 ```bash
 git clone https://github.com/jacopo-olivieri/empirical-research-skills.git
-ln -s "$(pwd)/empirical-research-skills/skills/<name>" ~/.claude/skills/<name>
+cd empirical-research-skills
 ```
+
+2. Symlink each skill you want to use into the skills directory recognised by your agent. You can create the symlinks yourself or ask your agent to configure them for you.
 
 ## Skills
 
-| Skill | What it does | How to invoke |
-|-------|--------------|---------------|
-| [`paper-summary`](./skills/paper-summary) | Evidence-grounded summary of an academic paper: converts the PDF to markdown, analyses it section by section, and returns a structured five-part summary. | `/paper-summary` |
-| [`research-codebase-audit`](./skills/research-codebase-audit) | Audits a replication package — paper–code consistency, source-code errors, and package hygiene — and exports an author-facing Excel workbook of findings. | `/research-codebase-audit` |
-| [`stata`](./skills/stata) | Writes and safely runs Stata do-files in batch mode, and searches local help files and PDF manuals. Requires a local Stata installation. | automatic on Stata tasks |
+| Skill | What it does | Invocation |
+|-------|--------------|------------|
+| [`paper-summary`](./skills/paper-summary) | Summarise an academic research paper. | User-invoked: `/paper-summary` |
+| [`research-codebase-audit`](./skills/research-codebase-audit) | Audit an empirical research project codebase for errors, inconsistencies, and reproducibility issues. | User-invoked: `/research-codebase-audit` |
+| [`stata`](./skills/stata) | Improve agents' ability to write, run, and troubleshoot Stata. | Model-invoked, or `/stata` |
+
+User-invoked skills run only when you type their slash command. Model-invoked skills are loaded by the agent automatically when the task matches their description, and can also be invoked explicitly by slash command.
+
+Each skill has its own README with usage examples and setup instructions — see the linked directories above.
 
 ## Contributing
 
-Skills are authored in this repo and symlinked into place with
-`bash scripts/link-skills.sh`, so a `git pull` keeps installed skills current.
-To add a skill, write `skills/<name>/SKILL.md` from
-[`TEMPLATE-SKILL.md`](./TEMPLATE-SKILL.md) and add its path to
-[`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json). Conventions live
-in [`AGENTS.md`](./AGENTS.md).
+Suggestions and improvements are welcome. See [`TEMPLATE-SKILL.md`](./TEMPLATE-SKILL.md) and [`AGENTS.md`](./AGENTS.md) if you would like to contribute.
 
 ## License
 

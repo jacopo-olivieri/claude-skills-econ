@@ -19,7 +19,8 @@ Reference files (all paths relative to this skill's folder):
 - `references/prompts/` — fixed prompt skeletons with slot tables.
 - `scripts/lint_registers.py`, `scripts/blank_tex_comments.py`, `scripts/export_xlsx.py`,
   `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py` (both conductor-invoked at
-  `b4`; see `references/pipeline-code-errors.md`).
+  `b4`; see `references/pipeline-code-errors.md`), and `scripts/certify_stage.py` (the only
+  writer of stage status; its typed evidence table is `scripts/stage_obligations.json`).
 
 Invariants you never break:
 
@@ -37,8 +38,9 @@ Invariants you never break:
   sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
   `b2`, `b5`, and `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
   `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
-  with the lint report appended to its prompt. On second failure, mark that shard/stage
-  `blocked` in the manifest and continue everything that does not depend on it. **Merges
+  with the lint report appended to its prompt. On second failure, record that shard/stage
+  `blocked` with `certify_stage.py set-shard` or `finish --outcome blocked`, and continue
+  everything that does not depend on it. **Merges
   proceed over the non-blocked shards** and document blocked ones in the merge report.
 - **After intake the run is unsupervised** — no user questions until the export exists.
 
@@ -95,23 +97,21 @@ Write `audit/_run/manifest.json`:
   "paper_source_path": "…", "paper_sha256": "<sha256 of paper_source_path>",
   "paper_audit_path": "<blanked/converted copy, set at init>",
   "git_head": "… | null",
-  "warnings": [],
-  "stages": {
-    "<stage-key>": {
-      "status": "pending|running|done|blocked", "retries": 0,
-      "shards": { "<shard path>": { "status": "pending|done|blocked", "retries": 0 } }
-    }
-  }
+  "warnings": []
 }
 ```
 
-Every manifest write — this initial one and every later status update — goes to a temp file in
-the same directory followed by an atomic rename over `manifest.json`; never edit it in place.
+Write this intake manifest to a temp file in the same directory, then atomically rename it over
+`manifest.json`; never edit it in place. Do not create `stages` or `run_identity` at intake:
+`certify_stage.py init` owns and creates both while preserving every intake field above. After
+initialization, every stage-status or shard-status change goes through `certify_stage.py`; never
+edit those blocks by hand.
 
-Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, the
+`init` derives the ordered stage keys from `mode`. They are stream-qualified: `b0`,
+`claims_b1`…`claims_b6`, claims consolidation `claims_b3c`, `code_b1`…`code_b6`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
-exist only where the mode runs them). `shards` appears on worker stages only; a worker stage is
-`done` when every shard is `done` or `blocked` and at least one is `done`.
+exist only where the mode runs them). Worker shard outcomes are recorded only with
+`certify_stage.py set-shard`; the stage itself is certified separately.
 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
 receives — compose it once from mode + ladder + budget + off-limits.
@@ -136,6 +136,9 @@ Completion: manifest written and every field above resolved with the user.
 
 ## Phase 2 — Init (boundary B0)
 
+0. Run `scripts/certify_stage.py init --package-root <package-root>`, then
+   `scripts/certify_stage.py start --package-root <package-root> --stage b0`. This records the
+   run identity, creates the mode's pending stage entries, and creates `audit/_run/RUNNING`.
 1. Create `audit/` with empty registers per `references/registers.md`, plus
    `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`,
    `audit/_staging/`, `audit/_run/snapshots/`, and `audit/plans/`.
@@ -152,7 +155,7 @@ Completion: manifest written and every field above resolved with the user.
    export; they never stop the run.
 5. Run `lint_registers.py --stage b0`.
 
-Completion: lint passes; manifest stage `b0 = done`.
+Completion: lint passes; certify with `scripts/certify_stage.py finish --stage b0 --outcome done`.
 
 ## Phase 3 — Conductor loop (autonomous)
 
@@ -163,6 +166,7 @@ each stream:
 | Stage keys | Lint stages | Instructions |
 | --- | --- | --- |
 | `claims_b1`–`claims_b3` (plan → section workers → merge) | `b1-claims`–`b3-claims` | `references/pipeline-claims.md` |
+| `claims_b3c` shared-conventions consolidation | — | `references/pipeline-claims.md` |
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
 | `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
@@ -176,8 +180,15 @@ Mechanics:
 
 - The two streams are independent — run them in parallel. Within a stream, workers of the same
   stage run in parallel (one subagent per worker/cluster, single fire-and-forget message each).
-- Update the manifest at every transition; a worker is complete only when **its shard exists AND
-  lints** at the stage's boundary.
+- Before a stage does work, run `certify_stage.py start --stage <key>`. After its boundary work,
+  run `certify_stage.py finish --stage <key> --outcome done`; that command re-resolves the
+  stage's evidence and is the only route to `done`. On a terminal retry failure, use
+  `finish --stage <key> --outcome blocked --reason "<text>"`. For worker shards, use
+  `set-shard --stage <key> --shard <path> --status done` only after the shard exists and lints,
+  or `--status blocked --reason "<text>"` after the retry fails. A worker stage may certify
+  `done` once every recorded shard is `done` or `blocked` and at least one is `done`; certification
+  re-lints the `done` shards while preserving blocked shards for degraded-coverage reporting.
+  Never edit `stages` by hand.
 - **Progress ledger.** At each transition, regenerate `audit/_run/progress.md` from the manifest:
   one line per boundary giving its status, shards done/blocked, and last lint result. It is a
   human-readable mirror of the manifest, not a second source of truth — rewrite it whole from the
@@ -188,7 +199,8 @@ Mechanics:
   blocked ones), a blocked claims stage does not stop the code stream, and vice versa. Blocked
   stages/shards are reported at the end, not retried in a loop.
 
-Completion: `b9 = done` — `audit/code_review.xlsx` exists and passes the b9 lint.
+Completion: b9 is certified `done`, and `audit/code_review.xlsx` exists and passes the b9 lint.
+Run `certify_stage.py close-run` once.
 
 ## Phase 4 — Report and follow-up (interactive again)
 
@@ -204,19 +216,15 @@ user approval.
 
 If `audit/_run/manifest.json` exists at intake, offer to resume:
 
-0. **Replay the last green boundary before trusting the manifest.** Take the most recent boundary
-   the manifest marks `done` whose artifacts exist on disk, and re-run its lint
-   (`lint_registers.py --stage <that boundary>`, with `--shard` for a shard stage). If it **fails**,
-   the recorded `done` is stale: mark that boundary `pending` in the manifest, discard only *its*
-   stale staging files (never another boundary's), and resume from it rather than from a later
-   point. In particular, a `done` b8 must still have `_staging/` populated with the non-empty
-   frozen b8 registers (the b9 lint requires them); if `_staging/` is empty, b8 reruns before
-   export. Only after this replay passes do you choose the resume point below.
-1. Re-hash `paper_source_path` and compare to `paper_sha256`. **If the manuscript changed,
-   warn and offer a scoped register-update pass** (re-run only claims workers whose sections
-   changed) instead of silently continuing.
-2. Resume at the first stage key whose status ≠ `done` (stream order: each stream
+0. Run `scripts/certify_stage.py resume-check --package-root <package-root> --clear-stale-marker`.
+   It replaces the crash-surviving marker, verifies the canonical root,
+   tree fingerprint, and mechanism-schema version, and re-derives every recorded `done`. A tree
+   or schema mismatch requires a fresh audit. For each stale evidence pass it reports, run
+   `certify_stage.py demote --stage <key> --reason "<failed obligation>"`; never hand-demote it.
+   Discard only that boundary's stale staging files, then rerun the same
+   `resume-check --clear-stale-marker` command until all remaining recorded passes verify.
+1. Resume at the first stage key whose status ≠ `done` (stream order: each stream
    independently, then finalize). Within a worker stage, re-dispatch only workers whose shards
    are missing or failing lint — completed shards are never re-run.
-3. Registers are only ever mutated via staging + atomic rename, so a crashed run leaves canon
+2. Registers are only ever mutated via staging + atomic rename, so a crashed run leaves canon
    consistent; stale staging files can be deleted.

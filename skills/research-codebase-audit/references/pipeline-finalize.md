@@ -71,6 +71,7 @@ canon exists.
 7. Whenever step 4, 5, or 6 changed any register row, refresh the b7 snapshot and re-run
    the b7 lint before moving on (otherwise post-run `--stage b7` replay fails on the
    changed rows).
+8. After promotion, certify with `certify_stage.py finish --stage b7 --outcome done`.
 
 ## b8 — Author-facing rewrite
 
@@ -89,19 +90,25 @@ canon exists.
    the frozen b8 boundary state, so `lint_registers.py --stage b8` stays replayable after
    the run. Add one line to `audit_readme.md`: `_staging/` holds the frozen b8 registers,
    superseded by the root registers.
+5. Certify with `certify_stage.py finish --stage b8 --outcome done`; its b8 validator reads the
+   deliberately frozen `_staging/` boundary.
 
 ## b9 — Export (script only — never an LLM)
 
-1. Run `scripts/export_xlsx.py --audit-dir audit/ --manifest audit/_run/manifest.json
+1. Run `scripts/certify_stage.py verify-run --package-root <package-root>`. A failure blocks
+   export; demote and rerun stale stages before trying b9 again.
+2. Run `scripts/export_xlsx.py --audit-dir audit/ --manifest audit/_run/manifest.json
    --mode <mode>` → `audit/code_review.xlsx`.
    - Sheets per the mode table above; `Overview` carries the sheet guide, status legends,
      variable legends, and a **Degraded-confidence warnings** section from the manifest
      `warnings` (CODEMAP preconditions score).
    - Author-facing columns in; every `*_Original` column out; `Potential Issue` computed on
      the Paper Claims sheet only.
-2. `lint_registers.py --stage b9`: workbook opens; per-sheet row counts and ID sets match the
+3. `lint_registers.py --stage b9`: workbook opens; per-sheet row counts and ID sets match the
    registers; excluded/required columns verified.
+4. Certify with `certify_stage.py finish --stage b9 --outcome done`.
 
 ## After b9
 
-Return to SKILL.md Phase 4 (report + targeted manual QA follow-up).
+Return to SKILL.md for the single `close-run` instruction, then Phase 4 (report + targeted manual
+QA follow-up).

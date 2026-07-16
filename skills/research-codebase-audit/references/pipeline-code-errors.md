@@ -45,7 +45,9 @@ Hygiene and provenance findings default to severity 1–2 per the rubric.
 Fill `prompts/chunk-worker.md` per chunk, with `{CONTRACT_PATH}` set to
 `audit/_run/contracts/code_first_pass.md` (the ERROR SCOPE lists live inside that skeleton —
 they do not depend on plan quality). Completion = shard exists and passes
-`lint_registers.py --stage b2-code --shard <path>`; retry-once → blocked-continue.
+`lint_registers.py --stage b2-code --shard <path>`, then
+`certify_stage.py set-shard --stage code_b2 --shard <path> --status done`; after the second
+lint failure, use `--status blocked --reason "<lint failure>"`, then continue.
 
 ## b3 — First merge (adds rows)
 
@@ -62,13 +64,16 @@ A recall pass, not a recheck: re-read every file the first pass already flagged,
 it missed. See `references/review-principles.md` for why. Runs after b3, before the recheck plan
 (b4) is built, so the new candidates flow into the recheck automatically.
 
-1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Mechanically compute
-   the set of scripts that carry at least one first-pass finding — i.e. a `candidate` code-error
-   row. (b3b runs before the recheck, so every first-pass code finding is still `candidate`; none
+1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Start `code_b3b` as
+   required by SKILL.md, then mechanically compute the set of scripts that carry at least one
+   first-pass finding — i.e. a `candidate` code-error row. (b3b runs before the recheck, so every
+   first-pass code finding is still `candidate`; none
    is `confirmed` yet — keying on `confirmed` here would make the sweep always skip.) At `shallow`
    include only scripts with a `candidate` row at Severity ≥ 3; at `standard`/`deep` any script
    with a `candidate` row of any severity. Group by `Code/Data Source` script. If the set is
-   empty, skip b3b.
+   empty, do not dispatch workers; certify `code_b3b` done via
+   `certify_stage.py finish --stage code_b3b --outcome done` against the canonical register
+   already promoted by b3.
 2. **Allocation.** Write `audit/plans/code_error_second_read_plan.md` yourself: one second-read
    worker per flagged script, with columns `| Worker ID | Script Scope | Shard File | Error ID
    Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint requires it — and
@@ -88,7 +93,8 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
    existing canon, preserving every b3 row unchanged.
 5. `lint_registers.py --stage b3b-code` (new rows in b3b ranges, all `candidate`, no b3 row
-   deleted or mutated, report identity holds). Atomic rename on pass. Manifest `code_b3b = done`.
+   deleted or mutated, report identity holds). Atomic rename on pass, then certify with
+   `certify_stage.py finish --stage code_b3b --outcome done`.
 
 The recheck inventory (b4) then picks up every new `candidate`; the b6 no-surviving-candidate
 rule is the hard backstop if one is missed.
@@ -177,6 +183,8 @@ zero-bundle artifact passes, while a missing artifact never means zero.
 
 `prompts/recheck-cluster-worker.md` with stream = code and `{CONTRACT_PATH}` set to
 `audit/_run/contracts/recheck_code.md`. Same completion/lint/retry rules (`--stage b5-code`).
+Record each passing shard with `certify_stage.py set-shard --stage code_b5 --shard <path> --status
+done`, or a twice-failing shard with `--status blocked --reason "<lint failure>"`.
 No new IDs; no hunting for unrelated errors.
 
 ## b6 — Recheck merge (mutates rows)
@@ -188,3 +196,4 @@ The b6 lint also closes the definition/use channel: every mapped Bundle ID must 
 mapped Error ID's ledger `Evidence Checked`, that Error ID must have exactly one ledger
 disposition, and the final register status must agree with it. A duplicate disposition must name
 the equivalent canonical confirmed issue row explicitly. Advisory bundles are excluded.
+After promotion, certify with `certify_stage.py finish --stage code_b6 --outcome done`.

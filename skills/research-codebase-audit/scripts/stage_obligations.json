@@ -1,0 +1,74 @@
+{
+  "b0": [
+    {"type": "artifact", "pattern": "CODEMAP.md"},
+    {"type": "validate", "validator": "lint:b0"}
+  ],
+  "claims_b1": [
+    {"type": "artifact", "pattern": "plans/claims_review_plan.md"},
+    {"type": "validate", "validator": "lint:b1-claims"}
+  ],
+  "claims_b2": [
+    {"type": "artifact", "pattern": "_work/**/*.md"},
+    {"type": "validate", "validator": "lint:b2-claims"}
+  ],
+  "claims_b3": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"}
+  ],
+  "claims_b3c": [
+    {"type": "artifact", "pattern": "_run/conventions.md"}
+  ],
+  "claims_b3b": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"}
+  ],
+  "claims_b4": [
+    {"type": "artifact", "pattern": "plans/claims_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b4-claims"}
+  ],
+  "claims_b5": [
+    {"type": "artifact", "pattern": "_recheck/**/*.md"},
+    {"type": "validate", "validator": "lint:b5-claims"}
+  ],
+  "claims_b6": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"}
+  ],
+  "code_b1": [
+    {"type": "artifact", "pattern": "plans/code_error_review_plan.md"},
+    {"type": "validate", "validator": "lint:b1-code"}
+  ],
+  "code_b2": [
+    {"type": "artifact", "pattern": "_code_errors/**/*.md"},
+    {"type": "validate", "validator": "lint:b2-code"}
+  ],
+  "code_b3": [
+    {"type": "artifact", "pattern": "code_error_register.md"}
+  ],
+  "code_b3b": [
+    {"type": "artifact", "pattern": "code_error_register.md"}
+  ],
+  "code_b4": [
+    {"type": "artifact", "pattern": "plans/code_error_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b4-code"}
+  ],
+  "code_b5": [
+    {"type": "artifact", "pattern": "_code_error_recheck/**/*.md"},
+    {"type": "validate", "validator": "lint:b5-code"}
+  ],
+  "code_b6": [
+    {"type": "artifact", "pattern": "code_error_register.md"}
+  ],
+  "b7": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "code_error_register.md"}
+  ],
+  "b8": [
+    {"type": "artifact", "pattern": "_staging/*.md"},
+    {"type": "validate", "validator": "lint:b8"}
+  ],
+  "b9": [
+    {"type": "artifact", "pattern": "code_review.xlsx"},
+    {"type": "validate", "validator": "lint:b9"}
+  ]
+}

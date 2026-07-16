@@ -29,9 +29,11 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
    worker, single message, `worker_model` from the manifest); set `{CONTRACT_PATH}` to
    `audit/_run/contracts/claims_first_pass.md`.
 2. A worker is complete when its shard exists at the planned path **and** passes
-   `lint_registers.py --stage b2-claims --shard <path>`.
+   `lint_registers.py --stage b2-claims --shard <path>`; then record it with
+   `certify_stage.py set-shard --stage claims_b2 --shard <path> --status done`.
 3. On lint failure: re-dispatch that worker once with the lint report appended. Second failure:
-   mark the shard blocked in the manifest, continue.
+   run `certify_stage.py set-shard --stage claims_b2 --shard <path> --status blocked --reason
+   "<lint failure>"`, then continue.
 
 ## b3 — First merge (adds rows)
 
@@ -53,7 +55,7 @@ the merged claims register now records, across many rows, the conventions the pa
 more than one place; this step collects them into one small list so the code-stream recheck (b4,
 `pipeline-code-errors.md`) can grep the codebase for sites that violate each. Runs after the
 first merge (b3), before the recheck plan (b4). Non-blocking: a package with no qualifying
-convention produces an empty-or-absent artifact and nothing downstream fails.
+convention produces a header-only artifact and nothing downstream fails.
 
 1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/conventions.md`. It reads the canonical
@@ -70,11 +72,11 @@ convention produces an empty-or-absent artifact and nothing downstream fails.
    second side of the comparison is supplied by the code-side re-materialization sites the b4
    grep locates, not by a second register row.
 2. If no convention qualifies — none is used in more than one place and no single register row
-   names an enumerated member list — the worker writes the table header with no rows (or omits
-   the file). Either is valid; the step never blocks and adds no register rows.
+   names an enumerated member list — the worker writes the table header with no rows. The file is
+   always present and non-empty; the step never blocks and adds no register rows.
 3. This step mutates no canonical register, so there is no snapshot/staging/rename. It is a
-   read-only emit; the artifact is advisory input to the code-stream recheck grep. Manifest
-   `claims_b3c = done`.
+   read-only emit; the artifact is advisory input to the code-stream recheck grep. Certify with
+   `certify_stage.py finish --stage claims_b3c --outcome done`.
 
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
 
@@ -82,11 +84,14 @@ A recall pass, not a recheck: re-read every file/section the first pass already 
 surface the inconsistencies it missed. See `references/review-principles.md` for why. Runs after
 b3, before the recheck plan (b4), so the new rows flow into the recheck automatically.
 
-1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Mechanically compute
-   the set of files/sections that produced at least one issue-flagged (`inconsistent`) claim — at
+1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Start
+   `claims_b3b` as required by SKILL.md, then mechanically compute the set of files/sections that
+   produced at least one issue-flagged (`inconsistent`) claim — at
    `shallow` only those with a Severity ≥ 3 issue, at `standard`/`deep` any issue-flagged claim.
    Key each trigger to the claim row's `Code/Data Source` file(s) and `Paper Context` section. If
-   the set is empty, skip b3b.
+   the set is empty, do not dispatch workers; certify `claims_b3b` done via
+   `certify_stage.py finish --stage claims_b3b --outcome done` against the canonical registers
+   already promoted by b3.
 2. **Allocation.** Write `audit/plans/claims_second_read_plan.md` yourself: one second-read worker
    per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File | Claim ID
    Range | Output ID Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint
@@ -106,7 +111,8 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    **adds** the new rows to the existing canon, preserving every b3 row unchanged.
 5. `lint_registers.py --stage b3b-claims` (new claim rows in b3b ranges and `inconsistent` or
    `unclear`; new output rows not `listed`/`confirmed`; no b3 row deleted or mutated; C↔O links
-   bidirectional; report identity holds). Atomic rename on pass. Manifest `claims_b3b = done`.
+   bidirectional; report identity holds). Atomic rename on pass, then certify with
+   `certify_stage.py finish --stage claims_b3b --outcome done`.
 
 The recheck inventory (b4) then picks up every new issue-flagged and `unclear` row.
 
@@ -137,8 +143,10 @@ looping. Run `lint_registers.py --stage b4-claims`.
 
 Fill `prompts/recheck-cluster-worker.md` per cluster (stream = claims), with
 `{CONTRACT_PATH}` set to `audit/_run/contracts/recheck_claims.md`. Completion, lint (`--stage
-b5-claims --shard <path>`), retry, and blocked handling as in b2. Workers judge assigned IDs
-only and mint no IDs.
+b5-claims --shard <path>`), and retry follow b2. Record a passing shard with
+`certify_stage.py set-shard --stage claims_b5 --shard <path> --status done`, or a twice-failing
+shard with `--status blocked --reason "<lint failure>"`. Workers judge assigned IDs only and
+mint no IDs.
 
 ## b6 — Recheck merge (mutates rows)
 
@@ -150,5 +158,5 @@ only and mint no IDs.
 3. `lint_registers.py --stage b6-claims` (row counts vs snapshot unless declared; statuses in
    the b6+ allowed set; summary exists). On pass, atomic rename.
 
-Stream complete: manifest `claims_b6 = done`; `confirmation_needed`/`blocked` rows survive
-as-is.
+Stream complete: certify with `certify_stage.py finish --stage claims_b6 --outcome done`;
+`confirmation_needed`/`blocked` rows survive as-is.

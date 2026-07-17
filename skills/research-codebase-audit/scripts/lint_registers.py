@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import definition_use as du
+import build_detector_mapping as detector_mapping
 
 # --------------------------------------------------------------- constants
 
@@ -1042,11 +1043,20 @@ def stage_b3b(lint, audit, stream, manifest):
         b1_plan = audit / "plans" / "code_error_review_plan.md"
         b1_alloc, b1_coord = parse_plan(lint, b1_plan, "Chunk ID")
         b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Error ID Range"]) if b1_alloc else []
+        detector_ranges = []
+        mapping_path = audit / "_run" / "detector_mapping.md"
+        if mapping_path.exists():
+            try:
+                declared, _display, _rows = detector_mapping.load_mapping(mapping_path)
+                detector_ranges.append(declared)
+            except detector_mapping.MappingError as exc:
+                lint.fail(f"{mapping_path}: {exc}")
     check_manifest_worker_shards(
         lint, manifest, f"{stream}_b3b", plan, "Worker ID", alloc,
     )
     # machinery (a): b3b ranges disjoint from b1 ranges, the merge-coordinator range, and each other
-    check_disjoint(lint, plan, ranges + b1_ranges + b1_coord)
+    check_disjoint(lint, plan, ranges + b1_ranges + b1_coord
+                   + (detector_ranges if stream == "code" else []))
 
     total_new = 0
     for f, cols, idc in files:
@@ -1231,57 +1241,25 @@ def parse_recheck_plan(lint, audit, stream):
     return plan, inventory, clusters
 
 
-def parse_definition_use_artifact(lint, audit):
-    """Return standard Bundle IDs from the required b4 detector artifact."""
-    path = audit / "_run" / "definition_use_bundles.md"
-    text = read_text(lint, path)
-    if text is None:
-        lint.fail(f"{path}: missing required b4 definition/use artifact")
-        return None
+def parse_detector_mappings(lint, audit):
+    path = audit / "_run" / "detector_mapping.md"
     try:
-        artifact = du.parse_artifact(text)
-    except du.DefinitionUseFormatError as exc:
+        _declared, _display, rows = detector_mapping.load_mapping(path)
+        return rows
+    except detector_mapping.MappingError as exc:
         lint.fail(f"{path}: {exc}")
-        return None
-    return [row["Bundle ID"] for row in artifact.standard_rows]
-
-
-def parse_definition_use_mappings(lint, plan):
-    """Return rows from the code recheck plan's exact mapping table."""
-    text = read_text(lint, plan)
-    if text is None:
-        return []
-    try:
-        return du.parse_mappings(text)
-    except du.DefinitionUseFormatError as exc:
-        lint.fail(f"{plan}: {exc}")
         return []
 
 
-def check_definition_use_b4(lint, audit, plan, inventory):
-    bundle_ids = parse_definition_use_artifact(lint, audit)
-    if bundle_ids is None:
-        return
-    mappings = parse_definition_use_mappings(lint, plan)
-    by_bundle = {}
-    for row in mappings:
-        bid, eid, kind = row["Bundle ID"], row["Error ID"], row["Mapping Kind"]
-        by_bundle.setdefault(bid, []).append(row)
-        if kind not in du.MAPPING_KINDS:
-            lint.fail(f"{plan}: Bundle ID {bid} has invalid Mapping Kind '{kind}'")
-        if not re.fullmatch(ID_RE["E"], eid):
-            lint.fail(f"{plan}: Bundle ID {bid} has invalid Error ID '{eid}'")
-        if bid not in bundle_ids:
-            lint.fail(f"{plan}: mapping names {bid}, which is not a standard bundle "
-                      "in definition_use_bundles.md")
-    for bid in bundle_ids:
-        count = len(by_bundle.get(bid, []))
-        if count == 0:
-            lint.fail(f"{plan}: standard Bundle ID {bid} is unmapped")
-        elif count != 1:
-            lint.fail(f"{plan}: standard Bundle ID {bid} is mapped {count} times "
-                      "(expected exactly once)")
+def _names_source(text, source_id):
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9_-]){re.escape(source_id)}(?![A-Za-z0-9_-])",
+        text or "",
+    ))
 
+
+def check_detector_mapping_b4(lint, audit, plan, inventory):
+    mappings = parse_detector_mappings(lint, audit)
     inv_by_id = {}
     for row in inventory:
         inv_by_id.setdefault(row.get("ID", ""), []).append(row)
@@ -1290,28 +1268,30 @@ def check_definition_use_b4(lint, audit, plan, inventory):
     if register:
         canonical = {dict(zip(ERROR_COLS, row))["Error ID"]:
                      dict(zip(ERROR_COLS, row)) for row in register[1]}
-    for bid, rows in by_bundle.items():
-        if len(rows) != 1 or bid not in bundle_ids:
-            continue
-        eid = rows[0]["Error ID"]
+    by_error = {}
+    for row in mappings:
+        by_error.setdefault(row["Error ID"], []).append(row)
+    for eid, rows in by_error.items():
         inv_rows = inv_by_id.get(eid, [])
         if len(inv_rows) != 1:
-            lint.fail(f"{plan}: Bundle ID {bid} maps to {eid}, which is absent "
+            lint.fail(f"{plan}: mapped Error ID {eid} is absent "
                       "from the b4 inventory")
             continue
-        if bid not in du.extract_bundle_tokens(
-                inv_rows[0].get("Likely Evidence", "")):
-            lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
-                      f"mapped Bundle ID {bid}")
-        if rows[0]["Mapping Kind"] == "new_candidate":
+        evidence = inv_rows[0].get("Likely Evidence", "")
+        for source_id in sorted({row["Source ID"] for row in rows}):
+            if not _names_source(evidence, source_id):
+                lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
+                          f"mapped source ID {source_id}")
+        if any(row["Mapping Kind"] == "new_candidate" for row in rows):
             canonical_row = canonical.get(eid)
             if canonical_row is None:
                 continue  # canon_ids reports this independently
             if canonical_row.get("Status") != "candidate":
-                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be a "
+                lint.fail(f"{plan}: new_candidate mapping to {eid} must be a "
                           "candidate canonical row")
-            if canonical_row.get("Error Type") != "sample_filter_or_flag_error":
-                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be typed "
+            if (any(row["Channel"] == "DU" for row in rows)
+                    and canonical_row.get("Error Type") != "sample_filter_or_flag_error"):
+                lint.fail(f"{plan}: DU new_candidate mapping to {eid} must be typed "
                           "sample_filter_or_flag_error")
 
 
@@ -1331,14 +1311,14 @@ def _all_code_recheck_ledger_rows(lint, audit):
     return rows
 
 
-def check_definition_use_b6(lint, audit):
+def check_detector_mapping_b6(lint, audit):
     plan = recheck_plan_path(audit, "code")
-    mappings = parse_definition_use_mappings(lint, plan)
+    mappings = parse_detector_mappings(lint, audit)
     if not mappings:
         return
     mapped = {}
     for row in mappings:
-        mapped.setdefault(row["Error ID"], []).append(row["Bundle ID"])
+        mapped.setdefault(row["Error ID"], set()).add(row["Source ID"])
     ledger_rows = _all_code_recheck_ledger_rows(lint, audit)
     ledgers_by_id = {}
     for path, row in ledger_rows:
@@ -1357,7 +1337,7 @@ def check_definition_use_b6(lint, audit):
         "blocked": "blocked",
         "deferred": "blocked",
     }
-    for eid, bundle_ids in mapped.items():
+    for eid, source_ids in mapped.items():
         dispositions = ledgers_by_id.get(eid, [])
         if len(dispositions) != 1:
             lint.fail(f"{plan}: mapped Error ID {eid} has {len(dispositions)} ledger "
@@ -1365,10 +1345,9 @@ def check_definition_use_b6(lint, audit):
             continue
         path, ledger = dispositions[0]
         evidence = ledger.get("Evidence Checked", "")
-        evidence_du_ids = du.extract_bundle_tokens(evidence)
-        for bid in bundle_ids:
-            if bid not in evidence_du_ids:
-                lint.fail(f"{path}: mapped Bundle ID {bid} missing from {eid} "
+        for source_id in source_ids:
+            if not _names_source(evidence, source_id):
+                lint.fail(f"{path}: mapped source ID {source_id} missing from {eid} "
                           "Evidence Checked")
         final_row = final_by_id.get(eid)
         if final_row is None:
@@ -1516,7 +1495,7 @@ def stage_b4(lint, audit, stream, manifest=None):
         return
     plan, inventory, clusters = parsed
     if stream == "code":
-        check_definition_use_b4(lint, audit, plan, inventory)
+        check_detector_mapping_b4(lint, audit, plan, inventory)
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
@@ -1692,7 +1671,7 @@ def stage_b6(lint, audit, stream, manifest):
     if total_new != splits:
         lint.fail(f"recheck merge: {total_new} new row(s) across registers but 'Splits declared: {splits}'")
     if stream == "code":
-        check_definition_use_b6(lint, audit)
+        check_detector_mapping_b6(lint, audit)
 
 
 def non_link_identical(lint, st_rows, st_cols, sn_rows, base_cols, idc, link_col, rewrite_pairs, label):

@@ -251,10 +251,33 @@ def recheck_plan_text(stream, inventory, clusters, mappings=()):
     )
     return (f"# {stream} recheck plan\n\n"
             "## Inventory\n\n" + inv + "\n"
-            + ("## Definition/use bundle mapping\n\n" + mapping + "\n"
+            + ("## Legacy fixture-only definition/use mapping\n\n" + mapping + "\n"
                if stream == "code" else "")
             + "## Clusters\n\n" + clu + "\n"
             + "Verdict/evidence vocabulary: `audit/audit_readme.md`.\n")
+
+
+def detector_mapping_artifact(mappings=()):
+    rows = []
+    for i, item in enumerate(mappings, start=1):
+        source_id, error_id, kind = item
+        channel = source_id.split("-", 1)[0]
+        rows.append([channel, source_id, f"{channel}W-{i:012x}", error_id,
+                     kind, f"do/build_panel.do:{20+i}"])
+    du_rows = [row for row in rows if row[0] == "DU"]
+    mf_rows = [row for row in rows if row[0] == "MF"]
+    cols = ["Channel", "Source ID", "Witness ID", "Error ID", "Mapping Kind", "Site Anchor"]
+    def section(marker, section_rows, zero):
+        return marker + "\n\n" + (md_table(cols, section_rows) if section_rows else zero) + "\n"
+    return (
+        "# Detector mapping\n\nDeclared detector Error-ID range: E-7000–E-7999\n\n"
+        + section("<!-- GENERATED:DU -->", du_rows,
+                  "No standard DU rows: the definition/use detector emitted zero standard candidates.")
+        + section("<!-- GENERATED:MF -->", mf_rows,
+                  "No standard MF rows: the manifest detector emitted zero standard candidates.")
+        + section("<!-- CONDUCTOR:CV -->", [],
+                  "No channel-mapped CV rows in U3a: conventions still run at b4 and activate in this mapping in U4.")
+    )
 
 
 def definition_use_artifact(bundle_ids=(), *, standard_bundle_ids=None,
@@ -269,7 +292,8 @@ def definition_use_artifact(bundle_ids=(), *, standard_bundle_ids=None,
         rows = []
         for i, bid in enumerate(bundle_ids, start=1):
             rows.append([
-                f"`{bid}`", f"`(do/build_panel.do, {10+i}, {20+i}, {variable})`",
+                f"`{bid}`", f"`DUW-{i:012x}`",
+                f"`(do/build_panel.do, {10+i}, {20+i}, {variable})`",
                 variable, "boolean_gen", f"`do/build_panel.do:{10+i}`",
                 f"`gen {variable} = consent != \"\"`",
                 f"`do/build_panel.do:{20+i}`",
@@ -281,7 +305,7 @@ def definition_use_artifact(bundle_ids=(), *, standard_bundle_ids=None,
     standard_rows = rows_for(standard_bundle_ids, "consent_ok")
     advisory_rows = rows_for(advisory_bundle_ids, "advisory_ok")
     cols = [
-        "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+        "Bundle ID", "Witness ID", "Identity Tuple", "Variable", "Producer Shape",
         "Definition Site", "Producer Statement", "Consumer Site",
         "Consumer Statement", "Full Guard", "Code/Comment Context",
         "Obligation Question",
@@ -321,6 +345,7 @@ def make_b4(tmp_path, stream, *, canon_claims=(), canon_outputs=(),
         plan_name = "plans/code_error_recheck_plan.md"
         if include_definition_use_artifact:
             a.write("_run/definition_use_bundles.md", definition_use_artifact(bundle_ids))
+        a.write("_run/detector_mapping.md", detector_mapping_artifact(mappings))
     if inventory is None or clusters is None:
         auto_inv, auto_clu = _auto_recheck(stream, canon_claims, canon_errors)
         inventory = auto_inv if inventory is None else inventory
@@ -343,6 +368,7 @@ def make_b6_code(tmp_path, *, before_rows, final_rows, inventory, clusters,
     a.write("plans/code_error_review_plan.md", _code_b1_plan())
     a.write("plans/code_error_recheck_plan.md",
             recheck_plan_text("code", inventory, clusters, mappings))
+    a.write("_run/detector_mapping.md", detector_mapping_artifact(mappings))
     a.write_register("_staging/code_error_register.md", ERROR_COLS,
                      list(final_rows), title="Code-error register")
     a.write_register("_run/snapshots/code_b6/code_error_register.md", ERROR_COLS,

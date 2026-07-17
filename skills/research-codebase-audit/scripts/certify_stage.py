@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mechanism_schema import MECHANISM_SCHEMA_VERSION
+from source_projection import iter_in_scope_entries
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -26,13 +27,13 @@ FULL_STAGES = (
     "b0",
     "claims_b1", "claims_b2", "claims_b3", "claims_b3c", "claims_b3b",
     "claims_b4", "claims_b5", "claims_b6",
-    "code_b1", "code_b2", "code_b3", "code_b3b", "code_b4", "code_b5",
+    "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
     "code_b6",
     "b7", "b8", "b9",
 )
 CODE_ONLY_STAGES = (
     "b0",
-    "code_b1", "code_b2", "code_b3", "code_b3b", "code_b4", "code_b5",
+    "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
     "code_b6",
     "b8", "b9",
 )
@@ -108,29 +109,6 @@ def write_manifest_atomic(package_root, manifest):
         raise
 
 
-def _path_is_excluded(relative, exclusions):
-    return any(relative == excluded or excluded in relative.parents
-               for excluded in exclusions)
-
-
-def _existing_exclusions(package_root, manifest):
-    exclusions = {Path("audit")}
-    for field in ("scope_exclusions", "off_limits"):
-        values = manifest.get(field, [])
-        if not isinstance(values, list):
-            continue
-        for raw in values:
-            if not isinstance(raw, str) or not raw.strip():
-                continue
-            relative = Path(raw)
-            if relative.is_absolute() or ".." in relative.parts:
-                continue
-            candidate = package_root / relative
-            if candidate.exists():
-                exclusions.add(relative)
-    return exclusions
-
-
 def _sha256_file(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -142,24 +120,11 @@ def _sha256_file(path):
 def compute_tree_fingerprint(package_root, manifest):
     """Hash regular files and link target strings in the audited tree."""
     package_root = canonical_package_root(package_root)
-    exclusions = _existing_exclusions(package_root, manifest)
     entries = []
-
-    def walk(directory):
-        for entry in sorted(os.scandir(directory), key=lambda item: item.name):
-            path = Path(entry.path)
-            relative = path.relative_to(package_root)
-            if _path_is_excluded(relative, exclusions):
-                continue
-            if entry.is_symlink():
-                target_hash = hashlib.sha256(os.readlink(path).encode("utf-8")).hexdigest()
-                entries.append((relative.as_posix(), target_hash))
-            elif entry.is_dir(follow_symlinks=False):
-                walk(path)
-            elif entry.is_file(follow_symlinks=False):
-                entries.append((relative.as_posix(), _sha256_file(path)))
-
-    walk(package_root)
+    for path, relative, kind in iter_in_scope_entries(package_root, manifest):
+        digest = (hashlib.sha256(os.readlink(path).encode("utf-8")).hexdigest()
+                  if kind == "symlink" else _sha256_file(path))
+        entries.append((relative.as_posix(), digest))
     serialized = "\n".join(f"{relative},{digest}" for relative, digest in sorted(entries))
     return {
         "aggregate_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
@@ -334,6 +299,11 @@ def _resolve_shard_path(package_root, audit, raw):
 
 
 def _validator_commands(identifier, package_root, audit, stage_entry_value):
+    if identifier == "detector:mapping":
+        return [[
+            sys.executable, str(SCRIPT_DIR / "build_detector_mapping.py"),
+            str(package_root), "--audit-dir", str(audit), "--check",
+        ]]
     lint_stage = VALIDATORS.get(identifier)
     if lint_stage is None:
         raise CertificationError(f"unknown validator identifier {identifier!r}")

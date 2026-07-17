@@ -69,7 +69,8 @@ def channel_artifact(*, p21=True, d03=True):
     rows = []
     if p21:
         rows.append([
-            f"`{P21_DU}`", "`(do/build_panel.do, 15, 18, consent_ok)`",
+            f"`{P21_DU}`", "`DUW-p21abc`",
+            "`(do/build_panel.do, 15, 18, consent_ok)`",
             "consent_ok", "boolean_gen", "`do/build_panel.do:15`",
             "`gen consent_ok = ...`", "`do/build_panel.do:18`",
             "`keep if consent_ok == 1 & consent == individual`",
@@ -77,7 +78,8 @@ def channel_artifact(*, p21=True, d03=True):
         ])
     if d03:
         rows.append([
-            f"`{D03_DU}`", "`(do/analysis.do, 13, 14, baseline_diag_ok)`",
+            f"`{D03_DU}`", "`DUW-d03abc`",
+            "`(do/analysis.do, 13, 14, baseline_diag_ok)`",
             "baseline_diag_ok", "boolean_gen", "`do/analysis.do:13`",
             "`gen baseline_diag_ok = (svy_weight != .)`", "`do/analysis.do:14`",
             "`keep if baseline_diag_ok == 1 & wave == 1`",
@@ -90,14 +92,14 @@ def channel_artifact(*, p21=True, d03=True):
         f"- Standard candidates: {len(rows)}\n"
         "- Advisory candidates: 0\n\n## Candidate findings\n\n"
         + rb.md_table([
-            "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+            "Bundle ID", "Witness ID", "Identity Tuple", "Variable", "Producer Shape",
             "Definition Site", "Producer Statement", "Consumer Site",
             "Consumer Statement", "Full Guard", "Code/Comment Context",
             "Obligation Question",
         ], rows)
         + "\n## Advisory candidates\n\n"
         + rb.md_table([
-            "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+            "Bundle ID", "Witness ID", "Identity Tuple", "Variable", "Producer Shape",
             "Definition Site", "Producer Statement", "Consumer Site",
             "Consumer Statement", "Full Guard", "Code/Comment Context",
             "Obligation Question",

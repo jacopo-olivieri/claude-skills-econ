@@ -419,12 +419,11 @@ def _definition_use_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
     )
 
 
-def test_b4_code_missing_definition_use_artifact_fails(tmp_path):
+def test_b4_code_no_longer_reads_definition_use_artifact(tmp_path):
     a = _definition_use_b4(tmp_path, bundle_ids=(), mappings=[],
                    include_artifact=False)
     res = rb.lint(a, "b4-code")
-    assert res.returncode == 1
-    assert "definition_use_bundles.md" in res.stdout and "missing" in res.stdout
+    assert res.returncode == 0
 
 
 def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
@@ -440,7 +439,7 @@ def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
+def test_b4_code_leaves_raw_artifact_validation_to_b3d(tmp_path):
     a = _definition_use_b4(tmp_path)
     path = a.audit / "_run" / "definition_use_bundles.md"
     path.write_text(path.read_text().replace(
@@ -448,8 +447,7 @@ def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
 
     res = rb.lint(a, "b4-code")
 
-    assert res.returncode == 1
-    assert "Standard candidates count" in res.stdout
+    assert res.returncode == 0
 
 
 def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
@@ -472,9 +470,6 @@ def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
 
 
 @pytest.mark.parametrize("mappings, evidence, token", [
-    ([], "DU-aaa111", "unmapped"),
-    ([('DU-aaa111', 'E-0101', 'new_candidate'),
-      ('DU-aaa111', 'E-0101', 'existing_row')], "DU-aaa111", "mapped 2 times"),
     ([('DU-aaa111', 'E-0999', 'new_candidate')], "DU-aaa111", "absent from the b4 inventory"),
     ([('DU-aaa111', 'E-0101', 'new_candidate')], "static source", "Likely Evidence"),
 ])

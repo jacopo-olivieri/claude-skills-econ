@@ -21,3 +21,5 @@ def pytest_configure(config):
         "markers", "u1: unit U1 — mechanism schema and canonicalizer (issue #14)")
     config.addinivalue_line(
         "markers", "u2: unit U2 — descoped stage certification core")
+    config.addinivalue_line(
+        "markers", "u3: unit U3 — detector channels and adjudication")

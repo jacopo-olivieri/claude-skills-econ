@@ -19,7 +19,7 @@ Reference files (all paths relative to this skill's folder):
 - `references/prompts/` — fixed prompt skeletons with slot tables.
 - `scripts/lint_registers.py`, `scripts/blank_tex_comments.py`, `scripts/export_xlsx.py`,
   `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py` (both conductor-invoked at
-  `b4`; see `references/pipeline-code-errors.md`), and `scripts/certify_stage.py` (the only
+  certified `b3d`; see `references/pipeline-code-errors.md`), and `scripts/certify_stage.py` (the only
   writer of stage status; its typed evidence table is `scripts/stage_obligations.json`).
 
 Invariants you never break:
@@ -108,7 +108,8 @@ initialization, every stage-status or shard-status change goes through `certify_
 edit those blocks by hand.
 
 `init` derives the ordered stage keys from `mode`. They are stream-qualified: `b0`,
-`claims_b1`…`claims_b6`, claims consolidation `claims_b3c`, `code_b1`…`code_b6`, the
+`claims_b1`…`claims_b6`, claims consolidation `claims_b3c`, `code_b1`…`code_b6`, detector
+emission `code_b3d`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
 exist only where the mode runs them). Worker shard outcomes are recorded only with
 `certify_stage.py set-shard`; the stage itself is certified separately.
@@ -170,6 +171,7 @@ each stream:
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
 | `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
+| `code_b3d` deterministic detector emission and mapping | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
 | `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
 | `code_b4`–`code_b6` (recheck plan → cluster workers → merge) | `b4-code`–`b6-code` | `references/pipeline-code-errors.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |

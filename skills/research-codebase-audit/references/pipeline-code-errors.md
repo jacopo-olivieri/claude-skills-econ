@@ -58,6 +58,28 @@ Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3/`; dispatch
 every inventory script is covered (coverage row in some shard footer) or has a documented
 blocker. Atomic rename on pass.
 
+## b3d — Deterministic detector emission and mapping (conductor-only)
+
+Start `code_b3d`, then snapshot `code_error_register.md` to
+`audit/_run/snapshots/code_b3d/`. Run
+`emit_definition_use_bundles.py <package_root> --audit-dir audit` and
+`check_manifests.py <package_root> --audit-dir audit`; both artifacts are required even when
+their explicit standard-row count is zero. For every standard `DU-…` or `MF-…` source, record
+one conductor decision in `audit/_run/detector_mapping_decisions.md` under
+`| Channel | Source ID | Error ID | Mapping Kind |`, with `Mapping Kind` exactly
+`new_candidate` or `existing_row`, plus one
+`Declared detector Error-ID range: E-NNNN–E-NNNN` line. Advisory DU rows are not decided.
+
+Copy the canonical code-error register to `_staging/` and append one typed `candidate` row for
+each `new_candidate` decision, using only the declared detector range. Run
+`build_detector_mapping.py <package_root> --audit-dir audit`; it validates the staged register,
+the raw artifacts, the decisions, and the pre-b3d snapshot before atomically writing
+`audit/_run/detector_mapping.md`. On success atomically rename the staged register over canon,
+then run `certify_stage.py finish --stage code_b3d --outcome done`. Certification re-runs
+`build_detector_mapping.py --check`, including the simple detector reproducibility check. A
+missing raw artifact is never zero. The CV section uses its exact U3a explicit-zero form;
+shared conventions remain at b4 until U4.
+
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
 
 A recall pass, not a recheck: re-read every file the first pass already flagged, to surface what
@@ -142,42 +164,11 @@ the b4 inventory so the recheck resolves it. If the artifact is absent or lists 
 skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
 the claims side reaches the code side as a concrete grep target.
 
-**Manifest-parseability check (conductor-invoked script; adds candidates before the plan is
-frozen).** Alongside the shared-conventions grep, and likewise before writing the recheck plan,
-run `check_manifests.py <package_root> --audit-dir audit`. The script parses every recognized
-dependency and configuration manifest the way its consuming tool would (TOML via the
-standard-library parser; requirements-style lists via the crude line grammar documented in the
-script's docstring) and writes `audit/_run/manifest_check.md`. If the package documentation or any
-script passes a file to an installer (for example `pip install -r somefile`), hand that file to the
-checker with `--also somefile`, whatever its name, since a requirements manifest need not be named
-`requirements.txt`. Each row of that artifact's
-candidate-findings table becomes a new `candidate` code-error row — typed
-`version_or_dependency_error` for a dependency line an installer would reject, or
-`readme_or_package_mismatch` where the defect is between the documented setup and the shipped
-manifest — minted from an unused error-ID range and folded into the b4 inventory so the recheck
-resolves it (a worker dispositions every candidate; a legitimate line the crude grammar
-over-flagged closes as `not_error`). The script never hard-fails on package content and its exit
-status carries no findings; if the artifact reports no candidates, nothing is added — non-blocking.
-
-**Definition/use detector (conductor-invoked script; adds mechanical candidates before the plan
-is frozen).** Beside `check_manifests.py`, run
-`emit_definition_use_bundles.py <package_root> --audit-dir audit`. The script always writes
-`audit/_run/definition_use_bundles.md`, including when no qualifying Stata bundle exists. For every
-standard (non-advisory) `DU-…` row, add exactly one row to a
-`## Definition/use bundle mapping` table in `code_error_recheck_plan.md`:
-
-`| Bundle ID | Error ID | Mapping Kind |`
-
-`Mapping Kind` is exactly `new_candidate` or `existing_row`. A new candidate is typed
-`sample_filter_or_flag_error`, minted from an unused Error-ID range, and added to the canonical
-register before the plan is frozen; an existing-row mapping reuses the equivalent canonical
-Error ID. Every mapped Error ID must appear in the b4 inventory, and that inventory row's
-`Likely Evidence` must name every `DU-…` mapped to it. Multiple bundles may map to one canonical
-row, but each standard Bundle ID appears in the mapping exactly once. Recode advisory rows stay
-visible in the artifact and are not mapped. The detector is mechanical: comments and apparent
-intent are evidence for recheck, never reasons for the conductor to suppress a standard row.
-`lint_registers.py --stage b4-code` enforces the artifact-to-inventory handoff; a valid explicit
-zero-bundle artifact passes, while a missing artifact never means zero.
+Detector-minted candidates already exist as ordinary canonical `candidate` rows before this plan
+is built, so the ordinary every-candidate inventory rule includes them. The b4-code lint also
+reads `audit/_run/detector_mapping.md`: every mapped Error ID must occur in the inventory, and its
+`Likely Evidence` must name every mapped DU or MF source ID. The detector mapping table does not
+live in `code_error_recheck_plan.md`.
 
 ## b5 — Recheck cluster workers (parallel)
 

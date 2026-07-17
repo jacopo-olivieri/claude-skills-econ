@@ -51,6 +51,11 @@ to `{SUMMARY_FILE}`.
    (three-part structure). When a verdict sets a claim row to `blocked`, populate its
    `Blocked Check` column from the ledger (what stayed checkable from visible material and the
    result) — it is required non-empty on every `blocked` claim.
+   For a mechanically mapped code-error row, never write `not_error`: leave the staged row at its
+   non-dismissal state for the conductor's boundary assembler. Apply `confirmation_needed`
+   proposals of severity 3–4 at severity 2. Derive a mapped `duplicate_of:<ID>` only after the
+   guarded-duplicate legs in the contract pass; otherwise keep the row `confirmed` or
+   `confirmation_needed`.
 3. Follow the row-lifecycle rules in `{CONTRACT_PATH}`: never delete; demotions follow
    the mapping; cross-cluster duplicates become tombstones; splits/merges only when required
    to represent the evidence faithfully, each declared in the summary, with split rows
@@ -62,6 +67,10 @@ to `{SUMMARY_FILE}`.
 6. Resolve conflicting verdicts on the same ID conservatively (the weaker claim about the
    evidence wins: `confirmation_needed` over `confirmed`); think hard about each such
    conflict and record the reasoning in the summary.
+7. When mapped witnesses split, add the exact normalized lineage table to the summary:
+   `Original Error ID | Descendant Error ID | Channel | Source ID | Witness ID`, one row per
+   witness, including the branch that keeps the original ID. Descendant sets must be non-empty,
+   disjoint, and cover the parent's complete mapped witness set.
 
 ## CONSTRAINTS
 

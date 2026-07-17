@@ -426,10 +426,10 @@ def test_downstream_b6_requires_each_du_and_mf_source_and_one_disposition(tmp_pa
     missing = rb.lint(a, "b6-code")
     assert missing.returncode == 1 and "E-0102" in missing.stdout and "ledger" in missing.stdout
     a.write("_code_error_recheck/k1.md", rb.register_text(
-        "Recheck ledger", rb.LEDGER_COLS,
-        [rb.ledger_row("E-0101", evidence="DU-aaa111"),
-         rb.ledger_row("E-0102", evidence="MF-bbb222"),
-         rb.ledger_row("E-0102", evidence="MF-bbb222")]))
+        "Recheck ledger", rb.CODE_LEDGER_COLS,
+        [rb.code_ledger_row("E-0101", evidence="DU-aaa111", witness_ids="DUW-000000000001"),
+         rb.code_ledger_row("E-0102", evidence="MF-bbb222", witness_ids="MFW-000000000002"),
+         rb.code_ledger_row("E-0102", evidence="MF-bbb222", witness_ids="MFW-000000000002")]))
     duplicate = rb.lint(a, "b6-code")
     assert duplicate.returncode == 1 and "E-0102 has 2 ledger rows" in duplicate.stdout
 

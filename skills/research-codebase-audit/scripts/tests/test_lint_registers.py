@@ -588,7 +588,7 @@ def test_b6_code_requires_ledger_final_status_agreement(tmp_path):
 
 
 @pytest.mark.parametrize("explicit", [True, False])
-def test_b6_code_duplicate_must_name_confirmed_canonical_issue(tmp_path, explicit):
+def test_b6_code_unmapped_target_is_not_a_guarded_derived_duplicate(tmp_path, explicit):
     before = [
         rb.error_row("E-0101", status="candidate", severity="2",
                      etype="sample_filter_or_flag_error"),
@@ -612,11 +612,8 @@ def test_b6_code_duplicate_must_name_confirmed_canonical_issue(tmp_path, explici
         ledger_rows=[ledger],
     )
     res = rb.lint(a, "b6-code")
-    if explicit:
-        assert res.returncode == 0, res.stdout + res.stderr
-    else:
-        assert res.returncode == 1
-        assert "does not explicitly name equivalent canonical issue row" in res.stdout
+    assert res.returncode == 1
+    assert "verdict 'confirmed_error' requires final status 'confirmed'" in res.stdout
 
 
 def test_b6_code_duplicate_rejects_not_error_verdict(tmp_path):
@@ -644,7 +641,8 @@ def test_b6_code_duplicate_rejects_not_error_verdict(tmp_path):
     )
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
-    assert "duplicate" in res.stdout and "confirmed_error" in res.stdout
+    assert "verdict 'not_error' requires final status 'not_error'" in res.stdout
+    assert "lacks qualifying receipt coverage" in res.stdout
 
 
 # --------------------- U4 identifier-anchoring advisory (b5-claims ledger)

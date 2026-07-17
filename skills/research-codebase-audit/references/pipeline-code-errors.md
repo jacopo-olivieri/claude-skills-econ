@@ -176,15 +176,19 @@ live in `code_error_recheck_plan.md`.
 `audit/_run/contracts/recheck_code.md`. Same completion/lint/retry rules (`--stage b5-code`).
 Record each passing shard with `certify_stage.py set-shard --stage code_b5 --shard <path> --status
 done`, or a twice-failing shard with `--status blocked --reason "<lint failure>"`.
-No new IDs; no hunting for unrelated errors.
+The blocked command writes one conductor fallback ledger row per assigned ID. After every shard is
+terminal, run `scripts/verify_dismissals.py <package-root> --audit-dir audit`; it always writes
+`audit/_run/dismissal_receipts.md`, using the explicit-zero form when no mapped `not_error` is
+proposed. No new IDs; no hunting for unrelated errors.
 
 ## b6 — Recheck merge (mutates rows)
 
 Snapshot → `prompts/merge-recheck.md` (stream = code, `{CONTRACT_PATH}` =
 `audit/_run/contracts/merge_recheck.md`) → staging +
-`audit/code_error_recheck_summary.md` → `lint_registers.py --stage b6-code` → atomic rename.
-The b6 lint also closes the definition/use channel: every mapped Bundle ID must occur in the
-mapped Error ID's ledger `Evidence Checked`, that Error ID must have exactly one ledger
-disposition, and the final register status must agree with it. A duplicate disposition must name
-the equivalent canonical confirmed issue row explicitly. Advisory bundles are excluded.
+`audit/code_error_recheck_summary.md`. Then run `scripts/assemble_boundary.py <package-root>
+--audit-dir audit` before `lint_registers.py --stage b6-code`; only the assembler may apply a
+mechanically mapped `not_error`. The lint re-joins every mapping, witness outcome, verification
+record, receipt, split-lineage row, and duplicate on the full channel/source/witness key; it
+requires exactly one disposition and final-status agreement. After the lint passes, atomically
+promote the staged register.
 After promotion, certify with `certify_stage.py finish --stage code_b6 --outcome done`.

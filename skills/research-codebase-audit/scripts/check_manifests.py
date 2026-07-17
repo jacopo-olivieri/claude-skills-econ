@@ -345,10 +345,24 @@ def check_conda_file(rel, path, findings, oracle_path):
              "--prefix", str(Path(prefix) / "env"), "--file", str(path)],
             capture_output=True, text=True, env=scrubbed,
         )
-    if result.returncode == 0:
+    accepted = (result.returncode == 0
+                or CONDA_SOLVE_FAILURE in (result.stderr or ""))
+    if accepted and not suspicious:
         return 0
-    if CONDA_SOLVE_FAILURE in (result.stderr or ""):
-        return 0
+    if accepted:
+        # Candidate, not conviction: YAML block-scalar prose and other
+        # non-structural lines can be legal even though the cheap lexical
+        # tripwire cannot classify them. Preserve those witnesses for b5;
+        # U3b's pinned-oracle receipt is the mechanical not_error escape.
+        for lineno, raw in suspicious:
+            findings.append({
+                "manifest": rel, "format": "conda", "line": str(lineno),
+                "text": raw,
+                "problem": ("non-structural conda line needs adjudication; "
+                            "the authoritative oracle accepted the whole file"),
+                "detected_by": "filename", "rule_slug": "conda-malformed-line",
+            })
+        return len(suspicious)
     detail = " ".join((result.stderr or result.stdout).split()).replace(
         prefix, "<temporary-prefix>")[-500:]
     if suspicious:

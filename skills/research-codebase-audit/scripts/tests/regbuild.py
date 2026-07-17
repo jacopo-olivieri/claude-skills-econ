@@ -42,6 +42,12 @@ CLAIMS_COLS = _lint_mod.CLAIMS_COLS
 OUTPUT_COLS = _lint_mod.OUTPUT_COLS
 ERROR_COLS = _lint_mod.ERROR_COLS
 LEDGER_COLS = _lint_mod.LEDGER_COLS
+CODE_LEDGER_COLS = _lint_mod.CODE_LEDGER_COLS
+WITNESS_OUTCOME_COLS = _lint_mod.WITNESS_OUTCOME_COLS
+MF_VERIFICATION_COLS = _lint_mod.MF_VERIFICATION_COLS
+PROBE_VERIFICATION_COLS = _lint_mod.PROBE_VERIFICATION_COLS
+POST_WITNESS_COLS = _lint_mod.POST_WITNESS_COLS
+_mechanism_mod = load_script("mechanism_schema")
 
 
 def run_script(name, *args, cwd=None):
@@ -235,6 +241,42 @@ def ledger_row(rid, *, status="candidate", severity="3",
             impact, note]
 
 
+def code_ledger_row(rid, *, status="candidate", severity="2", evidence="source",
+                    level="static_source_verified", verdict="confirmed_error",
+                    change="set status=confirmed", impact="output impact",
+                    note="documented disposition", proposed_status=None,
+                    proposed_severity=None,
+                    accepted_type="sample_filter_or_flag_error",
+                    accepted_mechanism="guard changes the selected sample",
+                    witness_ids="—", duplicate_target="—", patches="—",
+                    record_ids="—"):
+    if proposed_status is None:
+        proposed_status = {
+            "confirmed_error": "confirmed", "not_error": "not_error",
+            "confirmation_needed": "confirmation_needed", "blocked": "blocked",
+            "deferred": "blocked", "duplicate": f"duplicate_of:{duplicate_target}",
+        }[verdict]
+    if proposed_severity is None:
+        proposed_severity = ("—" if verdict in {"not_error", "duplicate"}
+                             else severity)
+    return ledger_row(
+        rid, status=status, severity=severity, evidence=evidence, level=level,
+        verdict=verdict, change=change, impact=impact, note=note,
+    ) + [
+        proposed_status, proposed_severity, accepted_type, accepted_mechanism,
+        witness_ids, duplicate_target, patches, record_ids,
+    ]
+
+
+def witness_outcome_row(channel, source_id, witness_id, *,
+                        verdict="confirmed_error", severity="2",
+                        duplicate_target="—", mech_class="sample_filter_or_flag_error",
+                        mech_object="sample_ok", relation="wrong_value",
+                        expected="1", actual="0"):
+    return [channel, source_id, witness_id, verdict, mech_class, mech_object,
+            relation, expected, actual, severity, duplicate_target]
+
+
 def recheck_plan_text(stream, inventory, clusters, mappings=()):
     """A recheck plan (b4 output): inventory table + cluster table + vocab pointer.
 
@@ -374,8 +416,72 @@ def make_b6_code(tmp_path, *, before_rows, final_rows, inventory, clusters,
     a.write_register("_run/snapshots/code_b6/code_error_register.md", ERROR_COLS,
                      list(before_rows), title="Code-error register")
     a.write_recheck_summary("code")
-    a.write("_code_error_recheck/k1.md",
-            register_text("Recheck ledger", LEDGER_COLS, list(ledger_rows)))
+    final_by_id = {
+        dict(zip(ERROR_COLS, row))["Error ID"]: dict(zip(ERROR_COLS, row))
+        for row in final_rows
+    }
+    upgraded = []
+    for row in ledger_rows:
+        if len(row) == len(CODE_LEDGER_COLS):
+            upgraded.append(row)
+            continue
+        data = dict(zip(LEDGER_COLS, row))
+        witness_ids = "; ".join(
+            f"{source.split('-', 1)[0]}W-{index:012x}"
+            for index, (source, mapped_id, _kind) in enumerate(mappings, start=1)
+            if mapped_id == data["ID"])
+        upgraded.append(code_ledger_row(
+            data["ID"], status=data["Current Status"],
+            severity=data["Current Severity"], evidence=data["Evidence Checked"],
+            level=data["Evidence Level"], verdict=data["Verdict"],
+            change=data["Proposed Register Change"],
+            impact=data["Pipeline/Output Impact"], note=data["Proposed Note"],
+            proposed_severity=(
+                final_by_id.get(data["ID"], {}).get("Severity")
+                or data["Current Severity"]
+                if data["Verdict"] == "confirmed_error" else None
+            ),
+            witness_ids=witness_ids or "—",
+        ))
+    ledger_by_id = {row[0]: dict(zip(CODE_LEDGER_COLS, row)) for row in upgraded}
+    pre_rows, post_rows = [], []
+    for index, (source, mapped_id, _kind) in enumerate(mappings, start=1):
+        channel = source.split("-", 1)[0]
+        witness = f"{channel}W-{index:012x}"
+        anchor = f"do/build_panel.do:{20 + index}"
+        ledger = ledger_by_id.get(mapped_id)
+        if ledger is None:
+            continue
+        verdict = ledger["Verdict"]
+        proposed_severity = ledger["Proposed Severity"] or "—"
+        if verdict in {"blocked", "deferred", "confirmation_needed"}:
+            mechanism = "—"
+        else:
+            pre = witness_outcome_row(
+                channel, source, witness, verdict=verdict,
+                severity=proposed_severity,
+            )
+            pre_rows.append(pre)
+            mechanism = _mechanism_mod.canonicalize_mechanism(
+                *pre[4:9], register="code_errors", anchor=anchor,
+                projection=_mechanism_mod.EMPTY_PROJECTION,
+            ).sidecar
+        post_rows.append([
+            channel, source, witness, verdict, mechanism, proposed_severity,
+            "—", ledger["Duplicate Target"] or "—",
+        ])
+    shard_text = register_text("Recheck ledger", CODE_LEDGER_COLS, upgraded)
+    shard_text += "\n### Witness outcomes\n\n" + md_table(
+        WITNESS_OUTCOME_COLS, pre_rows)
+    shard_text += "\n### Verification records\n\nNo verification records.\n"
+    a.write("_code_error_recheck/k1.md", shard_text)
+    a.write("_run/dismissal_receipts.md",
+            "# Dismissal receipts\n\n"
+            "No mapped not_error dismissal receipts were required.\n")
+    a.write("_run/witness_outcomes.md",
+            "# Witness outcomes\n\n" + md_table(POST_WITNESS_COLS, post_rows)
+            + "\n### Assembled dismissals\n\n"
+            "No mapped Error IDs were assembled as not_error.\n")
     return a
 
 
@@ -481,8 +587,23 @@ def make_b5(tmp_path, stream, *, ledger_rows, assigned_ids=None,
     plan_name = ("plans/claims_recheck_plan.md" if stream == "claims"
                  else "plans/code_error_recheck_plan.md")
     a.write(plan_name, recheck_plan_text(stream, inv, clu))
-    shard = a.write(shard_rel, register_text("Recheck ledger", LEDGER_COLS,
-                                             list(ledger_rows)))
+    columns = LEDGER_COLS
+    output_rows = list(ledger_rows)
+    body = ""
+    if stream == "code":
+        columns = CODE_LEDGER_COLS
+        output_rows = [
+            row if len(row) == len(columns) else code_ledger_row(
+                row[0], status=row[1], severity=row[2], evidence=row[3],
+                level=row[4], verdict=row[5], change=row[6], impact=row[7],
+                note=row[8])
+            for row in output_rows
+        ]
+        a.write("_run/detector_mapping.md", detector_mapping_artifact([]))
+        body = ("\n### Witness outcomes\n\n" + md_table(WITNESS_OUTCOME_COLS, [])
+                + "\n### Verification records\n\nNo verification records.\n")
+    shard = a.write(shard_rel, register_text("Recheck ledger", columns,
+                                             output_rows) + body)
     return a, shard
 
 

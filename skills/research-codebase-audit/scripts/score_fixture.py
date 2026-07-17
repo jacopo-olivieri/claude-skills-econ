@@ -74,6 +74,7 @@ Exit codes: 0 = GATE GREEN, 1 = GATE RED, 2 = usage/IO error.
 """
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -81,6 +82,9 @@ import sys
 from pathlib import Path
 
 import definition_use as du
+import build_detector_mapping as detector_mapping
+import mechanism_schema as mechanism_schema
+import verify_dismissals as dismissal_verifier
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -214,6 +218,11 @@ LEDGER_COLS = [
     "ID", "Current Status", "Current Severity", "Evidence Checked",
     "Evidence Level", "Verdict", "Proposed Register Change",
     "Pipeline/Output Impact", "Proposed Note",
+]
+CODE_LEDGER_COLS = LEDGER_COLS + [
+    "Proposed Status", "Proposed Severity", "Accepted Error Type",
+    "Accepted Mechanism", "Outcome Witness IDs", "Duplicate Target",
+    "Proposed Field Patches", "Verification Record IDs",
 ]
 DEFINITION_USE_LOCATORS = {
     "P-21": {
@@ -471,6 +480,168 @@ def _table_with_headers(text, required, exact=False):
     return None, None
 
 
+def _clean(value):
+    return du.normalize_cell(value or "")
+
+
+def _list_cell(value):
+    value = _clean(value)
+    if value in {"", "-", "—"}:
+        return []
+    return [_clean(part) for part in value.split(";") if _clean(part)]
+
+
+def check_channel_adjudication(audit, expected):
+    """Trace the three U3b manifest plants through every adjudication layer."""
+    plants = expected.get("adjudication_contract_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U3b adjudication plants"
+    manifest_path = audit / "_run/manifest_check.md"
+    if not manifest_path.is_file():
+        return "FAIL", f"manifest artifact missing: {manifest_path}"
+    manifest_text = manifest_path.read_text(encoding="utf-8", errors="replace")
+    plant_paths = {item["manifest"] for item in plants}
+    # Legacy synthetic scorer fixtures predate U3b. Do not pretend they test
+    # this channel; report it explicitly instead of turning unrelated unit
+    # tests red. A real fixture run emits at least one of the two conda paths.
+    if not any(path in manifest_text for path in plant_paths - {"pyproject.toml"}):
+        return "NOT COVERED", "U3b conda plants are absent from this synthetic artifact"
+    source_rows = []
+    for headers, rows in parse_tables(manifest_text):
+        if {"Source ID", "Manifest", "Witness Count"} <= set(headers):
+            source_rows.extend(dict(zip(headers, row)) for row in rows
+                               if len(row) == len(headers))
+    source_by_manifest = {}
+    for row in source_rows:
+        source_by_manifest[_clean(row["Manifest"])] = _clean(row["Source ID"])
+    missing = sorted(plant_paths - set(source_by_manifest))
+    if missing:
+        return "FAIL", "manifest candidates missing for " + ", ".join(missing)
+
+    try:
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
+    except detector_mapping.MappingError as exc:
+        return "FAIL", f"detector mapping is missing or malformed: {exc}"
+    mappings_by_source = {}
+    for row in mappings:
+        mappings_by_source.setdefault(row["Source ID"], []).append(row)
+
+    plan_path = audit / "plans/code_error_recheck_plan.md"
+    if not plan_path.is_file():
+        return "FAIL", f"code recheck plan missing: {plan_path}"
+    plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
+    headers, rows = _table_with_headers(plan_text, ["ID", "Reason", "Likely Evidence"])
+    inventory = [dict(zip(headers, row)) for row in rows] if rows is not None else []
+
+    ledgers, records = [], {}
+    ledger_root = audit / "_code_error_recheck"
+    if ledger_root.is_dir():
+        for path in sorted(ledger_root.rglob("*.md")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for table_headers, table_rows in parse_tables(text):
+                if table_headers == CODE_LEDGER_COLS:
+                    ledgers.extend(dict(zip(table_headers, row)) for row in table_rows
+                                   if len(row) == len(table_headers))
+                if table_headers in (dismissal_verifier.MF_RECORD_COLS,
+                                     dismissal_verifier.PROBE_RECORD_COLS):
+                    for row in table_rows:
+                        if len(row) == len(table_headers):
+                            record = dict(zip(table_headers, row))
+                            records[_clean(record["Record ID"])] = record
+    ledger_by_id = {}
+    for row in ledgers:
+        ledger_by_id.setdefault(_clean(row["ID"]), []).append(row)
+
+    receipt_path = audit / "_run/dismissal_receipts.md"
+    receipt_rows = []
+    if receipt_path.is_file():
+        text = receipt_path.read_text(encoding="utf-8", errors="replace")
+        headers, rows = _table_with_headers(
+            text, dismissal_verifier.RECEIPT_COLS, exact=True)
+        if rows is not None:
+            receipt_rows = [dict(zip(headers, row)) for row in rows]
+    boundary_path = audit / "_run/witness_outcomes.md"
+    if not boundary_path.is_file():
+        return "FAIL", f"assembled witness boundary missing: {boundary_path}"
+    boundary_text = boundary_path.read_text(encoding="utf-8", errors="replace")
+    headers, rows = _table_with_headers(
+        boundary_text, list(mechanism_schema.POST_BOUNDARY_WITNESS_COLUMNS),
+        exact=True)
+    post_rows = [dict(zip(headers, row)) for row in rows] if rows is not None else []
+    post_keys = {tuple(_clean(row[field]) for field in
+                       ("Channel", "Source ID", "Witness ID")) for row in post_rows}
+    assembled = set()
+    headers, rows = _table_with_headers(boundary_text, ["Error ID"], exact=True)
+    if rows is not None:
+        assembled = {_clean(row[0]) for row in rows}
+
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    final_by_id = {row["Error ID"]: row for row in load_rows(final_path, "Error ID")}
+
+    notes = []
+    for item in plants:
+        label, manifest = item["id"], item["manifest"]
+        source = source_by_manifest[manifest]
+        source_mappings = mappings_by_source.get(source, [])
+        if not source_mappings:
+            return "FAIL", f"{label} source {source} is absent from detector mapping"
+        error_ids = {_clean(row["Error ID"]) for row in source_mappings}
+        if len(error_ids) != 1:
+            return "FAIL", f"{label} source {source} maps to {len(error_ids)} Error IDs"
+        error_id = next(iter(error_ids))
+        inv = [row for row in inventory if _clean(row.get("ID")) == error_id]
+        if len(inv) != 1 or source not in inv[0].get("Likely Evidence", ""):
+            return "FAIL", f"{label} {error_id} is absent from b4 inventory evidence"
+        dispositions = ledger_by_id.get(error_id, [])
+        if len(dispositions) != 1:
+            return "FAIL", f"{label} {error_id} has {len(dispositions)} structured ledger rows"
+        ledger = dispositions[0]
+        if _clean(ledger["Verdict"]) != item["verdict"]:
+            return "FAIL", f"{label} ledger verdict is {_clean(ledger['Verdict'])}, expected {item['verdict']}"
+        expected_keys = {tuple(_clean(row[field]) for field in
+                               ("Channel", "Source ID", "Witness ID"))
+                         for row in source_mappings}
+        if set(_list_cell(ledger["Outcome Witness IDs"])) != {key[2] for key in expected_keys}:
+            return "FAIL", f"{label} ledger does not declare every mapped witness"
+        if not _clean(ledger["Accepted Error Type"]) or not _clean(ledger["Accepted Mechanism"]):
+            return "FAIL", f"{label} structured accepted type/mechanism is empty"
+        if not expected_keys <= post_keys:
+            return "FAIL", f"{label} witnesses are absent from assembled boundary"
+        final = final_by_id.get(error_id)
+        if final is None or _clean(final.get("Status")) != item["final_status"]:
+            found = _clean(final.get("Status")) if final else "missing"
+            return "FAIL", f"{label} final status is {found}, expected {item['final_status']}"
+        if "min_severity" in item and severity(final) < item["min_severity"]:
+            return "FAIL", f"{label} final severity is below {item['min_severity']}"
+        if "exact_severity" in item and severity(final) != item["exact_severity"]:
+            return "FAIL", f"{label} final severity must equal {item['exact_severity']}"
+        if item.get("receipt_required"):
+            record_ids = set(_list_cell(ledger["Verification Record IDs"]))
+            covered = set()
+            for receipt in receipt_rows:
+                key = tuple(_clean(receipt[field]) for field in
+                            ("Channel", "Source ID", "Witness ID"))
+                if (key in expected_keys and _clean(receipt["Record ID"]) in record_ids
+                        and _clean(receipt["Accepted (yes/no)"]) == "yes"):
+                    covered.add(key)
+                    plant_file = (audit.parent / manifest).resolve()
+                    if _clean(receipt["Input Digest (sha256)"]) != hashlib.sha256(
+                            plant_file.read_bytes()).hexdigest():
+                        return "FAIL", f"{label} receipt input digest does not bind the plant"
+            if covered != expected_keys or error_id not in assembled:
+                return "FAIL", f"{label} lacks qualifying receipt/assembled coverage"
+            plant_file = (audit.parent / manifest).resolve()
+            _tool, _version, _invocation, result = dismissal_verifier._manifest_run(
+                plant_file, "micromamba")
+            if not dismissal_verifier.accepted_result(result.returncode, result.stderr):
+                return "FAIL", f"{label} independent pinned-oracle recheck did not accept"
+        notes.append(f"{label} {source} -> {error_id} {item['final_status']}")
+    return "PASS", "; ".join(notes)
+
+
 def check_channel_definition_use(audit):
     """Trace P-21 and D-03 through artifact, b4, ledger, and final register."""
     artifact = audit / "_run" / "definition_use_bundles.md"
@@ -499,23 +670,48 @@ def check_channel_definition_use(audit):
     if not plan.is_file():
         return "FAIL", f"code recheck plan missing: {plan}"
     plan_text = plan.read_text(encoding="utf-8", errors="replace")
-    try:
-        mappings = du.parse_mappings(plan_text)
-    except du.DefinitionUseFormatError as exc:
-        return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
+    detector_mappings = None
+    detector_path = audit / "_run/detector_mapping.md"
+    if detector_path.is_file():
+        try:
+            _declared, _display, detector_mappings = detector_mapping.load_mapping(
+                detector_path)
+        except detector_mapping.MappingError as exc:
+            return "FAIL", f"detector mapping is malformed: {exc}"
+        mappings = None
+    else:
+        try:
+            mappings = du.parse_mappings(plan_text)
+        except du.DefinitionUseFormatError as exc:
+            return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
     _, inventory_rows = _table_with_headers(
         plan_text, ["ID", "Reason", "Likely Evidence"])
     if inventory_rows is None:
         return "FAIL", "b4 inventory missing"
     inventory = [dict(zip(["ID", "Reason", "Likely Evidence"], row))
                  for row in inventory_rows]
-    mapped_ids = {}
+    mapped_ids, mapped_witnesses = {}, {}
     for label, bid in located.items():
-        matches = [row for row in mappings
-                   if du.normalize_cell(row.get("Bundle ID", "")) == bid]
+        if detector_mappings is not None:
+            matches = [row for row in detector_mappings
+                       if row["Channel"] == "DU" and row["Source ID"] == bid]
+            ids = {row["Error ID"] for row in matches}
+            if len(ids) != 1:
+                return "FAIL", f"{label} {bid} maps to {len(ids)} Error IDs"
+            eid = next(iter(ids))
+            mapped_witnesses[label] = {
+                (row["Channel"], row["Source ID"], row["Witness ID"])
+                for row in matches}
+        else:
+            matches = [row for row in mappings
+                       if du.normalize_cell(row.get("Bundle ID", "")) == bid]
+            if len(matches) == 1:
+                eid = du.normalize_cell(matches[0].get("Error ID", ""))
         if len(matches) != 1:
-            return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
-        eid = du.normalize_cell(matches[0].get("Error ID", ""))
+            if detector_mappings is None:
+                return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
+            if not matches:
+                return "FAIL", f"{label} {bid} has no detector mapping rows"
         inv = [row for row in inventory
                if du.normalize_cell(row.get("ID", "")) == eid]
         if len(inv) != 1:
@@ -524,14 +720,27 @@ def check_channel_definition_use(audit):
             return "FAIL", f"{label} {bid} absent from inventory Likely Evidence"
         mapped_ids[label] = eid
 
-    ledger_rows = []
+    ledger_rows, verification_records = [], {}
     ledger_root = audit / "_code_error_recheck"
     if ledger_root.is_dir():
         for path in sorted(ledger_root.rglob("*.md")):
             ledger_text = path.read_text(encoding="utf-8", errors="replace")
-            _, rows = _table_with_headers(ledger_text, LEDGER_COLS, exact=True)
+            headers, rows = _table_with_headers(
+                ledger_text, CODE_LEDGER_COLS, exact=True)
             if rows is not None:
-                ledger_rows.extend(dict(zip(LEDGER_COLS, row)) for row in rows)
+                ledger_rows.extend(dict(zip(headers, row)) for row in rows)
+            else:
+                headers, rows = _table_with_headers(
+                    ledger_text, LEDGER_COLS, exact=True)
+                if rows is not None:
+                    ledger_rows.extend(dict(zip(headers, row)) for row in rows)
+            for headers, rows in parse_tables(ledger_text):
+                if headers in (dismissal_verifier.MF_RECORD_COLS,
+                               dismissal_verifier.PROBE_RECORD_COLS):
+                    for row in rows:
+                        if len(row) == len(headers):
+                            record = dict(zip(headers, row))
+                            verification_records[_clean(record["Record ID"])] = record
     ledgers = {}
     for label, eid in mapped_ids.items():
         matches = [row for row in ledger_rows
@@ -582,6 +791,31 @@ def check_channel_definition_use(audit):
     if d_row is None or d_row.get("Status") != "not_error":
         found = d_row.get("Status", "missing") if d_row else "missing"
         return "FAIL", f"D-03 mapped Error ID {d_eid} must finish not_error; found {found}"
+    if detector_mappings is not None:
+        record_ids = set(_list_cell(d_ledger.get("Verification Record IDs", "")))
+        record_coverage = {
+            tuple(_clean(record[field]) for field in
+                  ("Channel", "Source ID", "Witness ID"))
+            for record_id, record in verification_records.items()
+            if record_id in record_ids
+        }
+        if record_coverage != mapped_witnesses["D-03"]:
+            return "FAIL", "D-03 lacks a qualifying synthetic verification record per witness"
+        receipt_path = audit / "_run/dismissal_receipts.md"
+        receipt_coverage = set()
+        if receipt_path.is_file():
+            receipt_text = receipt_path.read_text(encoding="utf-8", errors="replace")
+            headers, rows = _table_with_headers(
+                receipt_text, dismissal_verifier.RECEIPT_COLS, exact=True)
+            if rows is not None:
+                for raw in rows:
+                    receipt = dict(zip(headers, raw))
+                    if (_clean(receipt["Record ID"]) in record_ids
+                            and _clean(receipt["Accepted (yes/no)"]) == "yes"):
+                        receipt_coverage.add(tuple(_clean(receipt[field]) for field in
+                                                   ("Channel", "Source ID", "Witness ID")))
+        if receipt_coverage != mapped_witnesses["D-03"]:
+            return "FAIL", "D-03 synthetic verification records lack qualifying receipts"
     def is_d03(row):
         text = row_text(row).replace("`", "")
         at_fixture_site = (
@@ -858,10 +1092,20 @@ def main() -> int:
     print(f"U2 manifest artifact: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U2 manifest artifact check failed")
-    status, note = check_channel_definition_use(audit)
+    expected_ids = {item.get("id") for section in ("must_find", "must_not_find")
+                    for item in expected.get(section, [])}
+    if {"P-21", "D-03"} & expected_ids:
+        status, note = check_channel_definition_use(audit)
+    else:
+        status, note = ("NOT COVERED",
+                        "answer key does not request definition/use channel plants")
     print(f"Definition/use channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("definition/use channel check failed")
+    status, note = check_channel_adjudication(audit, expected)
+    print(f"U3b adjudication channel: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U3b adjudication channel check failed")
     if lint_mod is not None:
         for label, fn, red in (
             ("U4 anchoring advisory", check_artifact_anchoring,

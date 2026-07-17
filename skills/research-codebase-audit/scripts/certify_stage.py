@@ -18,6 +18,8 @@ from pathlib import Path
 
 from mechanism_schema import MECHANISM_SCHEMA_VERSION
 from source_projection import iter_in_scope_entries
+import build_detector_mapping as detector_mapping
+import lint_registers as registers
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -304,6 +306,11 @@ def _validator_commands(identifier, package_root, audit, stage_entry_value):
             sys.executable, str(SCRIPT_DIR / "build_detector_mapping.py"),
             str(package_root), "--audit-dir", str(audit), "--check",
         ]]
+    if identifier == "boundary:assemble":
+        return [[
+            sys.executable, str(SCRIPT_DIR / "assemble_boundary.py"),
+            str(package_root), "--audit-dir", str(audit), "--check",
+        ]]
     lint_stage = VALIDATORS.get(identifier)
     if lint_stage is None:
         raise CertificationError(f"unknown validator identifier {identifier!r}")
@@ -445,6 +452,8 @@ def set_shard(package_root, stage, shard, status, reason=None):
         )
     if status == "blocked" and (reason is None or not reason.strip()):
         raise CertificationError("a blocked shard requires a non-empty --reason")
+    if stage == "code_b5" and status == "blocked":
+        _write_code_b5_blocked_fallback(package_root, shard_path, reason)
     previous = shards.get(shard, {})
     retries = int(previous.get("retries", 0))
     if previous.get("status") == "blocked" and status == "done":
@@ -454,6 +463,105 @@ def set_shard(package_root, stage, shard, status, reason=None):
         value["reason"] = " ".join(reason.split())
     shards[shard] = value
     write_manifest_atomic(package_root, manifest)
+
+
+def _md_table(columns, rows):
+    lines = ["| " + " | ".join(columns) + " |",
+             "| " + " | ".join(["---"] * len(columns)) + " |"]
+    lines.extend(
+        "| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |"
+        for row in rows
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _write_text_atomic(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _write_code_b5_blocked_fallback(package_root, shard_path, reason):
+    audit = package_root / "audit"
+    plan_path = audit / "plans/code_error_recheck_plan.md"
+    try:
+        plan_text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CertificationError(f"cannot generate blocked fallback: {exc}") from exc
+    assigned = None
+    for headers, rows, _line in registers.parse_tables(plan_text):
+        if "Assigned IDs" not in headers or "Shard File" not in headers:
+            continue
+        for row in rows:
+            if len(row) != len(headers):
+                continue
+            data = dict(zip(headers, row))
+            planned = _resolve_shard_path(
+                package_root, audit, data["Shard File"].strip().strip("`"))
+            if planned.resolve() == shard_path.resolve():
+                assigned = sorted(set(registers.ids_in(data["Assigned IDs"], "E")))
+                break
+    if assigned is None:
+        raise CertificationError(
+            f"cannot generate blocked fallback: {shard_path} is not assigned in {plan_path}"
+        )
+    register_path = audit / "code_error_register.md"
+    parsed = registers.load_register(registers.Lint(), register_path, registers.ERROR_COLS)
+    if parsed is None:
+        raise CertificationError(
+            f"cannot generate blocked fallback: code-error register is missing or malformed"
+        )
+    current = {dict(zip(registers.ERROR_COLS, row))["Error ID"]:
+               dict(zip(registers.ERROR_COLS, row)) for row in parsed[1]}
+    mapped_sources = {}
+    mapping_path = audit / "_run/detector_mapping.md"
+    if mapping_path.is_file():
+        try:
+            _declared, _display, mapping_rows = detector_mapping.load_mapping(mapping_path)
+        except detector_mapping.MappingError as exc:
+            raise CertificationError(
+                f"cannot generate blocked fallback: {exc}") from exc
+        for mapping_row in mapping_rows:
+            mapped_sources.setdefault(
+                mapping_row["Error ID"], set()).add(mapping_row["Source ID"])
+    rows = []
+    normalized_reason = " ".join(reason.split())
+    for error_id in assigned:
+        if error_id not in current:
+            raise CertificationError(
+                f"cannot generate blocked fallback: assigned ID {error_id} is absent from the register"
+            )
+        before = current[error_id]
+        severity = before["Severity"] or "—"
+        sources = sorted(mapped_sources.get(error_id, ()))
+        evidence = ("blocked fallback; mapped sources: " + ", ".join(sources)
+                    + "; reason: " + normalized_reason) if sources else (
+                    "blocked fallback; reason: " + normalized_reason)
+        rows.append([
+            error_id, before["Status"], severity, evidence,
+            "blocked_documented", "blocked", normalized_reason, "—",
+            normalized_reason, "blocked", severity, "—", "—", "—", "—",
+            "—", "—",
+        ])
+    payload = (
+        "# Conductor blocked fallback\n\n"
+        + _md_table(registers.CODE_LEDGER_COLS, rows)
+        + "\n### Witness outcomes\n\n"
+        + _md_table(registers.WITNESS_OUTCOME_COLS, [])
+        + "\n### Verification records\n\nNo verification records.\n"
+    )
+    _write_text_atomic(shard_path, payload)
 
 
 def verify_done_stages(package_root, manifest):

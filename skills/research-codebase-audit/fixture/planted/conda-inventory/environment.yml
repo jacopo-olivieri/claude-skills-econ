@@ -1,0 +1,6 @@
+# Human-only dependency inventory. The authoritative install route is the
+# pip command documented in the package README; this file is not executable.
+Python 3.10 or newer
+Stata 17 with esttab
+Pandas 2 series
+Matplotlib 3.8 series

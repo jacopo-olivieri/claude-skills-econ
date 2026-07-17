@@ -1,6 +1,8 @@
 {
   "README.md": "de112dff6ee751f38ac76726077f2e3c8674955b65da1be4882c6a7284a0df74",
   "artifacts/tab1.tex": "51af5102223b79a7bb39c071b478252e0393e8c3a837008243af0fc472c5c82b",
+  "conda-inventory/environment.yml": "d601f7aa7f6d5d102337954cd0e9f90acf23397f124333bc99d8f6fad909601f",
+  "conda-legal/environment.yml": "b5a0973f39e9cd7c5b85bddfd3bd93e567bc9dc9c0ff59e24fa9cca89fb4eb98",
   "data/households.csv": "ac0f9c320171b36b924eb0321f63d664c56f4697d46554fc2dac711cc6daaae3",
   "data/village_rain_radius_25km.csv": "193dcec4bc235d976f6070883e273bcec545b0dde5e5dd0fabf2d42a949eba07",
   "do/analysis.do": "54b3dca714bf446a5f1973ce9a806e757c4ff260acb0dc0c4f8f4f9eebeb985b",

@@ -655,8 +655,51 @@ exactly one ledger row.
 
 ### Verdicts — code-error recheck
 
-`confirmed_error` · `not_error` · `confirmation_needed` · `blocked` · `deferred`
+`confirmed_error` · `not_error` · `duplicate` · `confirmation_needed` · `blocked` · `deferred`
 (`deferred` = deliberately not pursued under the ladder/off-limits list.)
+
+Code-error shards use the ordinary nine ledger columns followed by:
+
+| Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+`Accepted Error Type` uses the closed code-error taxonomy. `Accepted Mechanism` is a one-line
+causal account. Separate field patches with ` || ` and write each as `Column := value`; only
+`Code Location`, `Code/Data Source`, `Error Description`, and `Why It Matters` are patchable.
+
+For mechanically mapped rows, use this complete matrix:
+
+| Verdict | Proposed Status | Proposed Severity | Required / forbidden |
+| --- | --- | --- | --- |
+| `confirmed_error` | `confirmed` | 1–4 | accepted type and mechanism; every witness; no duplicate target |
+| `not_error` | `not_error` | `—` | a verification record for every mapped channel/source/witness; no duplicate target |
+| `duplicate` | `duplicate_of:<mapped ID>` | `—` | mapped target, matching accepted type/mechanism, every transferred witness |
+| `confirmation_needed` | `confirmation_needed` | 1–4 | blocker-shaped note; no duplicate target |
+| `blocked` | `blocked` | carried forward | documented attempted-check blocker; no witness outcomes |
+| `deferred` | `blocked` | carried forward | off-limits citation; no witness outcomes |
+
+`duplicate_of:` derivation exists only for mechanically mapped targets. A mapped row
+suspected of duplicating an **unmapped** register row rests `confirmed` (or
+`confirmation_needed`) and records the suspected duplication as a free-text note in
+`Proposed Register Change` for operator review.
+
+Under `### Witness outcomes`, emit exactly the pre-boundary columns `Channel`, `Source ID`,
+`Witness ID`, `Verdict`, the five `Mech …` fields, `Proposed Severity`, and `Duplicate Target`.
+Emit rows only for `confirmed_error`, `not_error`, and `duplicate`. Percent-escape reserved cell
+characters with `mechanism_schema.encode_cell`; never write canonical mechanism bytes or
+`MIXED`. Under `### Verification records`, use the MF or DU/CV channel-typed schema defined in
+the worker contract. A DU/CV dismissal names a runnable probe stored beside the shard.
+
+Manifest adjudication severity guidance:
+
+| Evidence | Disposition |
+| --- | --- |
+| Invalid for the implied consumer with no usable alternative | Apply the ordinary rubric; usually severity ≥ 2 |
+| A usable alternative is positively verified | Keep the issue at severity 1 |
+| The real authoritative tool demonstrably accepts the input | Use `not_error` only through the conductor-issued receipt gate |
+
+An `unknown` consumer uses the ordinary rubric. Bound usability checks by the existing per-check
+compute budget.
 
 ### Evidence levels (tied to the review ladder)
 
@@ -701,8 +744,9 @@ Code errors:
 | Verdict | Status becomes | Severity |
 | --- | --- | --- |
 | `confirmed_error` | `confirmed` | per rubric (recalibrate) |
-| `not_error` | `not_error` | cleared |
-| `confirmation_needed` | `confirmation_needed` | kept |
+| `not_error` | `not_error` only when the boundary assembler has qualifying receipts for every mapped witness; unmapped rows retain the ordinary path | cleared |
+| `duplicate` | derived `duplicate_of:<mapped ID>` after all guarded-duplicate legs pass | cleared |
+| `confirmation_needed` | `confirmation_needed` | proposed 1–4, capped at 2 until the later severity-token stage |
 | `blocked` | `blocked` | kept |
 | `deferred` | `blocked` (note: deferred under ladder/off-limits) | kept |
 

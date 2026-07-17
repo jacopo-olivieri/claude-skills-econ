@@ -19,8 +19,9 @@ Reference files (all paths relative to this skill's folder):
 - `references/prompts/` — fixed prompt skeletons with slot tables.
 - `scripts/lint_registers.py`, `scripts/blank_tex_comments.py`, `scripts/export_xlsx.py`,
   `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py` (both conductor-invoked at
-  certified `b3d`; see `references/pipeline-code-errors.md`), and `scripts/certify_stage.py` (the only
-  writer of stage status; its typed evidence table is `scripts/stage_obligations.json`).
+  certified `b3d`; see `references/pipeline-code-errors.md`), `scripts/verify_dismissals.py`,
+  `scripts/assemble_boundary.py`, and `scripts/certify_stage.py` (the only writer of stage status;
+  its typed evidence table is `scripts/stage_obligations.json`).
 
 Invariants you never break:
 

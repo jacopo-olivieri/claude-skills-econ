@@ -21,6 +21,7 @@ from pathlib import Path
 
 import definition_use as du
 import build_detector_mapping as detector_mapping
+import mechanism_schema as mechanism
 
 # --------------------------------------------------------------- constants
 
@@ -43,6 +44,35 @@ LEDGER_COLS = [
     "Evidence Level", "Verdict", "Proposed Register Change",
     "Pipeline/Output Impact", "Proposed Note",
 ]
+CODE_LEDGER_COLS = LEDGER_COLS + [
+    "Proposed Status", "Proposed Severity", "Accepted Error Type",
+    "Accepted Mechanism", "Outcome Witness IDs", "Duplicate Target",
+    "Proposed Field Patches", "Verification Record IDs",
+]
+WITNESS_OUTCOME_COLS = list(mechanism.PRE_BOUNDARY_WITNESS_COLUMNS)
+POST_WITNESS_COLS = list(mechanism.POST_BOUNDARY_WITNESS_COLUMNS)
+MF_VERIFICATION_COLS = [
+    "Channel", "Record ID", "Source ID", "Witness ID",
+    "File Digest (sha256)", "Consumer", "Consumer Version", "Invocation",
+    "Observed Result", "Whole-File Acceptance (yes/no)",
+]
+PROBE_VERIFICATION_COLS = [
+    "Channel", "Record ID", "Source ID", "Witness ID",
+    "Proposition Tested", "Harness / Input Domain", "Observed Result",
+    "Scope Anchor",
+]
+RECEIPT_COLS = [
+    "Channel", "Receipt ID", "Source ID", "Witness ID", "Record ID",
+    "Tool", "Tool Version", "Input Digest (sha256)", "Invocation",
+    "Exit Status", "Accepted (yes/no)", "Result Digest (sha256)",
+]
+LINEAGE_COLS = [
+    "Original Error ID", "Descendant Error ID", "Channel", "Source ID",
+    "Witness ID",
+]
+PATCHABLE_ERROR_FIELDS = {
+    "Code Location", "Code/Data Source", "Error Description", "Why It Matters",
+}
 
 CLAIM_TYPES = {
     "quantitative_result", "sample_count", "treatment_definition",
@@ -69,7 +99,10 @@ CLAIMS_VERDICTS = {
     "substantiated", "substantiated_but_reframe", "row_note_only",
     "not_substantiated", "confirmation_needed", "blocked",
 }
-ERROR_VERDICTS = {"confirmed_error", "not_error", "confirmation_needed", "blocked", "deferred"}
+ERROR_VERDICTS = {
+    "confirmed_error", "not_error", "duplicate", "confirmation_needed",
+    "blocked", "deferred",
+}
 EVIDENCE_LEVELS = {
     "static_source_verified", "artifact_verified", "data_inspected_verified",
     "parser_or_runtime_verified", "synthetic_test_verified",
@@ -202,6 +235,81 @@ def table_by_cols(lint, path, text, expected_cols, label):
                 lint.fail(f"{path}: {label} row {k + 1} has {len(rows[k])} cells, expected {len(headers)}")
             return [r for k, r in enumerate(rows) if k not in bad]
     lint.fail(f"{path}: no table with exact {label} columns found")
+    return None
+
+
+def tables_by_cols(lint, path, text, expected_cols, label, required=False):
+    """Return all well-shaped rows from every table with one exact header."""
+    found, matched = [], 0
+    for headers, rows, _line in parse_tables(text):
+        if headers != expected_cols:
+            continue
+        matched += 1
+        for index, row in enumerate(rows, start=1):
+            if len(row) != len(headers):
+                lint.fail(f"{path}: {label} row {index} has {len(row)} cells, "
+                          f"expected {len(headers)}")
+            else:
+                found.append(dict(zip(headers, row)))
+    if required and matched == 0:
+        lint.fail(f"{path}: no table with exact {label} columns found")
+    return found
+
+
+def blank_cell(value):
+    return (value or "").strip().strip("`") in {"", "-", "—"}
+
+
+def list_cell(value):
+    if blank_cell(value):
+        return []
+    return [part.strip().strip("`") for part in str(value).split(";")
+            if not blank_cell(part)]
+
+
+def parse_field_patches(lint, path, row):
+    value = row.get("Proposed Field Patches", "")
+    if blank_cell(value):
+        return {}
+    patches = {}
+    for raw in value.split(" || "):
+        if " := " not in raw:
+            lint.fail(f"{path}: {row['ID']} malformed Proposed Field Patches entry {raw!r}")
+            continue
+        column, replacement = raw.split(" := ", 1)
+        if column not in PATCHABLE_ERROR_FIELDS:
+            lint.fail(f"{path}: {row['ID']} field patch names non-whitelisted column {column!r}")
+        elif column in patches:
+            lint.fail(f"{path}: {row['ID']} field patch repeats column {column!r}")
+        elif not replacement:
+            lint.fail(f"{path}: {row['ID']} field patch for {column!r} is empty")
+        else:
+            patches[column] = replacement
+    return patches
+
+
+def expected_code_disposition(ledger):
+    """Final (status, severity) a mapped code ledger row's verdict requires.
+
+    Shared by the b6 merge lint and ``assemble_boundary.py --check`` so both
+    gates apply the same verdict -> applied-disposition contract. Returns
+    None for an invalid verdict.
+    """
+    verdict = (ledger.get("Verdict") or "").strip()
+    proposed = (ledger.get("Proposed Severity") or "").strip()
+    if verdict == "confirmed_error":
+        return "confirmed", proposed
+    if verdict == "not_error":
+        return "not_error", ""
+    if verdict == "confirmation_needed":
+        capped = (str(min(int(proposed), 2))
+                  if proposed in {"1", "2", "3", "4"} else proposed)
+        return "confirmation_needed", capped
+    if verdict in {"blocked", "deferred"}:
+        return "blocked", (ledger.get("Current Severity") or "").strip()
+    if verdict == "duplicate":
+        target = (ledger.get("Duplicate Target") or "").strip()
+        return f"duplicate_of:{target}", ""
     return None
 
 
@@ -1305,7 +1413,7 @@ def _all_code_recheck_ledger_rows(lint, audit):
         if text is None:
             continue
         for headers, table_rows, _ in parse_tables(text):
-            if headers == LEDGER_COLS:
+            if headers == CODE_LEDGER_COLS:
                 rows.extend((path, dict(zip(headers, row)))
                             for row in table_rows if len(row) == len(headers))
     return rows
@@ -1317,8 +1425,11 @@ def check_detector_mapping_b6(lint, audit):
     if not mappings:
         return
     mapped = {}
+    mapping_by_key = {}
     for row in mappings:
-        mapped.setdefault(row["Error ID"], set()).add(row["Source ID"])
+        key = (row["Channel"], row["Source ID"], row["Witness ID"])
+        mapped.setdefault(row["Error ID"], []).append(row)
+        mapping_by_key[key] = row
     ledger_rows = _all_code_recheck_ledger_rows(lint, audit)
     ledgers_by_id = {}
     for path, row in ledger_rows:
@@ -1329,15 +1440,71 @@ def check_detector_mapping_b6(lint, audit):
     if final:
         final_by_id = {dict(zip(ERROR_COLS, row))["Error ID"]:
                        dict(zip(ERROR_COLS, row)) for row in final[1]}
+    snap = load_register(
+        lint, audit / "_run/snapshots/code_b6/code_error_register.md", ERROR_COLS)
+    snapshot_by_id = {}
+    if snap:
+        snapshot_by_id = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                          dict(zip(ERROR_COLS, row)) for row in snap[1]}
 
-    expected_status = {
-        "confirmed_error": "confirmed",
-        "not_error": "not_error",
-        "confirmation_needed": "confirmation_needed",
-        "blocked": "blocked",
-        "deferred": "blocked",
-    }
-    for eid, source_ids in mapped.items():
+    summary = audit / "code_error_recheck_summary.md"
+    summary_text = read_text(lint, summary) or ""
+    lineage_rows = tables_by_cols(
+        lint, summary, summary_text, LINEAGE_COLS, "split lineage")
+    lineage, split_originals = {}, set()
+    for row in lineage_rows:
+        key = (row["Channel"], row["Source ID"], row["Witness ID"])
+        mapping = mapping_by_key.get(key)
+        if mapping is None or mapping["Error ID"] != row["Original Error ID"]:
+            lint.fail(f"{summary}: lineage row names an unmapped original/witness")
+            continue
+        full = (row["Original Error ID"], *key)
+        if full in lineage:
+            lint.fail(f"{summary}: mapped witness {'/'.join(key)} appears twice in lineage")
+        lineage[full] = row["Descendant Error ID"]
+        split_originals.add(row["Original Error ID"])
+    for original in split_originals:
+        expected = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                    for row in mapped.get(original, [])}
+        covered = {key[1:] for key in lineage if key[0] == original}
+        if covered != expected:
+            lint.fail(f"{summary}: split lineage for {original} does not exactly cover its mapped witnesses")
+        descendants = {value for key, value in lineage.items() if key[0] == original}
+        if len(descendants) < 2:
+            lint.fail(f"{summary}: split {original} must have at least two non-empty descendants")
+        for descendant in descendants:
+            if descendant not in final_by_id:
+                lint.fail(f"{summary}: split descendant {descendant} is absent from final register")
+
+    boundary_path = audit / "_run/witness_outcomes.md"
+    boundary_text = read_text(lint, boundary_path) or ""
+    post_rows = tables_by_cols(
+        lint, boundary_path, boundary_text, POST_WITNESS_COLS,
+        "post-boundary witness outcomes", required=True)
+    post_by_key = {}
+    for row in post_rows:
+        key = tuple(row[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key in post_by_key:
+            lint.fail(f"{boundary_path}: duplicate post-boundary key {'/'.join(key)}")
+        post_by_key[key] = row
+        if key not in mapping_by_key:
+            lint.fail(f"{boundary_path}: post-boundary row {'/'.join(key)} is not mapped")
+    if set(post_by_key) != set(mapping_by_key):
+        lint.fail(f"{boundary_path}: post-boundary keys do not exactly close detector mapping")
+    dismissal_tables = tables_by_cols(
+        lint, boundary_path, boundary_text, ["Error ID"], "assembled dismissals")
+    assembled = {row["Error ID"] for row in dismissal_tables}
+
+    receipt_path = audit / "_run/dismissal_receipts.md"
+    receipt_text = read_text(lint, receipt_path) or ""
+    receipts = tables_by_cols(lint, receipt_path, receipt_text, RECEIPT_COLS,
+                              "dismissal receipts")
+    receipt_ids = [row["Receipt ID"] for row in receipts]
+    check_unique(lint, receipt_path, receipt_ids, "Receipt ID")
+
+    effective_groups = {}
+    for original, mapping_rows in mapped.items():
+        eid = original
         dispositions = ledgers_by_id.get(eid, [])
         if len(dispositions) != 1:
             lint.fail(f"{plan}: mapped Error ID {eid} has {len(dispositions)} ledger "
@@ -1345,38 +1512,91 @@ def check_detector_mapping_b6(lint, audit):
             continue
         path, ledger = dispositions[0]
         evidence = ledger.get("Evidence Checked", "")
-        for source_id in source_ids:
+        for source_id in sorted({row["Source ID"] for row in mapping_rows}):
             if not _names_source(evidence, source_id):
                 lint.fail(f"{path}: mapped source ID {source_id} missing from {eid} "
                           "Evidence Checked")
+        for mapping in mapping_rows:
+            full = (eid, mapping["Channel"], mapping["Source ID"], mapping["Witness ID"])
+            effective = lineage.get(full, eid)
+            effective_groups.setdefault(effective, []).append((mapping, path, ledger))
+
+    for eid, group in effective_groups.items():
+        mapping_rows = [item[0] for item in group]
+        path, ledger = group[0][1], group[0][2]
         final_row = final_by_id.get(eid)
         if final_row is None:
             lint.fail(f"{plan}: mapped Error ID {eid} absent from final staging register")
             continue
         status = final_row.get("Status", "")
         verdict = ledger.get("Verdict", "")
-        duplicate = re.fullmatch(r"duplicate_of:(E-\d{4})", status)
-        if duplicate:
-            target = duplicate.group(1)
-            proposal = (ledger.get("Proposed Register Change", "") + " "
-                        + ledger.get("Proposed Note", ""))
-            target_row = final_by_id.get(target)
-            if verdict != "confirmed_error":
-                lint.fail(f"{path}: duplicate disposition for {eid} requires ledger "
-                          f"verdict 'confirmed_error', found '{verdict}'")
-            if status not in proposal:
-                lint.fail(f"{path}: duplicate disposition for {eid} does not explicitly "
-                          f"name equivalent canonical issue row {target}")
-            if target_row is None or target_row.get("Status") != "confirmed":
-                lint.fail(f"{path}: duplicate target {target} is not a confirmed final "
-                          "code-error issue row")
-            continue
-        wanted = expected_status.get(verdict)
-        if wanted is None:
+        expected_disposition = expected_code_disposition(ledger)
+        if expected_disposition is None:
             lint.fail(f"{path}: mapped Error ID {eid} has invalid code verdict '{verdict}'")
-        elif status != wanted:
+            continue
+        wanted, wanted_severity = expected_disposition
+        if status != wanted:
             lint.fail(f"{path}: mapped Error ID {eid} verdict '{verdict}' requires "
                       f"final status '{wanted}', found final status '{status}'")
+        if final_row.get("Severity", "") != wanted_severity:
+            lint.fail(f"{path}: mapped Error ID {eid} final Severity "
+                      f"{final_row.get('Severity')!r} disagrees with applied proposal {wanted_severity!r}")
+        for column, replacement in parse_field_patches(lint, path, ledger).items():
+            if final_row.get(column) != replacement:
+                lint.fail(f"{path}: mapped Error ID {eid} field patch for {column} was not applied")
+
+        keys = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                for row in mapping_rows}
+        if verdict == "not_error":
+            if eid not in assembled:
+                lint.fail(f"{boundary_path}: mapped not_error {eid} is absent from Assembled dismissals")
+            allowed_records = set(list_cell(ledger.get("Verification Record IDs", "")))
+            covered = set()
+            for receipt in receipts:
+                key = tuple(receipt[field] for field in
+                            ("Channel", "Source ID", "Witness ID"))
+                if (key in keys and receipt["Record ID"] in allowed_records
+                        and receipt["Accepted (yes/no)"] == "yes"):
+                    covered.add(key)
+                    post = post_by_key.get(key, {})
+                    if receipt["Receipt ID"] not in list_cell(post.get("Receipt IDs", "")):
+                        lint.fail(f"{boundary_path}: witness {'/'.join(key)} does not bind qualifying receipt {receipt['Receipt ID']}")
+            if covered != keys:
+                lint.fail(f"{receipt_path}: mapped not_error {eid} lacks qualifying receipt coverage")
+        elif eid in assembled:
+            lint.fail(f"{boundary_path}: Assembled dismissals lists non-not_error mapped row {eid}")
+
+        if verdict == "duplicate":
+            target = ledger.get("Duplicate Target", "").strip()
+            if target not in mapped:
+                lint.fail(f"{path}: guarded duplicate {eid} target {target!r} is not mechanically mapped")
+                continue
+            target_row = snapshot_by_id.get(target) or final_by_id.get(target)
+            source_row = snapshot_by_id.get(eid) or final_row
+            if target_row is None or target_row.get("Error Type") != source_row.get("Error Type"):
+                lint.fail(f"{path}: duplicate {eid} and target {target} do not share Error Type")
+            source_mechanisms = {post_by_key.get(key, {}).get("Mechanism") for key in keys}
+            target_keys = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                           for row in mapped[target]}
+            target_mechanisms = {post_by_key.get(key, {}).get("Mechanism") for key in target_keys}
+            if source_mechanisms != target_mechanisms:
+                lint.fail(f"{path}: duplicate {eid} mechanism differs from target {target}")
+            coverage = (target_row or {}).get("Code Location", "") + " " + (target_row or {}).get("Code/Data Source", "")
+            for mapping in mapping_rows:
+                if mapping["Site Anchor"].rsplit(":", 1)[0] not in coverage:
+                    lint.fail(f"{path}: duplicate target {target} does not cover {mapping['Site Anchor']}")
+
+    # A split is legal only when its active witnesses actually disagree.
+    for original in split_originals:
+        tuples = set()
+        for row in mapped[original]:
+            key = (row["Channel"], row["Source ID"], row["Witness ID"])
+            post = post_by_key.get(key, {})
+            if post.get("Mechanism") not in {None, "—", "-", ""}:
+                tuples.add((post.get("Mechanism"), post.get("Verdict"),
+                            post.get("Proposed Severity"), post.get("Duplicate Target")))
+        if len(tuples) < 2:
+            lint.fail(f"{summary}: split {original} is not justified by distinct active mechanisms")
 
 
 def canon_ids(lint, audit, stream):
@@ -1556,7 +1776,8 @@ def stage_b5(lint, audit, stream, shard, manifest):
     text = read_text(lint, shard)
     if text is None:
         return
-    rows = table_by_cols(lint, shard, text, LEDGER_COLS, "recheck ledger")
+    ledger_cols = LEDGER_COLS if stream == "claims" else CODE_LEDGER_COLS
+    rows = table_by_cols(lint, shard, text, ledger_cols, "recheck ledger")
     if rows is None:
         return
     verdicts = CLAIMS_VERDICTS if stream == "claims" else ERROR_VERDICTS
@@ -1566,7 +1787,7 @@ def stage_b5(lint, audit, stream, shard, manifest):
     seen = []
     evidence_levels = set()
     for r in rows:
-        d = dict(zip(LEDGER_COLS, r))
+        d = dict(zip(ledger_cols, r))
         seen.append(d["ID"])
         if d["ID"] not in assigned:
             lint.fail(f"{shard}: ledger contains unassigned/new ID {d['ID']} (no new IDs at recheck)")
@@ -1599,11 +1820,173 @@ def stage_b5(lint, audit, stream, shard, manifest):
     if stream == "claims":
         # U4 advisory: identifier anchoring on rows closing `confirmed`.
         check_anchoring_advisory(lint, audit, rows)
+    else:
+        _validate_code_adjudication_shard(lint, audit, shard, text, rows, assigned)
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")
     if ladder >= 2 and evidence_levels == {"static_source_verified"}:
         lint.warn(f"{shard}: ladder level {ladder} but every check is static_source_verified")
+
+
+def _validate_code_adjudication_shard(lint, audit, shard, text, rows, assigned):
+    parsed_tables = parse_tables(text)
+    ledger_table_count = sum(
+        1 for headers, _table_rows, _line in parsed_tables
+        if headers == CODE_LEDGER_COLS
+    )
+    if ledger_table_count != 1:
+        lint.fail(f"{shard}: expected exactly one structured recheck ledger table, "
+                  f"found {ledger_table_count}")
+    for marker in ("Witness outcomes", "Verification records"):
+        count = len(re.findall(
+            rf"(?m)^###\s+{re.escape(marker)}\s*$", text))
+        if count != 1:
+            lint.fail(f"{shard}: expected exactly one '### {marker}' marker, found {count}")
+    outcome_table_count = sum(
+        1 for headers, _table_rows, _line in parsed_tables
+        if headers == WITNESS_OUTCOME_COLS
+    )
+    if outcome_table_count != 1:
+        lint.fail(f"{shard}: expected exactly one witness outcomes table, "
+                  f"found {outcome_table_count}")
+
+    ledger_rows = [dict(zip(CODE_LEDGER_COLS, row)) for row in rows]
+    mappings = parse_detector_mappings(lint, audit)
+    mapped_ids = {row["Error ID"] for row in mappings}
+    mappings_by_id = {}
+    mapping_by_key = {}
+    for row in mappings:
+        mappings_by_id.setdefault(row["Error ID"], []).append(row)
+        mapping_by_key[(row["Channel"], row["Source ID"], row["Witness ID"])] = row
+    outcomes = tables_by_cols(
+        lint, shard, text, WITNESS_OUTCOME_COLS, "witness outcomes", required=True)
+    records = []
+    records += tables_by_cols(
+        lint, shard, text, MF_VERIFICATION_COLS, "MF verification records")
+    records += tables_by_cols(
+        lint, shard, text, PROBE_VERIFICATION_COLS, "DU/CV verification records")
+    outcome_by_key, record_by_id = {}, {}
+    for outcome in outcomes:
+        key = tuple(outcome[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key in outcome_by_key:
+            lint.fail(f"{shard}: duplicate witness outcome {'/'.join(key)}")
+        outcome_by_key[key] = outcome
+        mapping = mapping_by_key.get(key)
+        if mapping is None:
+            lint.fail(f"{shard}: witness outcome {'/'.join(key)} is not mechanically mapped")
+            continue
+        try:
+            mechanism.canonicalize_mechanism(
+                outcome["Mech Class"], outcome["Mech Object"],
+                outcome["Mech Relation"], outcome["Mech Expected"],
+                outcome["Mech Actual"], register="code_errors",
+                anchor=mapping["Site Anchor"], projection=mechanism.EMPTY_PROJECTION,
+            )
+        except mechanism.MechanismSchemaError as exc:
+            lint.fail(f"{shard}: witness {'/'.join(key)} mechanism invalid: {exc}")
+    for record in records:
+        record_id = record["Record ID"]
+        if not record_id or blank_cell(record_id):
+            lint.fail(f"{shard}: verification record has an empty Record ID")
+        elif record_id in record_by_id:
+            lint.fail(f"{shard}: duplicate verification Record ID {record_id}")
+        else:
+            record_by_id[record_id] = record
+        channel = record["Channel"]
+        if (channel == "MF") != ("File Digest (sha256)" in record):
+            lint.fail(f"{shard}: verification record {record_id} uses the wrong channel-typed schema")
+        key = tuple(record[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key not in mapping_by_key:
+            lint.fail(f"{shard}: verification record {record_id} names unmapped key {'/'.join(key)}")
+
+    for row in ledger_rows:
+        eid, verdict = row["ID"], row["Verdict"]
+        parse_field_patches(lint, shard, row)
+        if eid not in mapped_ids:
+            continue
+        mapped = mappings_by_id[eid]
+        expected_keys = {(m["Channel"], m["Source ID"], m["Witness ID"])
+                         for m in mapped}
+        expected_witnesses = {m["Witness ID"] for m in mapped}
+        proposed_status = row["Proposed Status"]
+        proposed_severity = row["Proposed Severity"]
+        duplicate_target = row["Duplicate Target"]
+        required_outcomes = verdict in {"confirmed_error", "not_error", "duplicate"}
+        actual_keys = {key for key in outcome_by_key if key in expected_keys}
+        declared_witnesses = set(list_cell(row["Outcome Witness IDs"]))
+        if required_outcomes:
+            if actual_keys != expected_keys:
+                missing = sorted(expected_keys - actual_keys)
+                extra = sorted(actual_keys - expected_keys)
+                lint.fail(f"{shard}: {eid} witness-outcome coverage mismatch "
+                          f"(missing={missing}, extra={extra})")
+            if declared_witnesses != expected_witnesses:
+                lint.fail(f"{shard}: {eid} Outcome Witness IDs do not exactly cover mapped witnesses")
+        else:
+            if actual_keys or declared_witnesses:
+                lint.fail(f"{shard}: {eid} verdict '{verdict}' must carry no witness outcomes")
+
+        if verdict == "confirmed_error":
+            if proposed_status != "confirmed":
+                lint.fail(f"{shard}: {eid} confirmed_error requires Proposed Status 'confirmed'")
+            if proposed_severity not in {"1", "2", "3", "4"}:
+                lint.fail(f"{shard}: {eid} confirmed_error requires Proposed Severity 1-4")
+            if row["Accepted Error Type"] not in ERROR_TYPES:
+                lint.fail(f"{shard}: {eid} confirmed_error requires a closed Accepted Error Type")
+            if blank_cell(row["Accepted Mechanism"]):
+                lint.fail(f"{shard}: {eid} confirmed_error requires Accepted Mechanism")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} confirmed_error forbids Duplicate Target")
+        elif verdict == "not_error":
+            if proposed_status != "not_error":
+                lint.fail(f"{shard}: {eid} not_error requires Proposed Status 'not_error'")
+            if not blank_cell(proposed_severity):
+                lint.fail(f"{shard}: {eid} not_error forbids Proposed Severity")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} not_error forbids Duplicate Target")
+            record_ids = set(list_cell(row["Verification Record IDs"]))
+            covered = set()
+            for record_id in record_ids:
+                record = record_by_id.get(record_id)
+                if record is None:
+                    lint.fail(f"{shard}: {eid} names unknown verification Record ID {record_id}")
+                    continue
+                covered.add(tuple(record[field] for field in
+                                  ("Channel", "Source ID", "Witness ID")))
+            if covered != expected_keys:
+                lint.fail(f"{shard}: {eid} not_error verification records do not cover every mapped key")
+        elif verdict == "duplicate":
+            target = duplicate_target.strip()
+            if target not in mapped_ids:
+                lint.fail(f"{shard}: {eid} guarded Duplicate Target {target!r} is not mechanically mapped")
+            if proposed_status != f"duplicate_of:{target}":
+                lint.fail(f"{shard}: {eid} duplicate Proposed Status must be derived as duplicate_of:{target}")
+            if not blank_cell(proposed_severity):
+                lint.fail(f"{shard}: {eid} duplicate forbids Proposed Severity")
+            if row["Accepted Error Type"] not in ERROR_TYPES or blank_cell(row["Accepted Mechanism"]):
+                lint.fail(f"{shard}: {eid} duplicate requires accepted error type and mechanism")
+        elif verdict == "confirmation_needed":
+            if proposed_status != "confirmation_needed":
+                lint.fail(f"{shard}: {eid} confirmation_needed requires matching Proposed Status")
+            if proposed_severity not in {"1", "2", "3", "4"}:
+                lint.fail(f"{shard}: {eid} confirmation_needed requires Proposed Severity 1-4")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} confirmation_needed forbids Duplicate Target")
+        elif verdict in {"blocked", "deferred"}:
+            if proposed_status != "blocked":
+                lint.fail(f"{shard}: {eid} {verdict} requires Proposed Status 'blocked'")
+            carried = row["Current Severity"]
+            if (not blank_cell(carried) and proposed_severity != carried) or (
+                    blank_cell(carried) and not blank_cell(proposed_severity)):
+                lint.fail(f"{shard}: {eid} {verdict} must carry forward Current Severity")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} {verdict} forbids Duplicate Target")
+            if verdict == "deferred":
+                citation = (row["Proposed Register Change"] + " "
+                            + row["Proposed Note"]).lower()
+                if "off-limit" not in citation:
+                    lint.fail(f"{shard}: {eid} deferred requires an off-limits citation")
 
 
 def register_files(audit, stream):

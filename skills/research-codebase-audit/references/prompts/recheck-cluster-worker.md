@@ -137,7 +137,8 @@ or revisit files not needed to decide the assigned rows. Do not mint IDs.
 - **Off-limits**: never open, run, or audit anything listed in {OFF_LIMITS}; a row that could only
   be decided by touching off-limits material gets the `deferred` verdict (note: deferred under the
   off-limits list), not an overstated verdict.
-- Write only to `{SHARD_FILE}`. Do not edit canonical registers, code, data, or paper text.
+- Write only to `{SHARD_FILE}` and the probe artifact files it names beside itself. Do not
+  edit canonical registers, code, data, or paper text.
 - Every assigned ID appears exactly once in the ledger.
 - Repo-relative paths everywhere.
 
@@ -153,4 +154,17 @@ Write the shard with:
    matters) whenever the verdict keeps or creates an issue.
 5. Cluster summary: findings to keep / demote / needing confirmation / blocked, and
    consequences the cross-linking stage should know about.
+
+For the code-error stream, append these columns to the row-level ledger exactly:
+`Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism |
+Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs`.
+Follow the structured matrix in `{CONTRACT_PATH}`. Under `### Witness outcomes`, write the exact
+pre-boundary witness table for `confirmed_error`, `not_error`, and `duplicate` only, keyed by the
+full Channel/Source ID/Witness ID tuple. Percent-escape reserved characters; never emit canonical
+mechanism bytes or `MIXED`. Under `### Verification records`, write the exact MF or DU/CV
+channel-typed table. Persist every DU/CV dismissal probe beside the shard and name it in
+`Harness / Input Domain`. A probe must be a single self-contained file — all synthetic inputs
+inline, reading no other file and no package data — because the verifier re-runs exactly that
+one file hermetically. A verification record is a claim, not a receipt: never fabricate or
+write a Receipt ID.
 ```

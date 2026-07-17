@@ -28,6 +28,10 @@ ERROR_COLS = [
     "Error ID", "Error Type", "Code/Data Source", "Code Location", "Status",
     "Severity", "Error Description", "Why It Matters", "Related Claim IDs",
 ]
+LINEAGE_COLS = [
+    "Original Error ID", "Descendant Error ID", "Channel", "Source ID",
+    "Witness ID",
+]
 
 
 class MappingError(RuntimeError):
@@ -174,6 +178,91 @@ def parse_register(path):
     return by_id
 
 
+def _raw_register_rows(path):
+    """Return Error-ID -> exact Markdown row bytes for the canonical table."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    wanted = "| " + " | ".join(ERROR_COLS) + " |"
+    for index, line in enumerate(lines[:-1]):
+        if line.rstrip("\r\n").strip() != wanted:
+            continue
+        rows = {}
+        for raw in lines[index + 2:]:
+            if not raw.lstrip().startswith("|"):
+                break
+            cells = du.split_markdown_row(raw.rstrip("\r\n"))
+            if len(cells) != len(ERROR_COLS):
+                raise MappingError(f"{path}: malformed code-error register row")
+            error_id = _norm(cells[0])
+            if error_id in rows:
+                raise MappingError(f"{path}: Error ID {error_id} appears more than once")
+            rows[error_id] = raw.encode("utf-8")
+        return rows
+    raise MappingError(f"{path}: expected exactly one {' | '.join(ERROR_COLS)} table")
+
+
+def _split_descendant_ids(audit):
+    path = audit / "code_error_recheck_summary.md"
+    if not path.is_file():
+        return set()
+    tables = [rows for headers, rows, _line in
+              du.parse_markdown_tables(path.read_text(encoding="utf-8"))
+              if headers == LINEAGE_COLS]
+    if not tables:
+        return set()
+    if len(tables) != 1:
+        raise MappingError(f"{path}: expected at most one split-lineage table")
+    descendants = set()
+    for row in tables[0]:
+        if len(row) != len(LINEAGE_COLS):
+            raise MappingError(f"{path}: malformed split-lineage row")
+        descendant = _norm(row[1])
+        if not re.fullmatch(r"E-\d{4}", descendant):
+            raise MappingError(f"{path}: invalid descendant Error ID {descendant}")
+        descendants.add(descendant)
+    return descendants
+
+
+def _validate_staging_converse(register_path, snapshot_path, decisions, register,
+                               snapshot):
+    new_ids = {row["Error ID"] for row in decisions.values()
+               if row["Mapping Kind"] == "new_candidate"}
+    expected = set(snapshot) | new_ids
+    actual = set(register)
+    if actual != expected:
+        extra = sorted(actual - expected)
+        missing = sorted(expected - actual)
+        detail = []
+        if extra:
+            detail.append("stray staged row(s): " + ", ".join(extra))
+        if missing:
+            detail.append("deleted or missing staged row(s): " + ", ".join(missing))
+        raise MappingError("b3d staged-register key closure failed: " + "; ".join(detail))
+    staged_bytes = _raw_register_rows(register_path)
+    snapshot_bytes = _raw_register_rows(snapshot_path)
+    mutated = sorted(eid for eid in snapshot if staged_bytes[eid] != snapshot_bytes[eid])
+    if mutated:
+        raise MappingError(
+            "b3d staged register mutated pre-existing row(s): " + ", ".join(mutated)
+        )
+
+
+def _validate_replay_key_closure(audit, register, snapshot, decisions):
+    new_ids = {row["Error ID"] for row in decisions.values()
+               if row["Mapping Kind"] == "new_candidate"}
+    expected = set(snapshot) | new_ids | _split_descendant_ids(audit)
+    actual = set(register)
+    if actual != expected:
+        extra = sorted(actual - expected)
+        missing = sorted(expected - actual)
+        detail = []
+        if extra:
+            detail.append("undeclared canonical row(s): " + ", ".join(extra))
+        if missing:
+            detail.append("missing canonical row(s): " + ", ".join(missing))
+        raise MappingError("b3d replay key closure failed: " + "; ".join(detail))
+
+
 def _expected_rows(sources, decisions, declared, register, snapshot,
                    enforce_candidate):
     source_keys = {(channel, source_id) for channel, values in sources.items()
@@ -282,6 +371,11 @@ def validate_inputs(package_root, audit, check=False):
     snapshot = parse_register(snapshot_path)
     expected = _expected_rows(
         sources, decisions, declared, register, snapshot, enforce_candidate=not check)
+    if check:
+        _validate_replay_key_closure(audit, register, snapshot, decisions)
+    else:
+        _validate_staging_converse(
+            register_path, snapshot_path, decisions, register, snapshot)
     return display, expected
 
 

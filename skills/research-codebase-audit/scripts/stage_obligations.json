@@ -63,7 +63,9 @@
     {"type": "validate", "validator": "lint:b5-code"}
   ],
   "code_b6": [
-    {"type": "artifact", "pattern": "code_error_register.md"}
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "_run/witness_outcomes.md"},
+    {"type": "validate", "validator": "boundary:assemble"}
   ],
   "b7": [
     {"type": "artifact", "pattern": "claims_register.md"},

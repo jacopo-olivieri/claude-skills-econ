@@ -36,6 +36,7 @@ sections for that role.
 | merge_first_pass | merge-first-pass.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`) |
 | merge_recheck | merge-recheck.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Cross-link consistency (b7); Recheck vocabulary |
 | conventions | consolidate-conventions.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Standing self-consistency checks; Code-error register — `audit/code_error_register.md`; Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`) |
+| conventions_scan | conventions-scan-worker.md | Untrusted content; Secret handling; Standing self-consistency checks; Empirical verification (establish behavior; do not infer it); Cheap-check completion (mapped-closure discipline) |
 | cross_link | cross-linker.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Cross-link consistency (b7) |
 | rewrite | rewriter.md | Untrusted content; Secret handling; Severity rubric (shared by claims and code errors); Issue Description structure (three-part); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Cross-link consistency (b7); Rewrite-pass columns |
 
@@ -153,8 +154,8 @@ ordinary worker observation, not one of these.
    the ladder permits it.
    A mismatch is a `readme_or_package_mismatch` (or the more specific
    `version_or_dependency_error` / `stale_or_wrong_path`). Mechanical helper: the conductor runs
-   `scripts/check_manifests.py` at b4, which parses each recognized manifest and emits candidate
-   findings (see `pipeline-code-errors.md`, b4).
+   `scripts/check_manifests.py` at b3d, which parses each recognized manifest and emits candidate
+   findings (see `pipeline-code-errors.md`, b3d).
 2. **Shared and definition/use conventions agree.** The package asserts one definition for each convention it uses in
    more than one place. Gather every site that defines a shared convention — fiscal-year or
    sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
@@ -165,9 +166,8 @@ ordinary worker observation, not one of these.
    b3c consolidation pass gathers every multi-site convention the merged claims register states
    into `audit/_run/conventions.md` — for an enumerated member list, a single claims-register row
    naming the member set already qualifies, because the second side of the comparison is supplied
-   by the code-side re-materialization sites the b4 grep locates — and the code-stream recheck
-   (b4) greps the codebase for each listed convention's definition sites and flags any that
-   disagree.
+   by the code-side re-materialization sites the b3d conventions scan locates — and the b3d
+   mapping step records each convention's divergent or reviewed-not-divergent disposition.
    The same duty applies **within one file**: the package asserts that a derived control variable
    is used only for the cases its own definition covers. When a derived flag, indicator, category,
    sentinel, or eligibility variable's code, adjacent comment, label, or header states the cases
@@ -176,7 +176,7 @@ ordinary worker observation, not one of these.
    effective predicate. An extra consumer predicate that narrows the covered set is the error —
    acceptable only when it is an independently defined eligibility restriction or when a companion
    consumer covers the excluded cases. This half of the check is worker-side reading within a file,
-   not a cross-file greppable convention, so it is not consolidated at b3c or grepped at b4:
+   not a cross-file convention, so it is not consolidated at b3c or re-scanned at b3d:
    comments and labels are claims to check, not proof — do not treat a stale comment as the
    specification, and establish the coverage from the code itself.
 3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each

@@ -6,7 +6,8 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 
 ## b1 — Plan
 
-1. Dispatch one planner subagent with `prompts/planner-claims.md` filled; set
+1. Dispatch one planner subagent with `prompts/planner-claims.md` filled (role:
+   `claims_b1_planner`); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/planning.md`.
 2. Planner writes `audit/plans/claims_review_plan.md` with the worker allocation table
    (Worker ID · Paper Scope · Likely Code Scope · Shard File under `audit/_work/` ·
@@ -25,7 +26,8 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 
 ## b2 — Section workers (parallel, fire-and-forget)
 
-1. For each row of the allocation table, fill `prompts/section-worker.md` (one subagent per
+1. For each row of the allocation table, fill `prompts/section-worker.md` (role:
+   `claims_b2_section`; one subagent per
    worker, single message, `worker_model` from the manifest); set `{CONTRACT_PATH}` to
    `audit/_run/contracts/claims_first_pass.md`.
 2. A worker is complete when its shard exists at the planned path **and** passes
@@ -38,7 +40,8 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 ## b3 — First merge (adds rows)
 
 1. Snapshot `claims_register.md` + `output_register.md` to `audit/_run/snapshots/claims_b3/`.
-2. Dispatch one coordinator with `prompts/merge-first-pass.md` filled for the claims stream; set
+2. Dispatch one coordinator with `prompts/merge-first-pass.md` filled for the claims stream
+   (role: `claims_b3_merge`); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/merge_first_pass.md`.
    It writes **staging** registers (`audit/_staging/claims_register.md`,
    `audit/_staging/output_register.md`) and `audit/_run/merge_report_claims.json`
@@ -52,12 +55,13 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 
 Operationalizes standing self-consistency check 2 ("Shared and definition/use conventions agree", `registers.md`):
 the merged claims register now records, across many rows, the conventions the package uses in
-more than one place; this step collects them into one small list so the code-stream recheck (b4,
-`pipeline-code-errors.md`) can grep the codebase for sites that violate each. Runs after the
+more than one place; this step collects them into one small list for the b3d conventions-scan
+worker in `pipeline-code-errors.md`. Runs after the
 first merge (b3), before the recheck plan (b4). Non-blocking: a package with no qualifying
 convention produces a header-only artifact and nothing downstream fails.
 
-1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream); set
+1. Dispatch one worker with `prompts/consolidate-conventions.md` filled (claims stream; role:
+   `claims_b3c_conventions`); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/conventions.md`. It reads the canonical
    `claims_register.md` and writes `audit/_run/conventions.md` — a small Markdown
    table, one row per stated convention the paper uses in more than one place, drawn **only** from
@@ -69,13 +73,13 @@ convention produces a header-only artifact and nothing downstream fails.
    the full member set verbatim); `Sites Already Seen` lists the files/rows
    already logged for it. A convention stated in only one place is **not** listed — except an
    `enumerated_member_list`, where a single register row naming the member set qualifies: the
-   second side of the comparison is supplied by the code-side re-materialization sites the b4
-   grep locates, not by a second register row.
+   second side of the comparison is supplied by the code-side re-materialization sites the b3d
+   conventions-scan worker locates, not by a second register row.
 2. If no convention qualifies — none is used in more than one place and no single register row
    names an enumerated member list — the worker writes the table header with no rows. The file is
    always present and non-empty; the step never blocks and adds no register rows.
 3. This step mutates no canonical register, so there is no snapshot/staging/rename. It is a
-   read-only emit; the artifact is advisory input to the code-stream recheck grep. Certify with
+   read-only emit; the artifact is required input to the code-stream b3d conventions scan. Certify with
    `certify_stage.py finish --stage claims_b3c --outcome done`.
 
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
@@ -98,13 +102,15 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    requires it — and put each shard path, under `audit/_work_second_read/`, in the cell). Ranges
    are fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
    Findings` lists the C-IDs and one-line mechanism already logged there.
-3. **Dispatch** `prompts/second-read-worker.md` (stream = claims), one subagent per row,
+3. **Dispatch** `prompts/second-read-worker.md` (stream = claims; role:
+   `claims_b3b_second_read`), one subagent per row,
    with `{CONTRACT_PATH}` set to `audit/_run/contracts/second_read_claims.md`,
    fire-and-forget. At `deep` depth dispatch a second pass with a different `{MANDATE_LENS}` and
    its own disjoint ranges. A worker is complete when its shard exists at the planned path **and**
    passes `lint_registers.py --stage b3b-claims --shard <path>`; retry-once → blocked-continue.
 4. **Merge.** Snapshot `claims_register.md` + `output_register.md` to
    `audit/_run/snapshots/claims_b3b/`; dispatch `prompts/merge-first-pass.md` filled for the
+   claims b3b merge (role: `claims_b3b_merge`) and for the
    claims stream with `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_first_pass.md`,
    `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and
    `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
@@ -141,7 +147,8 @@ looping. Run `lint_registers.py --stage b4-claims`.
 
 ## b5 — Recheck cluster workers (parallel)
 
-Fill `prompts/recheck-cluster-worker.md` per cluster (stream = claims), with
+Fill `prompts/recheck-cluster-worker.md` per cluster (stream = claims; role:
+`claims_b5_recheck_cluster`), with
 `{CONTRACT_PATH}` set to `audit/_run/contracts/recheck_claims.md`. Completion, lint (`--stage
 b5-claims --shard <path>`), and retry follow b2. Record a passing shard with
 `certify_stage.py set-shard --stage claims_b5 --shard <path> --status done`, or a twice-failing
@@ -151,7 +158,8 @@ mint no IDs.
 ## b6 — Recheck merge (mutates rows)
 
 1. Snapshot both registers to `audit/_run/snapshots/claims_b6/`.
-2. Dispatch one coordinator with `prompts/merge-recheck.md` (stream = claims), with
+2. Dispatch one coordinator with `prompts/merge-recheck.md` (stream = claims; role:
+   `claims_b6_merge`), with
    `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_recheck.md`. It applies the verdict →
    register mapping from that contract, writes staging registers and
    `audit/claims_recheck_summary.md`, declaring any splits/merges.

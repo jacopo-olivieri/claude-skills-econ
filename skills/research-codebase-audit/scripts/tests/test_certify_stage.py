@@ -26,6 +26,7 @@ def write_intake(root, mode="replication", **extra):
         "scope_exclusions": [],
         "off_limits": [],
         "known_context": "keep me",
+        "effort_map": dict(cs.dispatch_tracking.DEFAULT_EFFORT_MAP),
     }
     manifest.update(extra)
     path = root / "audit" / "_run" / "manifest.json"

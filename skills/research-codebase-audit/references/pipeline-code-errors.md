@@ -6,7 +6,8 @@ cross-link. Lint stages here are `--stage b<N>-code`.
 
 ## b1 — Plan
 
-1. Dispatch one planner subagent with `prompts/planner-code.md` filled; set
+1. Dispatch one planner subagent with `prompts/planner-code.md` filled (role:
+   `code_b1_planner`); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/planning.md`.
 2. Planner writes `audit/plans/code_error_review_plan.md`: full script inventory (from `audit/CODEMAP.md`,
    minus manifest scope exclusions), and the chunk allocation table (Chunk ID · Script Scope ·
@@ -42,7 +43,7 @@ Hygiene and provenance findings default to severity 1–2 per the rubric.
 
 ## b2 — Chunk workers (parallel, fire-and-forget)
 
-Fill `prompts/chunk-worker.md` per chunk, with `{CONTRACT_PATH}` set to
+Fill `prompts/chunk-worker.md` per chunk (role: `code_b2_chunk`), with `{CONTRACT_PATH}` set to
 `audit/_run/contracts/code_first_pass.md` (the ERROR SCOPE lists live inside that skeleton —
 they do not depend on plan quality). Completion = shard exists and passes
 `lint_registers.py --stage b2-code --shard <path>`, then
@@ -52,33 +53,49 @@ lint failure, use `--status blocked --reason "<lint failure>"`, then continue.
 ## b3 — First merge (adds rows)
 
 Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3/`; dispatch
-`prompts/merge-first-pass.md` filled for the code stream with `{CONTRACT_PATH}` set to
+`prompts/merge-first-pass.md` filled for the code stream (role: `code_b3_merge`) with
+`{CONTRACT_PATH}` set to
 `audit/_run/contracts/merge_first_pass.md` → staging register +
 `audit/_run/merge_report_code.json`; `lint_registers.py --stage b3-code` additionally checks
 every inventory script is covered (coverage row in some shard footer) or has a documented
 blocker. Atomic rename on pass.
 
-## b3d — Deterministic detector emission and mapping (conductor-only)
+## b3d — Detector emission, conventions scan, and mapping
 
-Start `code_b3d`, then snapshot `code_error_register.md` to
-`audit/_run/snapshots/code_b3d/`. Run
-`emit_definition_use_bundles.py <package_root> --audit-dir audit` and
-`check_manifests.py <package_root> --audit-dir audit`; both artifacts are required even when
-their explicit standard-row count is zero. For every standard `DU-…` or `MF-…` source, record
-one conductor decision in `audit/_run/detector_mapping_decisions.md` under
-`| Channel | Source ID | Error ID | Mapping Kind |`, with `Mapping Kind` exactly
-`new_candidate` or `existing_row`, plus one
-`Declared detector Error-ID range: E-NNNN–E-NNNN` line. Advisory DU rows are not decided.
+In replication mode, do not start `code_b3d` until `claims_b3c` is certified: its
+`audit/_run/conventions.md` artifact is mandatory, including the header-only explicit-zero case.
+An absent artifact is a refusal (“wait for claims_b3c”), never zero. In code-errors-only mode no
+claims artifact exists; any conventions, CV scan, or CV decision is refused.
 
-Copy the canonical code-error register to `_staging/` and append one typed `candidate` row for
-each `new_candidate` decision, using only the declared detector range. Run
-`build_detector_mapping.py <package_root> --audit-dir audit`; it validates the staged register,
-the raw artifacts, the decisions, and the pre-b3d snapshot before atomically writing
-`audit/_run/detector_mapping.md`. On success atomically rename the staged register over canon,
-then run `certify_stage.py finish --stage code_b3d --outcome done`. Certification re-runs
-`build_detector_mapping.py --check`, including the simple detector reproducibility check. A
-missing raw artifact is never zero. The CV section uses its exact U3a explicit-zero form;
-shared conventions remain at b4 until U4.
+1. Start `code_b3d`, then snapshot `code_error_register.md` to
+   `audit/_run/snapshots/code_b3d/`. Run
+   `emit_definition_use_bundles.py <package_root> --audit-dir audit` and
+   `check_manifests.py <package_root> --audit-dir audit`; both deterministic artifacts are
+   required even when their standard-row count is zero.
+2. In replication mode, if `conventions.md` has rows, dispatch one
+   `prompts/conventions-scan-worker.md` worker (role: `b3d_conventions_scan`) after the detectors
+   and before decisions. It writes only `audit/_run/cv_scan.md`; completion requires the parser
+   contract to accept exactly one terminal verdict per convention. Retry once on failure, then
+   mark `code_b3d` blocked and continue. If `conventions.md` has no rows, do not dispatch and do
+   not create `cv_scan.md`.
+3. For a non-empty scan, copy `audit/_run/cv_scan.md` byte-for-byte to
+   `audit/_run/snapshots/code_b3d/cv_scan.md`, then run
+   `build_detector_mapping.py <package_root> --audit-dir audit --list-cv-sources`. Use that
+   read-only table as the sole source of CV IDs when writing decisions.
+4. Record one conductor decision per standard DU/MF source and per convention in
+   `audit/_run/detector_mapping_decisions.md`, under
+   `| Channel | Source ID | Error ID | Mapping Kind |`, plus one
+   `Declared detector Error-ID range: E-NNNN–E-NNNN` line. DU/MF and divergent CV sources use
+   `new_candidate` or `existing_row`; a not_divergent CV source uses
+   `reviewed_not_divergent` with Error ID exactly `—`. Advisory DU rows are not decided.
+5. Copy the canonical code-error register to `_staging/` and append one typed `candidate` row
+   for each `new_candidate` decision, using only the declared detector range. Run
+   `build_detector_mapping.py <package_root> --audit-dir audit`; it validates the staged
+   register, raw artifacts, frozen CV scan, decisions, and pre-b3d snapshot before atomically
+   writing `audit/_run/detector_mapping.md`. On success atomically rename the staged register
+   over canon, then finish `code_b3d`. Certification re-runs `build_detector_mapping.py --check`:
+   DU/MF are rediscovered for reproducibility, while CV is checked against the frozen scan and
+   its emitted section byte-for-byte. A missing required artifact is never zero.
 
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
 
@@ -102,14 +119,16 @@ it missed. See `references/review-principles.md` for why. Runs after b3, before 
    put each shard path, under `audit/_code_errors_second_read/`, in the cell). Each Error ID Range
    is fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
    Findings` lists the E-IDs and one-line mechanism already logged in that script.
-3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error), one subagent per row,
+3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error; role:
+   `code_b3b_second_read`), one subagent per row,
    with `{CONTRACT_PATH}` set to `audit/_run/contracts/second_read_code.md`,
    fire-and-forget. At `deep` depth dispatch a second pass per script with a different
    `{MANDATE_LENS}` and its own disjoint range. A worker is complete when its shard exists at the
    planned path **and** passes `lint_registers.py --stage b3b-code --shard <path>`; retry-once →
    blocked-continue.
 4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
-   `prompts/merge-first-pass.md` filled for the code stream with `{CONTRACT_PATH}` set to
+   `prompts/merge-first-pass.md` filled for the code stream (role: `code_b3b_merge`) with
+   `{CONTRACT_PATH}` set to
    `audit/_run/contracts/merge_first_pass.md`, `{SHARD_DIR}` = `audit/_code_errors_second_read/`,
    `{PLAN_PATH}` = the b3b allocation plan, and `{MERGE_REPORT}` =
    `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
@@ -141,38 +160,19 @@ claims recheck plan (inventory `| ID | Reason | Likely Evidence |`; clusters
 `| Cluster ID | Cluster Name | Assigned IDs | Shard File |`; vocabulary pointer to
 the recheck code contract). `lint_registers.py --stage b4-code`. One recheck pass — no looping.
 
-**Shared-conventions grep (consumes the b3c artifact; adds candidates before the plan is frozen).**
-If `audit/_run/conventions.md` exists and lists any convention, then before writing the recheck
-plan, for each listed convention grep the codebase for its definition sites — search the code for
-the boundary literal, sentinel, unit/scale factor, path separator, date mask, or ID/merge key the
-`Stated Definition` column records (e.g. a fiscal-year boundary "July" → grep for month/quarter
-literals and cutoff comparisons in the date-construction scripts; a missing-value sentinel → grep
-for the sentinel value and the replace/recode calls that set it; an enumerated member list
-(`enumerated_member_list`) → locate each site that re-materializes the stated list by hand —
-hand-written category or level lists in keep-or-drop conditions, value-label definitions, list or
-dictionary literals in any language, column-selection vectors, legend or axis label arrays — and
-take the set difference between each materialized set and the stated set, typing any missing,
-extra, or renamed member by its mechanism). Guard for enumerated member lists: a site that
-materializes a strict subset of the stated list with explicit local subsetting intent — a named
-sub-sample, a figure- or table-specific filter, a commented restriction — is recorded as
-reviewed-not-divergent, not emitted as a candidate. Any site whose definition
-disagrees with the stated one becomes a new `candidate` code-error row, typed by its mechanism per
-the taxonomy (a boundary literal mismatch is `treatment_or_event_timing_error`, a sentinel or
-scale mismatch is `aggregation_or_unit_error`, a divergent merge key is
-`merge_key_or_cardinality_error`, and so on), minted from an unused error-ID range and folded into
-the b4 inventory so the recheck resolves it. If the artifact is absent or lists no convention,
-skip this grep — it is non-blocking. This is the cross-stream handoff: a convention confirmed on
-the claims side reaches the code side as a concrete grep target.
+Conventions are scanned and mapped at b3d; b4 performs no shared-conventions grep.
 
 Detector-minted candidates already exist as ordinary canonical `candidate` rows before this plan
 is built, so the ordinary every-candidate inventory rule includes them. The b4-code lint also
 reads `audit/_run/detector_mapping.md`: every mapped Error ID must occur in the inventory, and its
-`Likely Evidence` must name every mapped DU or MF source ID. The detector mapping table does not
+`Likely Evidence` must name every mapped detector source ID — DU, MF, or divergent CV.
+`reviewed_not_divergent` CV rows need no inventory row. The detector mapping table does not
 live in `code_error_recheck_plan.md`.
 
 ## b5 — Recheck cluster workers (parallel)
 
-`prompts/recheck-cluster-worker.md` with stream = code and `{CONTRACT_PATH}` set to
+`prompts/recheck-cluster-worker.md` with stream = code (role: `code_b5_recheck_cluster`) and
+`{CONTRACT_PATH}` set to
 `audit/_run/contracts/recheck_code.md`. Same completion/lint/retry rules (`--stage b5-code`).
 Record each passing shard with `certify_stage.py set-shard --stage code_b5 --shard <path> --status
 done`, or a twice-failing shard with `--status blocked --reason "<lint failure>"`.
@@ -183,7 +183,7 @@ proposed. No new IDs; no hunting for unrelated errors.
 
 ## b6 — Recheck merge (mutates rows)
 
-Snapshot → `prompts/merge-recheck.md` (stream = code, `{CONTRACT_PATH}` =
+Snapshot → `prompts/merge-recheck.md` (stream = code, role: `code_b6_merge`, `{CONTRACT_PATH}` =
 `audit/_run/contracts/merge_recheck.md`) → staging +
 `audit/code_error_recheck_summary.md`. Then run `scripts/assemble_boundary.py <package-root>
 --audit-dir audit` before `lint_registers.py --stage b6-code`; only the assembler may apply a

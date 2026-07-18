@@ -36,7 +36,8 @@ def _cli(root, command, *args):
 
 def _manifest(root, **extra):
     data = {"mode": "code_errors_only", "ladder_level": 1,
-            "scope_exclusions": [], "off_limits": []}
+            "scope_exclusions": [], "off_limits": [],
+            "effort_map": dict(cs.dispatch_tracking.DEFAULT_EFFORT_MAP)}
     data.update(extra)
     path = root / "audit/_run/manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True)

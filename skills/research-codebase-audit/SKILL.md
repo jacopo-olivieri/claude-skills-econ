@@ -80,6 +80,10 @@ defaults and let the user correct.
 6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
    data, quirks (e.g. mirror folders that are import-only).
 7. **Output preferences and worker model tier** (default: inherit the session model).
+8. **Effort exceptions.** Offer the fixed default map: every dispatch role runs at `high`
+   except `b8_rewriter`, which runs at `medium`. Ask only for exceptions: “name any role you
+   want moved.” Legal tiers are `low`, `medium`, `high`, `xhigh`, and `max`. The resulting map is
+   written once at intake and never edited; changing effort later requires a fresh run.
 
 Write `audit/_run/manifest.json`:
 
@@ -94,6 +98,18 @@ Write `audit/_run/manifest.json`:
   "known_context": "…",
   "output_prefs": "…",
   "worker_model": "inherit",
+  "effort_map": {
+    "codemap": "high",
+    "claims_b1_planner": "high", "claims_b2_section": "high",
+    "claims_b3_merge": "high", "claims_b3c_conventions": "high",
+    "claims_b3b_second_read": "high", "claims_b3b_merge": "high",
+    "claims_b5_recheck_cluster": "high", "claims_b6_merge": "high",
+    "code_b1_planner": "high", "code_b2_chunk": "high", "code_b3_merge": "high",
+    "b3d_conventions_scan": "high", "code_b3b_second_read": "high",
+    "code_b3b_merge": "high", "code_b5_recheck_cluster": "high",
+    "code_b6_merge": "high", "b7_cross_linker": "high",
+    "b7_claim_recheck": "high", "b8_rewriter": "medium"
+  },
   "review_mode_sentence": "…",
   "paper_source_path": "…", "paper_sha256": "<sha256 of paper_source_path>",
   "paper_audit_path": "<blanked/converted copy, set at init>",
@@ -150,7 +166,7 @@ Completion: manifest written and every field above resolved with the user.
 3. If the paper is LaTeX: run `scripts/blank_tex_comments.py` to produce the audit copy —
    comments blanked, line numbers preserved, so only PDF-visible content is audited. Record it
    as `paper_audit_path` (`paper_source_path`/`paper_sha256` keep pointing at the source).
-4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`): produces
+4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`; role: `codemap`): produces
    `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, and a **preconditions
    score** (README present? unique output↔script mapping? documented data sources?). Low
    scores are recorded as degraded-confidence `warnings` in the manifest — they surface in the
@@ -172,7 +188,7 @@ each stream:
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
 | `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
-| `code_b3d` deterministic detector emission and mapping | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
+| `code_b3d` detector emission, conventions scan, and mapping (replication waits for certified `claims_b3c`) | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
 | `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
 | `code_b4`–`code_b6` (recheck plan → cluster workers → merge) | `b4-code`–`b6-code` | `references/pipeline-code-errors.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
@@ -196,8 +212,14 @@ Mechanics:
   one line per boundary giving its status, shards done/blocked, and last lint result. It is a
   human-readable mirror of the manifest, not a second source of truth — rewrite it whole from the
   manifest each time so an unsupervised run stays legible without reading the pipeline files.
-- Dispatch with the user's `worker_model` if set. Skeletons for judgment-heavy stages (recheck,
-  merge conflicts, claims logic) carry their own thinking cues — do not add more.
+- **Effort-keyed dispatch.** Resolve the dispatch role in the table below, read its tier from the
+  manifest `effort_map`, and dispatch through `rca-carrier-<tier>` while continuing to use the
+  user's `worker_model`; model and effort are orthogonal. Begin every worker prompt with
+  `RCA-DISPATCH role=<role-key> stage=<stage-key>` so the observation hook can recover aggregate
+  stage/role counts. Append the dispatch immediately with `scripts/dispatch_tracking.py record`
+  (role, carrier, stage, shard-or-artifact, and monotone sequence number) to
+  `audit/_run/dispatch_ledger.md`; never rewrite the ledger. Skeleton thinking cues stay as
+  written but are not the effort mechanism, and the conductor adds no ad-hoc thinking cues.
 - Blocked work never stalls the run: merges run over the non-blocked shards (documenting the
   blocked ones), a blocked claims stage does not stop the code stream, and vice versa. Blocked
   stages/shards are reported at the end, not retried in a loop.
@@ -205,10 +227,40 @@ Mechanics:
 Completion: b9 is certified `done`, and `audit/code_review.xlsx` exists and passes the b9 lint.
 Run `certify_stage.py close-run` once.
 
+**Resolved role-key table.** Every production dispatch site in this file and the three pipeline
+files carries exactly one of these keys; b4 is conductor-computed and has no planner role.
+
+| Role key | Stage / assignment | Default effort |
+| --- | --- | --- |
+| `codemap` | b0 CODEMAP | high |
+| `claims_b1_planner` | claims b1 planner | high |
+| `claims_b2_section` | claims b2 section worker | high |
+| `claims_b3_merge` | claims b3 first merge | high |
+| `claims_b3c_conventions` | claims b3c consolidation | high |
+| `claims_b3b_second_read` | claims b3b second read | high |
+| `claims_b3b_merge` | claims b3b merge | high |
+| `claims_b5_recheck_cluster` | claims b5 recheck cluster | high |
+| `claims_b6_merge` | claims b6 recheck merge | high |
+| `code_b1_planner` | code b1 planner | high |
+| `code_b2_chunk` | code b2 chunk worker | high |
+| `code_b3_merge` | code b3 first merge | high |
+| `b3d_conventions_scan` | code b3d conventions scan | high |
+| `code_b3b_second_read` | code b3b second read | high |
+| `code_b3b_merge` | code b3b merge | high |
+| `code_b5_recheck_cluster` | code b5 recheck cluster | high |
+| `code_b6_merge` | code b6 recheck merge | high |
+| `b7_cross_linker` | b7 cross-link | high |
+| `b7_claim_recheck` | b7 conditional claims recheck | high |
+| `b8_rewriter` | b8 rewrite | medium |
+
 ## Phase 4 — Report and follow-up (interactive again)
 
 Report to the user: row counts per register and status, issue-flagged rows by severity,
-blocked/`confirmation_needed` rows, degraded-confidence warnings, and the workbook path.
+blocked/`confirmation_needed` rows, degraded-confidence warnings, and the workbook path. Run
+`scripts/dispatch_tracking.py report --audit-dir audit` and include its per-stage-and-role ledger
+dispatch counts versus observed hook-event counts. Name every mismatch at that granularity as an
+**instrumentation gap for operator judgment**; the ledger and event files are reported only and
+never gate a stage, `verify-run`, or export.
 
 Offer the documented follow-up: **targeted manual QA** — the user picks specific IDs, you run an
 interactive recheck of just those rows (same evidence standards as the recheck stage) and

@@ -16,7 +16,8 @@ canon exists.
 ## b7 — Cross-link (full replication only)
 
 1. Snapshot both link-bearing registers to `audit/_run/snapshots/b7/`.
-2. Dispatch one subagent with `prompts/cross-linker.md`, with `{CONTRACT_PATH}` set to
+2. Dispatch one subagent with `prompts/cross-linker.md` (role: `b7_cross_linker`), with
+   `{CONTRACT_PATH}` set to
    `audit/_run/contracts/cross_link.md`. It edits **only** `Related Error IDs` (claims) and
    `Related Claim IDs` (code errors) in staging copies, and writes
    `audit/register_cross_link_summary.md` — including a `## Status conflicts` section for
@@ -38,10 +39,13 @@ canon exists.
    confirmed-claim↔confirmed-error link is listed under `## Status conflicts`; every
    mapped-claim↔confirmed-error contradiction is listed under `## Escalated mapped claims`;
    every divergent-severity link is listed under `## Severity divergences`. Atomic rename.
-4. **Status-conflict resolution** (only when the summary lists conflicts): dispatch one
-   recheck-cluster-worker over the conflicted claim rows, with `{CONTRACT_PATH}` set to
-   `audit/_run/contracts/recheck_claims.md` and the linked error rows named as evidence to
-   check. Apply the standard verdict→register mapping (registers.md) to the
+4. **Conditional claims recheck.** Inspect the union of `## Status conflicts`,
+   `## Severity divergences`, and `## Escalated mapped claims`. If it is non-empty, dispatch the
+   existing `recheck-cluster-worker.md` exactly once (role: `b7_claim_recheck`) over exactly the
+   claims rows named anywhere in that union, with `{CONTRACT_PATH}` set to
+   `audit/_run/contracts/recheck_claims.md` and the linked error rows named as evidence. The one
+   shard covers the resolution duties in steps 4–6; do not dispatch separate workers per section.
+   For status conflicts, apply the standard verdict→register mapping (registers.md) to the
    claims register mechanically. Whenever the recheck chooses between `inconsistent` and
    `confirmation_needed`, apply the visibility test in `references/registers.md`. If a verdict
    leaves the claim `confirmed` (the error does
@@ -49,7 +53,7 @@ canon exists.
    the removal in the summary. No confirmed-claim↔confirmed-error link may survive into b8
    (lint b8 enforces).
 5. **Escalated-mapped-claim second look** (only when the summary lists escalated mapped
-   claims; may share the step-4 dispatch): the recheck revisits each `mapped` claim with the
+   claims): the step-4 recheck revisits each `mapped` claim with the
    linked error named as evidence and returns a verdict; the conductor applies the
    verdict→register mapping mechanically. The outcome is open — the claim may become
    `inconsistent` (the error settles it) or legitimately stay `mapped` (the error does not
@@ -57,8 +61,8 @@ canon exists.
    Unlike a status conflict, a `mapped`-and-linked pair may survive to b8: b8
    requires only that the second look happened (a recheck ledger entry for the claim), not a
    particular status. Record the second look in the summary line.
-6. **Severity-divergence resolution** (only when the summary lists divergences; may share
-   the step-4 dispatch): the recheck revisits each listed pair and returns a verdict; the
+6. **Severity-divergence resolution** (only when the summary lists divergences): the step-4
+   recheck revisits each listed pair and returns a verdict; the
    conductor then either aligns the two severities (verdict→register mapping, mechanically
    applied) or appends a one-line justification for the gap — taken from the ledger's
    `Proposed Note` — to the pair's line in the summary. The recheck worker writes only its
@@ -76,7 +80,7 @@ canon exists.
 ## b8 — Author-facing rewrite
 
 1. Snapshot to `audit/_run/snapshots/b8/`.
-2. Dispatch one subagent with `prompts/rewriter.md` (register paths per mode), with
+2. Dispatch one subagent with `prompts/rewriter.md` (role: `b8_rewriter`; register paths per mode), with
    `{CONTRACT_PATH}` set to `audit/_run/contracts/rewrite.md`. This is the dedicated clarity
    pass: it renames technical fields to `*_Original` and writes author-facing
    versions, armed with the five contrastive gold examples and the jargon ban carried verbatim

@@ -522,6 +522,7 @@ def test_b3d_emission_converse_refuses_staging_corruption(tmp_path, kind):
     root = tmp_path / "package"
     root.mkdir()
     a = rb.AuditDir(root)
+    a.write_manifest(mode="code_errors_only")
     a.write("_run/definition_use_bundles.md", rb.definition_use_artifact([]))
     a.write("_run/manifest_check.md",
             "# Manifest\n\nNo candidate findings: every recognized manifest parsed clean.\n"
@@ -640,6 +641,7 @@ def test_tier1_b3d_converse_check_has_teeth(tmp_path, monkeypatch):
     root = tmp_path / "package"
     root.mkdir()
     a = rb.AuditDir(root)
+    a.write_manifest(mode="code_errors_only")
     a.write("_run/definition_use_bundles.md", rb.definition_use_artifact([]))
     a.write("_run/manifest_check.md",
             "# Manifest\n\nNo candidate findings: every recognized manifest parsed clean.\n"
@@ -655,7 +657,7 @@ def test_tier1_b3d_converse_check_has_teeth(tmp_path, monkeypatch):
         dm.validate_inputs(root, a.audit)
     monkeypatch.setattr(dm, "_validate_staging_converse", lambda *_args: None)
     _display, rows = dm.validate_inputs(root, a.audit)
-    assert rows == {"DU": [], "MF": []}
+    assert rows == {"DU": [], "MF": [], "CV": []}
 
 
 def _completed_b3d_b6_run(tmp_path, verdict="not_error"):

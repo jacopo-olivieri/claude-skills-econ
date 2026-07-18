@@ -23,3 +23,5 @@ def pytest_configure(config):
         "markers", "u2: unit U2 — descoped stage certification core")
     config.addinivalue_line(
         "markers", "u3: unit U3 — detector channels and adjudication")
+    config.addinivalue_line(
+        "markers", "u4: unit U4 — thinking effort and CV activation")

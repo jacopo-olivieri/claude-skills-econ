@@ -48,6 +48,7 @@ MF_VERIFICATION_COLS = _lint_mod.MF_VERIFICATION_COLS
 PROBE_VERIFICATION_COLS = _lint_mod.PROBE_VERIFICATION_COLS
 POST_WITNESS_COLS = _lint_mod.POST_WITNESS_COLS
 _mechanism_mod = load_script("mechanism_schema")
+_dispatch_mod = load_script("dispatch_tracking")
 
 
 def run_script(name, *args, cwd=None):
@@ -115,7 +116,10 @@ class AuditDir:
         return p
 
     def write_manifest(self, **kv):
-        manifest = {"mode": "replication", "ladder_level": 1, "warnings": []}
+        manifest = {
+            "mode": "replication", "ladder_level": 1, "warnings": [],
+            "effort_map": dict(_dispatch_mod.DEFAULT_EFFORT_MAP),
+        }
         manifest.update(kv)
         return self.write("_run/manifest.json", json.dumps(manifest, indent=2))
 
@@ -308,6 +312,7 @@ def detector_mapping_artifact(mappings=()):
                      kind, f"do/build_panel.do:{20+i}"])
     du_rows = [row for row in rows if row[0] == "DU"]
     mf_rows = [row for row in rows if row[0] == "MF"]
+    cv_rows = [row for row in rows if row[0] == "CV"]
     cols = ["Channel", "Source ID", "Witness ID", "Error ID", "Mapping Kind", "Site Anchor"]
     def section(marker, section_rows, zero):
         return marker + "\n\n" + (md_table(cols, section_rows) if section_rows else zero) + "\n"
@@ -317,8 +322,8 @@ def detector_mapping_artifact(mappings=()):
                   "No standard DU rows: the definition/use detector emitted zero standard candidates.")
         + section("<!-- GENERATED:MF -->", mf_rows,
                   "No standard MF rows: the manifest detector emitted zero standard candidates.")
-        + section("<!-- CONDUCTOR:CV -->", [],
-                  "No channel-mapped CV rows in U3a: conventions still run at b4 and activate in this mapping in U4.")
+        + section("<!-- CONDUCTOR:CV -->", cv_rows,
+                  "No channel-mapped CV rows: no conventions were consolidated for this run.")
     )
 
 

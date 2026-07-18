@@ -186,6 +186,7 @@ def _canonical_outcome(mapping, ledger, outcome, records, receipts, register_row
 def assemble(audit, register_path):
     _declared, _display, mappings = detector_mapping.load_mapping(
         audit / "_run/detector_mapping.md")
+    mappings = detector_mapping.actionable_rows(mappings)
     ledgers, outcomes, records = load_inputs(audit)
     receipts = load_receipts(audit)
     register = _register(register_path)

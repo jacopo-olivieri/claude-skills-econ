@@ -19,6 +19,7 @@ from pathlib import Path
 from mechanism_schema import MECHANISM_SCHEMA_VERSION
 from source_projection import iter_in_scope_entries
 import build_detector_mapping as detector_mapping
+import dispatch_tracking
 import lint_registers as registers
 
 
@@ -233,6 +234,10 @@ def stages_for_mode(mode):
 def init_run(package_root, clear_stale_marker=False):
     manifest = read_manifest(package_root)
     stages = stages_for_mode(manifest.get("mode"))
+    try:
+        dispatch_tracking.validate_effort_map(manifest.get("effort_map"))
+    except dispatch_tracking.DispatchError as exc:
+        raise CertificationError(str(exc)) from exc
     replace_running_marker(package_root, clear_stale_marker)
     manifest["run_identity"] = make_run_identity(package_root, manifest)
     manifest["stages"] = {

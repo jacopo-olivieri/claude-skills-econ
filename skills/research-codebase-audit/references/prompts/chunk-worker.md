@@ -64,7 +64,7 @@ Also run the three **standing self-consistency checks** defined in `audit/audit_
   dictionary literal, a column-selection vector, a legend or axis label array), check the members
   it materializes against the stated set; a divergence is a finding row, and a non-divergent site
   needs no row. Your rows go to the code register, which the b3c consolidation does not read; the
-  b4 shared-conventions grep independently locates re-materialization sites and compares each
+  b3d conventions-scan worker independently locates re-materialization sites and compares each
   against the paper-stated set — this bullet exists so you recognize enumerated-list sites and
   catch divergences at first pass. Check the same agreement **within one file**: when a derived
   flag, indicator, category, sentinel, or eligibility variable's code, adjacent comment, label, or

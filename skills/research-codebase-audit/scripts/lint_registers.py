@@ -1353,7 +1353,7 @@ def parse_detector_mappings(lint, audit):
     path = audit / "_run" / "detector_mapping.md"
     try:
         _declared, _display, rows = detector_mapping.load_mapping(path)
-        return rows
+        return detector_mapping.actionable_rows(rows)
     except detector_mapping.MappingError as exc:
         lint.fail(f"{path}: {exc}")
         return []

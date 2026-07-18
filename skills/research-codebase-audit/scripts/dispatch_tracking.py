@@ -205,6 +205,11 @@ def _markdown_rows(path):
     return parsed
 
 
+def read_ledger_rows(path):
+    """Public accessor for parsed dispatch-ledger rows (thin wrapper of _markdown_rows)."""
+    return _markdown_rows(Path(path))
+
+
 def accounting_report(audit):
     audit = Path(audit)
     ledger = Counter(

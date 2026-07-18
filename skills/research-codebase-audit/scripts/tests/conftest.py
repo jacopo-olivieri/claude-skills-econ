@@ -25,3 +25,5 @@ def pytest_configure(config):
         "markers", "u3: unit U3 — detector channels and adjudication")
     config.addinivalue_line(
         "markers", "u4: unit U4 — thinking effort and CV activation")
+    config.addinivalue_line(
+        "markers", "u5: unit U5 — trimmed replay harness")

@@ -291,7 +291,7 @@ def test_error_row_red_on_empty_error_description(tmp_path):
     a.write_manifest()
     a.write("plans/code_error_review_plan.md", rb._code_b1_plan())
     row = rb.error_row("E-0101", status="candidate", severity="3", desc="")
-    a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [row],
+    a.write_register("code_error_register.md", rb.ERROR_COLS, [row],
                      title="Code-error register")
     # a valid merge report so the stage reaches the row check
     a.write("_run/merge_report_code.json",
@@ -311,7 +311,7 @@ def test_error_row_green_on_complete_candidate(tmp_path):
     a.write_manifest()
     a.write("plans/code_error_review_plan.md", rb._code_b1_plan())
     row = rb.error_row("E-0101", status="candidate", severity="3")
-    a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [row],
+    a.write_register("code_error_register.md", rb.ERROR_COLS, [row],
                      title="Code-error register")
     a.write("_run/merge_report_code.json",
             '{"code_error_register.md": {"shard_rows": 1, "dedup_removed": 0, '
@@ -329,7 +329,7 @@ def test_error_row_warns_on_empty_code_location_when_blocked(tmp_path):
     a.write_manifest()
     a.write("plans/code_error_review_plan.md", rb._code_b1_plan())
     row = rb.error_row("E-0101", status="blocked", severity="3", location="")
-    a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [row],
+    a.write_register("code_error_register.md", rb.ERROR_COLS, [row],
                      title="Code-error register")
     a.write("_run/merge_report_code.json",
             '{"code_error_register.md": {"shard_rows": 1, "dedup_removed": 0, '

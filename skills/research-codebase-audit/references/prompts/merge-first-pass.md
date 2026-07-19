@@ -37,16 +37,27 @@ Read: `{PLAN_PATH}`, `audit/CODEMAP.md`, `{CONTRACT_PATH}`, all shard files in
 Blocked shards (merge without them; document the gap): {BLOCKED_SHARDS}
 
 Write the merged registers to the STAGING paths {STAGING_FILES} — never edit the canonical
-files directly. Also write `{MERGE_REPORT}` with EXACTLY this JSON shape (one top-level key
-per register filename; the identity shard_rows − dedup_removed == added must hold):
+files directly. Also write `{MERGE_REPORT}` with this exact shared shape (the identity
+shard_rows − dedup_removed == added must hold):
 
     {
       "<register filename>": {
         "shard_rows": <int>, "dedup_removed": <int>, "added": <int>,
         "conflicts": ["<ID>", ...], "coverage_gaps": ["<gap>", ...],
         "blocked_shards": ["<shard path>", ...]
-      }
+      },
+      "footer_dispositions": [
+        "audit/path/to/shard.md#OBS-0001 | candidate:E-0123",
+        "audit/path/to/shard.md#OBS-0002 | dismissed:<one-line reason>"
+      ],
+      "unreviewed_files": ["<code-stream blocked-owner inventory path>", ...],
+      "coverage_outcomes": {"<code inventory path>": "<exact outcome>", ...}
     }
+
+`footer_dispositions` is required for both streams and contains exactly one disposition for
+every typed footer entry, joined by shard path + Entry ID. `unreviewed_files` is required for
+the code stream (use `[]` when none), as is `coverage_outcomes`, an exact path-to-outcome copy
+of every non-blocked shard coverage row; omit both for claims.
 
 ## WHAT TO DO
 
@@ -75,6 +86,9 @@ per register filename; the identity shard_rows − dedup_removed == added must h
 4. Keep claims↔outputs links bidirectional (C-x lists O-y ⟺ O-y lists C-x). Leave
    `Related Error IDs` / `Related Claim IDs` blank — cross-linking is a later stage.
 5. Coverage reconciliation: {COVERAGE_KIND}. Record gaps in the merge report.
+5b. Disposition every typed footer entry. A `candidate` entry must use a candidate disposition
+that names the same row IDs; it cannot be dismissed. A `not_rowed_observation` may be promoted
+to a candidate or dismissed with a concrete one-line reason. Never drop an entry silently.
 6. Do not discard uncertain rows; keep them with their uncertain status and what remains
    unresolved. Mark only concrete problems as issues — ordinary uncertainty is not an issue.
 7. Where workers contradict each other, think hard about whether the rows genuinely

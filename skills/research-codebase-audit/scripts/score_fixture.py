@@ -154,6 +154,10 @@ SIGNATURES = {
              ["keep if", "drop", "exclu", "omit", "narrow",
               "conjunct", "silently", "left out", "not kept",
               "removed", "restrict"]],
+    "P-23": [["requirements-recall"], ["numpy"],
+             ["whitespace", "operator", "invalid", "reject", "parse"]],
+    "P-24": [["requirements-recall"], ["pandas"], ["2.2.2"], ["1.5.3"],
+             ["conflict", "incompat", "duplicate", "two", "mutually"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked
@@ -471,6 +475,54 @@ def check_artifact_manifest(audit):
         return "PASS", f"_run/manifest_check.md names {MANIFEST_PLANT}"
     return "FAIL", (f"_run/manifest_check.md does not name {MANIFEST_PLANT} "
                     "in its Candidate findings")
+
+
+def check_clean_recall_chain(audit):
+    """U6a: mechanical P-23 chain plus conditional P-24 b3b provenance."""
+    plant = "requirements-recall.txt"
+    manifest_path = audit / "_run/manifest_check.md"
+    mapping_path = audit / "_run/detector_mapping.md"
+    plan_path = audit / "plans/code_error_second_read_plan.md"
+    required = (manifest_path, mapping_path, plan_path)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        return "FAIL", "missing U6a artifact(s): " + ", ".join(missing)
+    manifest_text = manifest_path.read_text(encoding="utf-8", errors="replace")
+    mapping_text = mapping_path.read_text(encoding="utf-8", errors="replace")
+    plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
+    if plant not in manifest_text:
+        return "FAIL", f"P-23 absent from {manifest_path.name}"
+    if plant not in mapping_text:
+        return "FAIL", f"P-23 absent from {mapping_path.name}"
+    plan_rows = []
+    for headers, rows in parse_tables(plan_text):
+        if {"Script Scope", "Shard File", "Reason"} <= set(headers):
+            plan_rows.extend(dict(zip(headers, row)) for row in rows
+                             if len(row) == len(headers))
+    owners = [row for row in plan_rows
+              if plant in row["Script Scope"] and row["Reason"].strip("`") == "detector"]
+    if not owners:
+        return "FAIL", "P-23 file is not allocated with reason detector"
+
+    # code_b3 is the pre-merge snapshot; code_b3d is taken immediately after
+    # b3 promotion and is therefore the recorded post-b3 state.
+    post_b3 = audit / "_run/snapshots/code_b3d/code_error_register.md"
+    if post_b3.is_file() and sig_match(
+            post_b3.read_text(encoding="utf-8", errors="replace"), SIGNATURES["P-24"]):
+        return "PASS", "P-23 detector chain present; P-24 provenance vacuous (found at first pass)"
+    final_rows = load_rows(audit / "code_error_register.md", "Error ID")
+    p24 = [row for row in final_rows
+           if plant in row_text(row) and sig_match(row_text(row), SIGNATURES["P-24"])]
+    if not p24:
+        return "FAIL", "P-24 absent after first pass and absent from final code register"
+    expected_ids = {row["Error ID"] for row in p24}
+    for owner in owners:
+        shard = audit.parent / owner["Shard File"].strip().strip("`")
+        if shard.is_file():
+            shard_text = shard.read_text(encoding="utf-8", errors="replace")
+            if expected_ids & set(re.findall(r"E-\d{4}", shard_text)):
+                return "PASS", "P-23 detector chain present; P-24 originates in its b3b shard"
+    return "FAIL", "P-24 lacks the file's b3b-shard provenance"
 
 
 def _table_with_headers(text, required, exact=False):
@@ -1102,6 +1154,13 @@ def main() -> int:
     print(f"Definition/use channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("definition/use channel check failed")
+    if {"P-23", "P-24"} <= expected_ids:
+        status, note = check_clean_recall_chain(audit)
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U6a plant pair")
+    print(f"U6a clean-recall chain: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U6a clean-recall chain check failed")
     status, note = check_channel_adjudication(audit, expected)
     print(f"U3b adjudication channel: {status} — {note}")
     if status == "FAIL":

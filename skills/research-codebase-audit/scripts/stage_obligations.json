@@ -13,14 +13,16 @@
   ],
   "claims_b3": [
     {"type": "artifact", "pattern": "claims_register.md"},
-    {"type": "artifact", "pattern": "output_register.md"}
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "validate", "validator": "lint:b3-claims"}
   ],
   "claims_b3c": [
     {"type": "artifact", "pattern": "_run/conventions.md"}
   ],
   "claims_b3b": [
     {"type": "artifact", "pattern": "claims_register.md"},
-    {"type": "artifact", "pattern": "output_register.md"}
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "validate", "validator": "lint:b3b-claims"}
   ],
   "claims_b4": [
     {"type": "artifact", "pattern": "plans/claims_recheck_plan.md"},
@@ -43,7 +45,8 @@
     {"type": "validate", "validator": "lint:b2-code"}
   ],
   "code_b3": [
-    {"type": "artifact", "pattern": "code_error_register.md"}
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "validate", "validator": "lint:b3-code"}
   ],
   "code_b3d": [
     {"type": "artifact", "pattern": "_run/definition_use_bundles.md"},
@@ -52,7 +55,8 @@
     {"type": "validate", "validator": "detector:mapping"}
   ],
   "code_b3b": [
-    {"type": "artifact", "pattern": "code_error_register.md"}
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "validate", "validator": "lint:b3b-code"}
   ],
   "code_b4": [
     {"type": "artifact", "pattern": "plans/code_error_recheck_plan.md"},

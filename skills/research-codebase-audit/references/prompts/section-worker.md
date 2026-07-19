@@ -108,15 +108,15 @@ Rules:
   wording), the row is `inconsistent`, not `blocked`. `Blocked Check` is required non-empty on
   every `blocked` row and must be empty on every non-blocked row — even a legitimately blocked
   row with nothing to check must say so ("nothing visible to check").
-- Use IDs only from your assigned ranges. If a range runs out, stop adding rows and put
-  `BLOCKED: ID range exhausted` in your coordinator notes.
+- Use IDs only from your assigned ranges. If a range runs out, stop adding rows, add a typed
+  `not_rowed_observation` with reason `ID range exhausted`, and report the block.
 - Repo-relative paths everywhere.
 
 Completion criterion — exhaustive: every table, figure, footnote, equation, and quantitative
 sentence in your scope has a register row or an explicit skip note with a reason. End the
-shard with the two-part footer specified in `{CONTRACT_PATH}` (coverage note +
-coordinator notes); the coverage note must prove the criterion above, and section overlaps
-go in the coordinator notes — deduplication is the coordinator's job, not yours.
+shard with the two-part footer specified in `{CONTRACT_PATH}` (coverage note + typed
+observations); the coverage note must prove the criterion above. Section-overlap notes use
+`not_rowed_observation` with a reason — deduplication is the coordinator's job, not yours.
 
 Parallel-safety: you may read any file, but write only to your shard. Do not edit canonical
 registers, code, paper text, plans, or other workers' shards. Do not run the pipeline.

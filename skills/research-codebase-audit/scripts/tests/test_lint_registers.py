@@ -78,34 +78,47 @@ def _b3b_manifest_boundary(tmp_path, stream, *, workers,
     if stream == "claims":
         plan = (
             "# Claims second-read plan\n\n"
-            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | Output ID Range | Known Findings |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
+            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | Output ID Range | Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
         )
         if workers:
             plan += (
                 "| W1 | sec 4 | `audit/_work_second_read/w1.md` | "
-                "C-2000–C-2099 | O-2000–O-2099 | C-0142 |\n"
+                "C-2000–C-2099 | O-2000–O-2099 | flagged | C-0142 | — |\n"
             )
         a.write("plans/claims_second_read_plan.md", plan)
         a.write_claims_plan()
         files = ["claims_register.md", "output_register.md"]
         a.write_register("_staging/claims_register.md", rb.CLAIMS_COLS, [])
         a.write_register("_staging/output_register.md", rb.OUTPUT_COLS, [])
+        # post-promotion canon: the b3b lint reads promoted evidence, not staging
+        a.write_register("claims_register.md", rb.CLAIMS_COLS, [])
+        a.write_register("output_register.md", rb.OUTPUT_COLS, [])
         report = {
             name: {"shard_rows": 0, "dedup_removed": 0, "added": 0}
             for name in files
         }
+        report["footer_dispositions"] = []
         report_name = "merge_report_claims_b3b.json"
+        if workers and populated_shards:
+            shard_text = rb.md_table(rb.CLAIMS_COLS, []) + "\n" + rb.md_table(
+                rb.OUTPUT_COLS, [])
+            shard_text += (
+                "\nCoverage: assigned section fully reread.\n\n"
+                "| Entry ID | Kind | Register IDs | Observation | Reason |\n"
+                "| --- | --- | --- | --- | --- |\n"
+            )
+            a.write("_work_second_read/w1.md", shard_text)
     else:
         plan = (
             "# Code-error second-read plan\n\n"
-            "| Worker ID | Script Scope | Shard File | Error ID Range | Known Findings |\n"
-            "| --- | --- | --- | --- | --- |\n"
+            "| Worker ID | Script Scope | Shard File | Error ID Range | Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
         )
         if workers:
             plan += (
                 "| W1 | `py/x.py` | `audit/_code_errors_second_read/w1.md` | "
-                "E-2000–E-2099 | E-0142 |\n"
+                "E-2000–E-2099 | flagged | E-0142 | — |\n"
             )
         a.write("plans/code_error_second_read_plan.md", plan)
         a.write(
@@ -118,12 +131,22 @@ def _b3b_manifest_boundary(tmp_path, stream, *, workers,
         )
         files = ["code_error_register.md"]
         a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [])
+        a.write_register("code_error_register.md", rb.ERROR_COLS, [])
         report = {
             "code_error_register.md": {
                 "shard_rows": 0, "dedup_removed": 0, "added": 0,
             },
+            "footer_dispositions": [],
         }
         report_name = "merge_report_code_b3b.json"
+        if workers and populated_shards:
+            shard_text = rb.md_table(rb.ERROR_COLS, [])
+            shard_text += (
+                "\n| Script | Outcome |\n| --- | --- |\n| `py/x.py` | clean |\n\n"
+                "| Entry ID | Kind | Register IDs | Observation | Reason |\n"
+                "| --- | --- | --- | --- | --- |\n"
+            )
+            a.write("_code_errors_second_read/w1.md", shard_text)
     a.snapshot(key, files)
     a.write(f"_run/{report_name}", json.dumps(report))
     return a

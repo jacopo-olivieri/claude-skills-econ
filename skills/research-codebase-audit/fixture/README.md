@@ -1,8 +1,8 @@
 # Fixture — planted-error validation package
 
 `planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, two
-Python scripts, data, a TOML manifest, artifacts, README) with **21 planted findings**
-(`must_find` items P-01 through P-21) spanning the error taxonomy — including the three
+Python scripts, data, manifests, artifacts, README) with **23 planted findings**
+(`must_find` items P-01 through P-21 plus P-23/P-24) spanning the error taxonomy — including the three
 classes added by the design (seed, SE specification, weights), a transcription mismatch
 against a shipped artifact, hygiene/PII findings, and **three decoys** that must NOT be
 flagged (a commented-out figure, an intentional subset of a stated member list, and an
@@ -62,6 +62,12 @@ covers):
   cleared `not_error`: the additional wave restriction is explicitly the diagnostic's
   domain and `restore` prevents it from narrowing the estimation sample.
 
+**Clean-file recall pair (added 2026-07-18)** — P-23/P-24 share the otherwise-clean
+`requirements-recall.txt`. P-23 is the mechanically flaggable whitespace-operator error that
+must enter the b3d manifest artifact/mapping and force a `detector` second read. P-24 is a
+human-only pair of individually legal but mutually incompatible exact pandas pins; if first pass
+does not recover it, its candidate must originate in that file's b3b shard.
+
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
@@ -80,7 +86,7 @@ does not make that claim, so the privacy check is judged from the public package
    ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 21 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 23 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
      `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
      rule).

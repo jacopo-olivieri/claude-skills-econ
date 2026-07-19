@@ -27,3 +27,5 @@ def pytest_configure(config):
         "markers", "u4: unit U4 — thinking effort and CV activation")
     config.addinivalue_line(
         "markers", "u5: unit U5 — trimmed replay harness")
+    config.addinivalue_line(
+        "markers", "u6: unit U6 — clean-file recall and supplementary lifecycle")

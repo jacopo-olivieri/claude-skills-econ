@@ -57,6 +57,9 @@ Start from the source code; ignore paper claims and paper-review findings.
 1. **Summary** — what this code-error review verifies; repeat the review-mode sentence.
 2. **Scope Boundaries** — inventory inclusions/exclusions with reasons; deferred items.
 3. **Script Inventory** — table: | Script | Language | Pipeline role | ~Lines | Chunk |.
+   Follow it with `| Hygiene File | Chunk |`, listing every package-level file assigned to
+   the hygiene chunk exactly once. The package-wide data/log lens is not a file row; workers
+   report it under the reserved coverage key `@hygiene:data-and-log-lens`.
 4. **Key Decisions** — chunking logic.
 5. **Chunk Allocation Table** —
    | Chunk ID | Script Scope | Likely Pipeline Stage/Outputs | Shard File | Error ID Range | Review Focus |

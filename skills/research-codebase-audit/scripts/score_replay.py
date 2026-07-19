@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score replay output against a blind, b5-anchored JSON answer sheet.
+"""Score replay output against a blind JSON answer sheet.
 
 Answer sheets are JSON objects with ``format_version`` 1,
 ``mechanism_schema_version``, ``disposition_complete``, a nonnegative
@@ -10,6 +10,13 @@ declares ``key``, ``output_id``, the full ``channel`` / ``source_id`` /
 ``severity_floor``, and zero or more short ``anchors``.  For example, an
 invented archaeology sheet might expect witness ``DUW-abc...`` at
 ``src/pottery.do:12``.  The scorer never reads a benchmark key directly.
+
+Candidate-mode sheets replace the b5 ledger/witness legs with an
+``expected_candidates`` table.  Each expectation is keyed by exact
+repo-relative source path and a U1-canonical mechanism using
+``EMPTY_PROJECTION``; status is candidate-family, severity is benchmark ±1,
+and unexpected candidate IDs within the declared scenario files count toward
+the same false-positive ceiling.
 
 The CLI reads root configuration from ``--data-root`` or
 ``RCA_REPLAY_DATA_ROOT``.  ``score`` handles one run directory; ``spread``
@@ -99,7 +106,7 @@ def load_scenario(path):
     return Path(path).expanduser().resolve(), value
 
 
-def load_sheet(path):
+def load_sheet(path, scoring_mode="b5"):
     value = _load_json(path, "answer sheet")
     if value.get("format_version") != FORMAT_VERSION:
         raise ScoreFormatError("answer sheet format_version must be 1")
@@ -108,6 +115,10 @@ def load_sheet(path):
     ceiling = value.get("false_positive_ceiling")
     if not isinstance(ceiling, int) or ceiling < 0:
         raise ScoreFormatError("answer sheet false_positive_ceiling must be nonnegative")
+    if scoring_mode == "candidate":
+        return _load_candidate_sheet(value)
+    if scoring_mode != "b5":
+        raise ScoreFormatError(f"unknown scoring mode {scoring_mode!r}")
     recoveries = value.get("expected_recoveries")
     if not isinstance(recoveries, list) or not recoveries:
         raise ScoreFormatError("answer sheet requires expected_recoveries")
@@ -147,6 +158,53 @@ def load_sheet(path):
         if not isinstance(patterns, list) or not patterns or not all(
                 isinstance(pattern, str) and pattern for pattern in patterns):
             raise ScoreFormatError(f"output_contract {field} must be a non-empty string list")
+    return value
+
+
+def _load_candidate_sheet(value):
+    expected = value.get("expected_candidates")
+    if not isinstance(expected, list) or not expected:
+        raise ScoreFormatError("candidate answer sheet requires expected_candidates")
+    contract = value.get("output_contract")
+    if not isinstance(contract, dict):
+        raise ScoreFormatError("candidate answer sheet requires output_contract")
+    paths = contract.get("candidate_paths")
+    files = contract.get("scenario_files")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        raise ScoreFormatError("candidate_paths must be a non-empty string list")
+    if not isinstance(files, list) or not files or not all(
+            isinstance(path, str) and path and not path.startswith("/") for path in files):
+        raise ScoreFormatError("scenario_files must be non-empty repo-relative paths")
+    keys, identities = set(), set()
+    required = {"key", "register", "path", "mechanism", "status_family",
+                "benchmark_severity", "anchors"}
+    for index, row in enumerate(expected):
+        if not isinstance(row, dict) or not required <= set(row):
+            raise ScoreFormatError(f"expected candidate {index} is missing required fields")
+        if row["key"] in keys:
+            raise ScoreFormatError(f"duplicate expected candidate key {row['key']}")
+        keys.add(row["key"])
+        if row["register"] not in {"code_errors", "claims"}:
+            raise ScoreFormatError(f"expected candidate {row['key']} has invalid register")
+        if row["path"] not in files:
+            raise ScoreFormatError(f"expected candidate {row['key']} path is outside scenario_files")
+        if row["status_family"] != "candidate":
+            raise ScoreFormatError(f"expected candidate {row['key']} status_family must be candidate")
+        if not isinstance(row["benchmark_severity"], int) or not 1 <= row["benchmark_severity"] <= 4:
+            raise ScoreFormatError(f"expected candidate {row['key']} has invalid benchmark severity")
+        if not isinstance(row["anchors"], list) or not all(
+                isinstance(anchor, str) and anchor for anchor in row["anchors"]):
+            raise ScoreFormatError(f"expected candidate {row['key']} has invalid anchors")
+        try:
+            mechanism.score_expected_finding([], [row["mechanism"]])
+        except mechanism.MechanismSchemaError as exc:
+            raise ScoreFormatError(
+                f"expected candidate {row['key']} has invalid canonical mechanism: {exc}"
+            ) from exc
+        identity = (row["path"], row["mechanism"])
+        if identity in identities:
+            raise ScoreFormatError(f"duplicate expected candidate identity {identity}")
+        identities.add(identity)
     return value
 
 
@@ -242,6 +300,105 @@ def _load_output_tables(sandbox, sheet):
     for relative in witness_files:
         witnesses.extend(_table_rows(Path(sandbox) / relative, registers.WITNESS_OUTCOME_COLS))
     return ledgers, witnesses, sorted(set(ledger_files + witness_files))
+
+
+def _candidate_mechanism(register, row, path):
+    class_col = "Error Type" if register == "code_errors" else "Claim Type"
+    return mechanism.canonicalize_mechanism(
+        row[class_col], path, "unresolved", "-", "-",
+        register=register, anchor=path, projection=mechanism.EMPTY_PROJECTION,
+    ).sidecar
+
+
+def _candidate_sources(row, scenario_files):
+    cell = row.get("Code/Data Source", "")
+    found = []
+    for path in scenario_files:
+        if re.search(rf"(?<![\w./-]){re.escape(path)}(?=[:;,\s`]|$)", cell):
+            found.append(path)
+    return found
+
+
+def _load_candidate_tables(sandbox, sheet):
+    contract = sheet["output_contract"]
+    files = _glob_files(sandbox, contract["candidate_paths"])
+    if not files:
+        raise ScoreFormatError("candidate-register output is absent")
+    rows = []
+    for relative in files:
+        path = Path(sandbox) / relative
+        text = path.read_text(encoding="utf-8")
+        for register, columns, id_col in (
+                ("code_errors", registers.ERROR_COLS, "Error ID"),
+                ("claims", registers.CLAIMS_COLS, "Claim ID")):
+            tables = [table for headers, table, _line in du.parse_markdown_tables(text)
+                      if headers == columns]
+            if len(tables) > 1:
+                raise ScoreFormatError(f"{path}: duplicate {register} candidate tables")
+            for raw in tables[0] if tables else []:
+                if len(raw) != len(columns):
+                    raise ScoreFormatError(f"{path}: malformed candidate row")
+                row = dict(zip(columns, [str(cell).strip().strip("`").strip()
+                                         for cell in raw]))
+                for source in _candidate_sources(row, contract["scenario_files"]):
+                    rows.append({
+                        "id": row[id_col], "register": register, "path": source,
+                        "mechanism": _candidate_mechanism(register, row, source),
+                        "status": row["Status"], "severity": _severity(row["Severity"]),
+                        "text": " ".join(row.values()),
+                    })
+    return rows, files
+
+
+def score_candidates(sheet, rows):
+    recoveries = []
+    matched_ids = set()
+    for expected in sheet["expected_candidates"]:
+        matches = [row for row in rows if (
+            row["register"] == expected["register"]
+            and row["path"] == expected["path"]
+            and row["mechanism"] == expected["mechanism"]
+            and all(anchor in row["text"] for anchor in expected["anchors"])
+        )]
+        problems = []
+        # Every expectation-matched row is accounted to its expectation, even
+        # in the ambiguous multi-match case (already red via its problem
+        # entry), so matched rows never pollute the false-positive list.
+        matched_ids.update((row["register"], row["id"]) for row in matches)
+        if len(matches) != 1:
+            problems.append(f"expected one candidate row, found {len(matches)}")
+        else:
+            row = matches[0]
+            valid_status = (row["status"] == "candidate" if row["register"] == "code_errors"
+                            else row["status"] in {"inconsistent", "unclear"})
+            if not valid_status:
+                problems.append(f"status {row['status']!r} is outside candidate family")
+            if row["severity"] is None or abs(
+                    row["severity"] - expected["benchmark_severity"]) > 1:
+                problems.append(
+                    f"severity {row['severity']!r} is outside benchmark ±1 "
+                    f"of {expected['benchmark_severity']}"
+                )
+        recoveries.append({
+            "key": expected["key"], "candidate_identity": [expected["path"], expected["mechanism"]],
+            "mechanism_outcome": "hit" if matches else "absent",
+            "status": "score" if not problems else "red", "problems": problems,
+        })
+    # Dedup on (register, id): a row citing several scenario files enters the
+    # table once per source path but burns the ceiling at most once (U5's
+    # false-positive-ceiling semantics carried over — phase-C erratum).
+    false_positive_ids = sorted({
+        identity[1] for identity in
+        {(row["register"], row["id"]) for row in rows} - matched_ids
+    })
+    ceiling = sheet["false_positive_ceiling"]
+    false_positive_ok = len(false_positive_ids) <= ceiling
+    return {
+        "status": "score" if all(row["status"] == "score" for row in recoveries)
+        and false_positive_ok else "red",
+        "recoveries": recoveries, "false_positive_ids": false_positive_ids,
+        "false_positive_ceiling": ceiling, "false_positive_ok": false_positive_ok,
+    }
 
 
 def _split_ids(value):
@@ -354,31 +511,52 @@ def score_run(scenario_path, scenario, sheet_path, sheet, run_dir):
         )
     sandbox = run_dir / "sandbox"
     promised = _promised_outputs(sandbox, scenario)
-    try:
-        ledgers, witnesses, output_paths = _load_output_tables(sandbox, sheet)
-        content = score_content(sheet, ledgers, witnesses)
-    except ScoreFormatError as exc:
-        contract = sheet["output_contract"]
-        output_paths = sorted(set(
-            _glob_files(sandbox, contract["ledger_paths"])
-            + _glob_files(sandbox, contract["witness_paths"])
-        ))
-        problem = str(exc)
-        content = {
-            "status": "red",
-            "recoveries": [{
-                "key": expected["key"], "output_id": expected["output_id"],
-                "witness_identity": [
-                    expected["channel"], expected["source_id"], expected["witness_id"],
-                ],
-                "mechanism_outcome": "unscorable",
-                "status": "red", "problems": [problem],
-            } for expected in sheet["expected_recoveries"]],
-            "false_positive_ids": [],
-            "false_positive_ceiling": sheet["false_positive_ceiling"],
-            "false_positive_ok": False,
-            "format_problems": [problem],
-        }
+    mode = scenario.get("scoring_mode", "b5")
+    if mode == "candidate":
+        try:
+            candidates, output_paths = _load_candidate_tables(sandbox, sheet)
+            content = score_candidates(sheet, candidates)
+        except ScoreFormatError as exc:
+            output_paths = _glob_files(
+                sandbox, sheet.get("output_contract", {}).get("candidate_paths", []))
+            problem = str(exc)
+            content = {
+                "status": "red", "recoveries": [{
+                    "key": expected["key"],
+                    "candidate_identity": [expected["path"], expected["mechanism"]],
+                    "mechanism_outcome": "unscorable", "status": "red",
+                    "problems": [problem],
+                } for expected in sheet["expected_candidates"]],
+                "false_positive_ids": [],
+                "false_positive_ceiling": sheet["false_positive_ceiling"],
+                "false_positive_ok": False, "format_problems": [problem],
+            }
+    else:
+        try:
+            ledgers, witnesses, output_paths = _load_output_tables(sandbox, sheet)
+            content = score_content(sheet, ledgers, witnesses)
+        except ScoreFormatError as exc:
+            contract = sheet["output_contract"]
+            output_paths = sorted(set(
+                _glob_files(sandbox, contract["ledger_paths"])
+                + _glob_files(sandbox, contract["witness_paths"])
+            ))
+            problem = str(exc)
+            content = {
+                "status": "red",
+                "recoveries": [{
+                    "key": expected["key"], "output_id": expected["output_id"],
+                    "witness_identity": [
+                        expected["channel"], expected["source_id"], expected["witness_id"],
+                    ],
+                    "mechanism_outcome": "unscorable",
+                    "status": "red", "problems": [problem],
+                } for expected in sheet["expected_recoveries"]],
+                "false_positive_ids": [],
+                "false_positive_ceiling": sheet["false_positive_ceiling"],
+                "false_positive_ok": False,
+                "format_problems": [problem],
+            }
     return {
         "format_version": FORMAT_VERSION, "status": content["status"],
         "scenario_id": Path(scenario_path).stem, "run_index": record["run_index"],
@@ -436,7 +614,10 @@ def main(argv=None):
             raise ScoreRefusal(
                 f"answer sheet digest mismatch: expected {expected_digest}, actual {actual_digest}"
             )
-        sheet = load_sheet(sheet_path)
+        scoring_mode = scenario.get("scoring_mode", "b5")
+        if scoring_mode not in {"b5", "candidate"}:
+            raise ScoreFormatError(f"scenario scoring_mode must be b5 or candidate, got {scoring_mode!r}")
+        sheet = load_sheet(sheet_path, scoring_mode=scoring_mode)
         label = _registry_label(data_root, scenario_path.stem)
         result_root = data_root / "results" / label
         if args.command == "score":

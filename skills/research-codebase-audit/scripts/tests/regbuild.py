@@ -514,9 +514,25 @@ def _auto_recheck(stream, canon_claims, canon_errors):
     return inv, clu
 
 
-def _shard_footer_text():
-    return ("\n### Coverage\n\nEvery item in scope has a row or a skip note.\n\n"
-            "### Coordinator notes\n\nNo blockers.\n")
+def _shard_footer_text(register_ids, *, code=False):
+    ids = list(register_ids)
+    coverage = (
+        f"findings: {'; '.join(ids)}" if code and ids else
+        "clean" if code else
+        "Every item in scope has a row or a skip note."
+    )
+    footer_rows = [
+        [f"OBS-{index:04d}", "candidate", register_id, "row retained", ""]
+        for index, register_id in enumerate(ids, start=1)
+    ]
+    return (
+        "\n### Coverage\n\n"
+        + (md_table(["Script", "Outcome"], [["`py/x.py`", coverage]])
+           if code else f"{coverage}\n")
+        + "\n"
+        "### Footer dispositions\n\n"
+        + md_table(_lint_mod.FOOTER_COLS, footer_rows)
+    )
 
 
 def make_b3b_shard(tmp_path, stream, *, claims_rows=(), output_rows=(),
@@ -535,10 +551,10 @@ def make_b3b_shard(tmp_path, stream, *, claims_rows=(), output_rows=(),
         plan = (
             "# Claims second-read plan\n\n"
             "| Worker ID | File/Section Scope | Shard File | Claim ID Range | "
-            "Output ID Range | Known Findings |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
+            "Output ID Range | Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
             f"| W1 | sec 4 | `audit/{shard_rel}` | {claim_range} | "
-            f"{output_range} | C-0142 |\n"
+            f"{output_range} | detector | C-0142 |  |\n"
         )
         a.write("plans/claims_second_read_plan.md", plan)
         # a b1 plan is also read for range-disjointness
@@ -551,14 +567,22 @@ def make_b3b_shard(tmp_path, stream, *, claims_rows=(), output_rows=(),
         plan = (
             "# Code-error second-read plan\n\n"
             "| Worker ID | Script Scope | Shard File | Error ID Range | "
-            "Known Findings |\n"
-            "| --- | --- | --- | --- | --- |\n"
-            f"| W1 | `py/x.py` | `audit/{shard_rel}` | {error_range} | E-0001 |\n"
+            "Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| W1 | `py/x.py` | `audit/{shard_rel}` | {error_range} | "
+            "detector | E-0001 |  |\n"
         )
         a.write("plans/code_error_second_read_plan.md", plan)
         a.write("plans/code_error_review_plan.md", _code_b1_plan())
         body = register_text("Code errors", ERROR_COLS, list(error_rows))
-    shard = a.write(shard_rel, body + _shard_footer_text())
+    register_ids = [row[0] for row in (
+        list(claims_rows) + list(output_rows) if stream == "claims"
+        else list(error_rows)
+    )]
+    shard = a.write(
+        shard_rel,
+        body + _shard_footer_text(register_ids, code=(stream == "code")),
+    )
     return a, shard
 
 

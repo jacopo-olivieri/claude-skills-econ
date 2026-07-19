@@ -758,16 +758,23 @@ Code errors:
   table. Cross-link columns (`Related Error IDs`, `Related Claim IDs`) stay empty until the
   cross-link stage; claims↔outputs links are filled by the worker and must resolve within the
   worker's own shard or assigned ranges.
-- Every first-pass shard — both streams — ends with a footer (lint b2 requires it):
+- Every first-pass and second-read shard — both streams — ends with a footer (lint b2/b3b
+  requires it):
   - **Coverage note** — claims shards: a per-section checklist confirming every table, figure,
     footnote, equation, and quantitative sentence in scope has a register row or an explicit
     skip note (with reason). Code shards: a table `| Script | Outcome |` with outcome `clean`,
     `findings: <E-IDs>`, or `blocked: <reason>` for every script in scope.
-  - **Coordinator notes** — highest-risk findings, likely duplicates, blocked checks, ID-range
-    overflow if any, cross-shard handoffs.
-- **Blocked-shard marker**: a shard is blocked iff its coordinator notes contain a line
-  starting `BLOCKED:` followed by the reason. This is the mechanical signal the conductor
-  reads (e.g. on ID-range overflow); the lint does not check for it.
+  - **Typed observations** — exactly one table
+    `| Entry ID | Kind | Register IDs | Observation | Reason |`. Entry IDs start at
+    `OBS-0001` in each shard and increase sequentially without gaps. The complete Kind
+    vocabulary is `candidate` and `not_rowed_observation`. A `candidate` names the row ID(s)
+    that embody the observation and leaves Reason empty. A `not_rowed_observation` names no
+    register ID and requires a one-line reason; it is limited to genuine non-defects such as
+    scope questions, tooling friction, or ID-range exhaustion. Every suspected defect is a
+    register row, however uncertain; confidence belongs in Status/evidence, not prose.
+- **Blocked-shard marker**: a shard is blocked when the conductor records it blocked with
+  `certify_stage.py set-shard`; ID-range exhaustion is represented by a typed
+  `not_rowed_observation` whose reason states the exhaustion and triggers that conductor action.
 - Recheck shards contain the row-level ledger
   `| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |`
   plus files inspected, commands run, and a cluster summary.
@@ -788,18 +795,28 @@ catches after the fact does not need to occupy a worker's attention while readin
    violations.
 3. **IDs from the assigned range only** — an out-of-range ID fails the shard lint. On
    exhaustion, apply the Overflow rule (ID conventions): stop adding rows and put
-   `BLOCKED: ID range exhausted` in coordinator notes (the blocked-shard marker above —
-   conductor-read, not lint-checked).
+   an `OBS-####` `not_rowed_observation` with reason `ID range exhausted`, then have the
+   conductor mark the shard blocked.
 4. **Active rows complete** — a `candidate` or `confirmed` code-error row fills
    `Code/Data Source`, `Code Location`, `Error Description`, and `Why It Matters`; the lint
    fails an active row with any of these empty.
 5. **Cross-link columns stay blank** — `Related Claim IDs` / `Related Error IDs` are filled
    only at the cross-link stage; the b2 lint fails a non-empty cell.
 6. **Repo-relative paths** in every path column; the lint fails absolute paths.
-7. **Two-part footer** — coverage table (code shards: `| Script | Outcome |`, one row per
-   script in scope), then coordinator notes (the footer bullets above); the b2 lint requires
-   both parts, and the b3 merge lint fails any inventory script with no coverage row in any
-   shard.
+7. **Two-part footer** — coverage table/note (code shards: exact table
+   `| Script | Outcome |`, one row per script in scope, where Outcome is exactly `clean`,
+   `findings: <IDs>`, or `blocked: <reason>`), then the exact typed-observations table above.
+   The b2/b3b shard lint requires both parts. At b3/b3b the merge report carries a top-level
+   `footer_dispositions` list with one line per typed entry, serialized exactly as
+   `audit/path/to/shard.md#OBS-0001 | candidate:E-0123` or
+   `audit/path/to/shard.md#OBS-0001 | dismissed:<one-line reason>`. The merge lint proves a
+   bijection on shard path + Entry ID and fails missing, duplicate, or stray dispositions. A
+   `candidate` footer entry must take the candidate disposition with the same IDs and cannot be
+   dismissed; a `not_rowed_observation` may be promoted or explicitly dismissed.
+   The b3 merge additionally fails any inventory or hygiene file without exactly one coverage
+   outcome unless its owning shard is manifest-blocked, in which case it must appear in the
+   report's top-level `unreviewed_files` list. The reserved package-wide hygiene-lens key is
+   `@hygiene:data-and-log-lens`, exactly once in the hygiene shard.
 
 ## Rewrite-pass columns
 

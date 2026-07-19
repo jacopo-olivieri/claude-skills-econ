@@ -67,6 +67,11 @@ def _parse_range(text, label):
     a, b = int(start[2:]), int(end[2:])
     if a > b:
         raise MappingError(f"{label}: detector range starts after it ends")
+    if b >= 9999:
+        raise MappingError(
+            f"{label}: code-error register identifier space exhausted at E-9999 "
+            "(four-digit IDs cannot wrap)"
+        )
     return ("E", a, b), f"E-{a:04d}–E-{b:04d}"
 
 

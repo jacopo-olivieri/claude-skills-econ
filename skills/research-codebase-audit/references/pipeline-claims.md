@@ -47,9 +47,11 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
    `audit/_staging/output_register.md`) and `audit/_run/merge_report_claims.json`
    (per register: `shard_rows`, `dedup_removed`, `added`, `conflicts`, `coverage_gaps`,
    `blocked_shards`).
-3. Run `lint_registers.py --stage b3-claims` (checks staging + report: no dup IDs, IDs ⊆ union
-   of planned ranges, links C↔O bidirectional, cross-link columns blank, row-count
-   reconciliation, coverage reconciled). On pass, atomically rename staging over canon.
+3. Atomically rename staging over canon, then run `lint_registers.py --stage b3-claims`
+   (checks the promoted registers + report: no dup IDs, IDs ⊆ union of planned ranges, links
+   C↔O bidirectional, cross-link columns blank, row-count reconciliation, typed-footer
+   dispositions reconciled — the same lint the `claims_b3` certification obligation re-runs).
+   On failure, restore canon from `audit/_run/snapshots/claims_b3/` and re-merge.
 
 ## b3c — Shared-conventions consolidation (adds no rows; emits a cross-stream artifact)
 
@@ -93,13 +95,20 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    produced at least one issue-flagged (`inconsistent`) claim — at
    `shallow` only those with a Severity ≥ 3 issue, at `standard`/`deep` any issue-flagged claim.
    Key each trigger to the claim row's `Code/Data Source` file(s) and `Paper Context` section. If
-   the set is empty, do not dispatch workers; certify `claims_b3b` done via
+   the set is empty, do not dispatch workers; instead freeze the zero-work evidence the b3b
+   certification obligation verifies — write the plan with a header-only allocation table,
+   snapshot both registers to `audit/_run/snapshots/claims_b3b/`, and write a zero-work
+   `audit/_run/merge_report_claims_b3b.json` (both register entries
+   `{"shard_rows": 0, "dedup_removed": 0, "added": 0}` plus `"footer_dispositions": []`) — then
+   certify `claims_b3b` done via
    `certify_stage.py finish --stage claims_b3b --outcome done` against the canonical registers
    already promoted by b3.
 2. **Allocation.** Write `audit/plans/claims_second_read_plan.md` yourself: one second-read worker
    per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File | Claim ID
-   Range | Output ID Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint
-   requires it — and put each shard path, under `audit/_work_second_read/`, in the cell). Ranges
+   Range | Output ID Range | Reason | Known Findings | Assigned Handoff IDs |` (use the header
+   `Shard File` exactly — the b3b lint requires it — and put each shard path, under
+   `audit/_work_second_read/`, in the cell). Reason is `flagged` in U6a; `handoff` is reserved for
+   U7 and Assigned Handoff IDs stays empty until then. Ranges
    are fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
    Findings` lists the C-IDs and one-line mechanism already logged there.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = claims; role:
@@ -115,9 +124,11 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and
    `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
    **adds** the new rows to the existing canon, preserving every b3 row unchanged.
-5. `lint_registers.py --stage b3b-claims` (new claim rows in b3b ranges and `inconsistent` or
-   `unclear`; new output rows not `listed`/`confirmed`; no b3 row deleted or mutated; C↔O links
-   bidirectional; report identity holds). Atomic rename on pass, then certify with
+5. Atomic rename over canon, then `lint_registers.py --stage b3b-claims` (new claim rows in
+   b3b ranges and `inconsistent` or `unclear`; new output rows not `listed`/`confirmed`; no b3
+   row deleted or mutated; C↔O links bidirectional; report identity holds — the same lint the
+   certification obligation re-runs). On failure, restore canon from
+   `audit/_run/snapshots/claims_b3b/` and re-merge; on pass certify with
    `certify_stage.py finish --stage claims_b3b --outcome done`.
 
 The recheck inventory (b4) then picks up every new issue-flagged and `unclear` row.

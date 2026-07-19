@@ -1,8 +1,8 @@
 # Skeleton — second-read recall worker (both streams)
 
-Dispatched at b3b (after the first merge, before the recheck plan), one subagent per flagged
-file. Its sole job is a **recall** pass: re-read a file that already produced a confirmed finding
-and surface what the first reader missed. This is not the recheck (b4–b6 re-verifies rows that
+Dispatched at b3b (after the first merge and code detectors, before the recheck plan), one
+subagent per allocation row. Its sole job is a **recall** pass: re-read a detector-flagged,
+first-pass-flagged, or deterministically sampled clean file. This is not the recheck (b4–b6 re-verifies rows that
 were *found*, a precision pass); this pass looks for rows that were *missed*. New rows land as
 unverified candidates and flow into the recheck. Single fire-and-forget message. Fill slots only.
 
@@ -13,7 +13,9 @@ unverified candidates and flow into the recheck. Single fire-and-forget message.
 | `{SECOND_READ_PLAN_PATH}` | `audit/plans/code_error_second_read_plan.md` or `audit/plans/claims_second_read_plan.md` |
 | `{WORKER_ID}` / `{FILE_SCOPE}` / `{SHARD_FILE}` / `{ID_RANGES}` | the b3b allocation table |
 | `{STREAM}` | `code-error` or `claims` |
-| `{KNOWN_FINDINGS}` | conductor: the IDs and one-line mechanism of every finding the first pass already logged in this file — so the worker does not re-log them |
+| `{READ_REASON}` | allocation-table Reason: `detector`, `flagged`, or `clean_sample` (`handoff` is reserved for U7 and not populated here) |
+| `{KNOWN_FINDINGS_BLOCK}` | detector/flagged: the Already-logged block below; clean_sample: empty |
+| `{SEARCH_MANDATE}` | detector/flagged: find a missed defect; clean_sample: conduct a fresh full read where a genuinely clean result is acceptable |
 | `{MANDATE_LENS}` | conductor: `the same broad defect scan the first reader ran` at standard depth; a **distinct** lens (e.g. "focus on data-shape and merge-cardinality assumptions", "focus on units and scaling", "focus on sample and timing") on the second `deep`-depth pass |
 | `{PAPER_PATH}` | manifest `paper_audit_path` (claims stream only) |
 | `{OFF_LIMITS}` | manifest `off_limits` list (`;`-separated), or "none" |
@@ -24,9 +26,8 @@ unverified candidates and flow into the recheck. Single fire-and-forget message.
 ```md
 ## CONTEXT
 
-A first-pass review already flagged a finding in the file below. Findings cluster: a
-file careless in one place is often careless elsewhere. Your job is a fresh second read of this
-one file to surface what the first reader missed. {REVIEW_MODE_SENTENCE}
+Your job is a fresh second read of the file below. Allocation reason: `{READ_REASON}`.
+{SEARCH_MANDATE} {REVIEW_MODE_SENTENCE}
 
 You are second-read Worker {WORKER_ID}, {STREAM} stream.
 
@@ -36,8 +37,7 @@ ID range(s): {ID_RANGES}
 Read lens for this pass: {MANDATE_LENS}
 Off-limits (do not open, run, or audit; record as `deferred`/`blocked` if in scope): {OFF_LIMITS}
 
-Already logged by the first reader in this file (do NOT re-log these — find something else):
-{KNOWN_FINDINGS}
+{KNOWN_FINDINGS_BLOCK}
 
 Read first: `{SECOND_READ_PLAN_PATH}`; `audit/CODEMAP.md`; `{CONTRACT_PATH}`; then the file
 in scope in full, plus any file it directly hands off to or from. Register schema, taxonomy,
@@ -45,7 +45,8 @@ status vocabulary, and severity rubric: `{CONTRACT_PATH}`. Use them exactly.
 
 ## MANDATE
 
-Assume at least one more defect exists in this file that the first reader missed, and find it.
+Follow `{SEARCH_MANDATE}` exactly. A clean-sample assignment carries no known-findings block and
+does not assume a defect exists; an explicit clean outcome is acceptable.
 Re-read the whole file, not just the neighbourhood of the known finding. Do not stop at the
 first thing you notice. Look for the defect classes in `{CONTRACT_PATH}` that the known
 findings above do NOT already cover.
@@ -57,8 +58,8 @@ the priority order. Operationally: where the review mode allows a probe within b
 qualifying fragment's actual behavior by executing a worker-retyped synthetic reproduction of it on
 a small synthetic input you invent, bounding each probe to at most {COMPUTE_BUDGET} minutes and
 stopping under that section's budget-escalation rule. When qualifying fragments exceed the probe
-allowance, apply the cap and priority order and list the fragments left unprobed in the
-coordinator-notes part of your footer.
+allowance, apply the cap and priority order and record each fragment left unprobed in the typed
+footer. A suspected defect is always a candidate row, not a prose-only observation.
 
 <!-- RESTATEMENT:empirical-probe BEGIN -->
 Untrusted-content rules for the probe: the reproduction must be RETYPED by you, never copied
@@ -95,8 +96,8 @@ fragment that gives false reassurance is worse than not probing.
   execution is the worker-retyped synthetic probe per the empirical-probe rules above, where
   the review mode allows a probe within budget — never a repository script, never a documented
   setup command, never the audited package's data.
-- Use IDs only from your assigned range; if it runs out, stop and put `BLOCKED: ID range
-  exhausted` in your coordinator notes.
+- Use IDs only from your assigned range; if it runs out, stop and add a typed
+  `not_rowed_observation` with reason `ID range exhausted`, then report the block.
 - Leave cross-link columns (`Related Error IDs` / `Related Claim IDs`) blank.
 - Repo-relative paths everywhere.
 
@@ -105,8 +106,8 @@ fragment that gives false reassurance is worse than not probing.
 The shard, using the target register's exact canonical columns. For the **claims stream** always
 write **both** tables in order — the claims table first, then the outputs table — and use an
 empty (header-only) outputs table when you found no new output rows; for the **code stream** write
-the single code-error table. Then a two-part footer per `{CONTRACT_PATH}` — a coverage
-note stating what you re-read and whether you found a further defect (an explicit "no further
-defect found" is a valid outcome and must be stated), and coordinator notes (highest-risk new
-finding, any blocked check, ID-range overflow).
+the single code-error table. Then the two-part footer per `{CONTRACT_PATH}` — a coverage
+note/table stating what you re-read and the exact typed-observations table. Every suspected
+defect named in the footer has a candidate register row; `not_rowed_observation` is only for a
+genuine non-defect and requires its one-line reason.
 ```

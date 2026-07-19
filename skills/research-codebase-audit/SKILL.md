@@ -141,12 +141,13 @@ not register semantics pasted into worker contexts.
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |
-| **Second-read trigger** (U2 sweep after b3) | serious findings only: re-read a file only if it carries a first-pass finding at Severity ≥ 3 | any first-pass finding: re-read a file that carries at least one first-pass finding of any severity | any first-pass finding, **and** the second-read worker runs a second independent pass with a different mandate lens |
+| **Second-read trigger** (recall sweep after code b3d) | every detector-flagged file, plus serious first-pass findings (Severity ≥ 3); no clean sample | every detector-flagged or first-pass-flagged file, plus a deterministic stratified clean-file sample capped at 10 | every detector-flagged or first-pass-flagged file with a second independent pass/different lens, plus a deterministic stratified clean-file sample capped at 15 |
 | **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one single-ID cluster per substantive ID (issue-flagged/`unclear` claim; `candidate` or Severity ≥ 3 code row); only sampled clean `confirmed` rows may still be grouped |
 
 Depth never changes *which* techniques are permitted (that is the ladder) — only how much
 redundancy is spent. The trigger is per-file, not per-finding, so a file with five findings is
-re-read once (or twice at `deep`), not five times. A *first-pass finding* is a `candidate` row in
+re-read once (or twice at `deep`), not five times. Detector reason takes precedence over flagged,
+which takes precedence over clean sample. A *first-pass finding* is a `candidate` row in
 the code stream or an issue-flagged (`inconsistent`) claim in the claims stream — b3b runs before
 the recheck, so no row is `confirmed` at that point.
 

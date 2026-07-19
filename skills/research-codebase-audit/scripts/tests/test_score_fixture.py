@@ -5,6 +5,7 @@ matching contract: each contains the signature terms a real run's rows have
 carried in prior (hand-adjudicated) scorecards.
 """
 
+import json
 import re
 
 import pytest
@@ -357,7 +358,19 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
 
 
 def run_scorer(audit):
-    return rb.run_script("score_fixture.py", "--audit-dir", audit)
+    # These pre-U6 unit cases exercise the original 21-plant score surface.
+    # U6's two new plants and read-chain artifacts have dedicated tests in
+    # test_u6_read_recall.py.
+    expected = json.loads(sf.DEFAULT_EXPECTED.read_text(encoding="utf-8"))
+    expected["must_find"] = [
+        plant for plant in expected["must_find"]
+        if plant["id"] not in {"P-23", "P-24"}
+    ]
+    expected_path = audit / "_legacy_expected_findings.json"
+    expected_path.write_text(json.dumps(expected), encoding="utf-8")
+    return rb.run_script(
+        "score_fixture.py", "--audit-dir", audit, "--expected", expected_path,
+    )
 
 
 def plant_line(res, pid):

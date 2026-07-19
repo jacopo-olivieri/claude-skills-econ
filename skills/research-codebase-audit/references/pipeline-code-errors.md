@@ -56,9 +56,11 @@ Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3/`; dispatch
 `prompts/merge-first-pass.md` filled for the code stream (role: `code_b3_merge`) with
 `{CONTRACT_PATH}` set to
 `audit/_run/contracts/merge_first_pass.md` → staging register +
-`audit/_run/merge_report_code.json`; `lint_registers.py --stage b3-code` additionally checks
-every inventory script is covered (coverage row in some shard footer) or has a documented
-blocker. Atomic rename on pass.
+`audit/_run/merge_report_code.json`; atomic rename over canon, then
+`lint_registers.py --stage b3-code` (the same lint the `code_b3` certification obligation
+re-runs against the promoted register) additionally checks every inventory script is covered
+(coverage row in some shard footer) or has a documented blocker. On failure, restore canon from
+`audit/_run/snapshots/code_b3/` and re-merge.
 
 ## b3d — Detector emission, conventions scan, and mapping
 
@@ -99,43 +101,50 @@ claims artifact exists; any conventions, CV scan, or CV decision is refused.
 
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
 
-A recall pass, not a recheck: re-read every file the first pass already flagged, to surface what
-it missed. See `references/review-principles.md` for why. Runs after b3, before the recheck plan
+A recall pass, not a recheck: re-read detector/first-pass-flagged files and a deterministic
+stratified sample of earned-clean files. See `references/review-principles.md` for why. Runs
+after b3d, before the recheck plan
 (b4) is built, so the new candidates flow into the recheck automatically.
 
-1. **Trigger set (per `review_depth`, from the SKILL.md depth-knob table).** Start `code_b3b` as
-   required by SKILL.md, then mechanically compute the set of scripts that carry at least one
-   first-pass finding — i.e. a `candidate` code-error row. (b3b runs before the recheck, so every
-   first-pass code finding is still `candidate`; none
-   is `confirmed` yet — keying on `confirmed` here would make the sweep always skip.) At `shallow`
-   include only scripts with a `candidate` row at Severity ≥ 3; at `standard`/`deep` any script
-   with a `candidate` row of any severity. Group by `Code/Data Source` script. If the set is
-   empty, do not dispatch workers; certify `code_b3b` done via
+1. **Trigger set and allocation.** Start `code_b3b`, then run
+   `scripts/build_second_read_plan.py <package_root> --audit-dir audit`. The builder owns the
+   generated allocation block in `audit/plans/code_error_second_read_plan.md`: columns
+   `| Worker ID | Script Scope | Shard File | Error ID Range | Reason | Known Findings |
+   Assigned Handoff IDs |`. Reason precedence is `detector > flagged > clean_sample`; `handoff`
+   is reserved and Assigned Handoff IDs remains empty until U7. It rereads detector files at
+   every depth, applies the SKILL.md flagged threshold, and draws the coverage-based clean sample
+   with the documented hash/stratum/two-pass cap algorithm. Its sampler log names unreviewed
+   files and unserved strata. If the computed flagged set and sample are both empty, do not
+   dispatch workers; instead freeze the zero-work evidence the b3b certification obligation
+   verifies — snapshot the post-b3d `code_error_register.md` to `audit/_run/snapshots/code_b3b/`
+   and write a zero-work `audit/_run/merge_report_code_b3b.json`
+   (`{"code_error_register.md": {"shard_rows": 0, "dedup_removed": 0, "added": 0},
+   "footer_dispositions": []}`) — then certify `code_b3b` done via
    `certify_stage.py finish --stage code_b3b --outcome done` against the canonical register
    already promoted by b3.
-2. **Allocation.** Write `audit/plans/code_error_second_read_plan.md` yourself: one second-read
-   worker per flagged script, with columns `| Worker ID | Script Scope | Shard File | Error ID
-   Range | Known Findings |` (use the header `Shard File` exactly — the b3b lint requires it — and
-   put each shard path, under `audit/_code_errors_second_read/`, in the cell). Each Error ID Range
-   is fresh and globally disjoint from every b1 range and the merge-coordinator range. `Known
-   Findings` lists the E-IDs and one-line mechanism already logged in that script.
-3. **Dispatch** `prompts/second-read-worker.md` (stream = code-error; role:
+2. **Dispatch** `prompts/second-read-worker.md` (stream = code-error; role:
    `code_b3b_second_read`), one subagent per row,
    with `{CONTRACT_PATH}` set to `audit/_run/contracts/second_read_code.md`,
-   fire-and-forget. At `deep` depth dispatch a second pass per script with a different
-   `{MANDATE_LENS}` and its own disjoint range. A worker is complete when its shard exists at the
+   fire-and-forget. At `deep` depth the generated plan already carries two allocation rows per
+   detector/flagged file — the second row IS the second pass; dispatch one worker per row and
+   give the second row a different `{MANDATE_LENS}` (never dispatch extra workers beyond the
+   plan's rows). A worker is complete when its shard exists at the
    planned path **and** passes `lint_registers.py --stage b3b-code --shard <path>`; retry-once →
    blocked-continue.
-4. **Merge.** Snapshot `code_error_register.md` to `audit/_run/snapshots/code_b3b/`; dispatch
+3. **Merge.** Snapshot the post-b3d `code_error_register.md` to
+   `audit/_run/snapshots/code_b3b/`; dispatch
    `prompts/merge-first-pass.md` filled for the code stream (role: `code_b3b_merge`) with
    `{CONTRACT_PATH}` set to
    `audit/_run/contracts/merge_first_pass.md`, `{SHARD_DIR}` = `audit/_code_errors_second_read/`,
    `{PLAN_PATH}` = the b3b allocation plan, and `{MERGE_REPORT}` =
    `audit/_run/merge_report_code_b3b.json`. The merge **adds** the new candidate rows to the
    existing canon, preserving every b3 row unchanged.
-5. `lint_registers.py --stage b3b-code` (new rows in b3b ranges, all `candidate`, no b3 row
-   deleted or mutated, report identity holds). Atomic rename on pass, then certify with
-   `certify_stage.py finish --stage code_b3b --outcome done`.
+4. Atomic rename over canon, then `lint_registers.py --stage b3b-code` (recomputes the
+   generated plan against the frozen `code_b3b` snapshot and the skip predicate; new rows in
+   b3b ranges, all `candidate`, no baseline row deleted or mutated, report identity and
+   typed-footer dispositions hold — the same lint the certification obligation re-runs). On
+   failure, restore canon from `audit/_run/snapshots/code_b3b/` and re-merge; on pass certify
+   with `certify_stage.py finish --stage code_b3b --outcome done`.
 
 The recheck inventory (b4) then picks up every new `candidate`; the b6 no-surviving-candidate
 rule is the hard backstop if one is missed.

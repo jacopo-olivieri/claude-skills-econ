@@ -203,6 +203,24 @@
       "mechanism": "The consent_ok flag's adjacent comment states it covers BOTH consent routes — explicit individual data-sharing consent AND village-level blanket (community) consent, both approved for release — but the estimation-sample filter `keep if consent_ok == 1 & consent == \"individual\"` adds a conjunct that silently drops the community-consent households, so the published Table 1 sample excludes a case family the flag is defined to cover. DEFINITION/USE CONTRACT TEST: the producer-defined coverage (two consent families) is compared against the consumer's effective predicate (individual only); the extra conjunct narrows the covered set with no independently defined eligibility restriction and no companion consumer recovering the community family. The narrowed sample flows to output/panel.dta -> analysis.do -> artifacts/tab1.tex (on-path), so the severity floor of 2 is honest under the author-materiality rubric. Planted in do/build_panel.do, already carrying the unrelated P-05/P-08/P-11/P-17 plants (the shape of the real misses). Fresh domain (survey consent/release flag gating a published table); the excluded family is a substantively distinct case family named in the comment, not a missing-value idiom, so it shares no surface features with the Floods repair guard or with P-15..P-20.",
       "min_severity": 2,
       "failure_class": "definition_use_contract"
+    },
+    {
+      "id": "P-23",
+      "kind": "code_error",
+      "expected_type": "version_or_dependency_error",
+      "where": "requirements-recall.txt line 1",
+      "mechanism": "The requirements manifest uses whitespace between numpy and 2.0.0 instead of a legal version operator, so a real requirements parser rejects the dependency declaration. U6a PLANT A: check_manifests.py must emit it, the detector mapping must carry its candidate row, and the second-read plan must select the file with reason detector.",
+      "min_severity": 1,
+      "failure_class": "clean_file_recall"
+    },
+    {
+      "id": "P-24",
+      "kind": "code_error",
+      "expected_type": "version_or_dependency_error",
+      "where": "requirements-recall.txt lines 2-3",
+      "mechanism": "The same otherwise-clean requirements file pins pandas to two mutually incompatible exact versions, 2.2.2 and 1.5.3. Each line parses alone, so the manifest emitter does not detect this semantic conflict; a whole-file human second read must surface it. U6a PLANT B.",
+      "min_severity": 1,
+      "failure_class": "clean_file_recall"
     }
   ],
   "must_not_find": [

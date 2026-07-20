@@ -13,6 +13,26 @@ A stream that ended with blocked stages still finalizes: blocked rows carry thei
 the export; blocked *stages* are listed in the final report, and cross-link runs on whatever
 canon exists.
 
+## claims_adjudication_lineage — final carrier equivalence
+
+Run once after bC (if no correction was approved, after both b6b streams) and
+before b7. Start the stage, then freeze canonical `claims_register.md` and
+`audit/_run/handoff_ledger.json` under
+`audit/_run/snapshots/claims_adjudication_lineage/`. Run
+`claims_adjudication.py <package-root>
+--audit-dir audit --stage claims_adjudication_lineage --build-worklist`. The
+builder follows only terminal `duplicate_of:` redirects and tombstone statuses.
+Byte-identical unbranched carriers need no worker verdict; every changed,
+absent, split-shaped, or dead carrier becomes an item.
+
+For non-empty work dispatch one fresh-context worker with
+`prompts/claims-adjudicator.md` (role: `claims_adjudication_lineage`) to write
+`audit/_run/claims_adjudication_lineage_verdicts.md`, run the script with
+`--apply`, and finish `done`. Empty work certifies from the exact zero artifact.
+Retry once; on a second failure finish `blocked`, degrading every pending item
+to `blocked_fallback`. `equivalence_refused` remains recorded and forces
+close-run refusal.
+
 ## b7 — Cross-link (full replication only)
 
 1. Snapshot both link-bearing registers to `audit/_run/snapshots/b7/`.
@@ -108,6 +128,8 @@ canon exists.
      `warnings` (CODEMAP preconditions score).
    - Author-facing columns in; every `*_Original` column out; `Potential Issue` computed on
      the Paper Claims sheet only.
+   - Full-replication paper runs include `Handoff ledger`, an exact publication
+     of every H/X entry's terminal state, carrier, and disposition.
    - `audit/_run/late_observation_coverage.md` and the two workbook sheets derive from the b6b
      artifacts and manifest. `Artifact Head` / `Blocker Evidence IDs` are the explicit-absence
      values `not recorded` / `none recorded`; a blocked b6b reports degraded coverage.
@@ -121,10 +143,12 @@ Return to SKILL.md for the single `close-run` instruction, then Phase 4 (report 
 QA follow-up). `close-run` is the completion-report gate: with late observations recorded, it
 refuses until the first Phase-4 disposition batch replaces every `pending` state (b9 itself
 exports pending rows on the unverified sheet without refusing). In a full-replication U7 run it
-also refuses if the reserved adjudication stages were skipped, an H/X state is not
-final-passable, or a `blocked_fallback` lacks an exact operator decision in
-`audit/_run/handoff_blocked_decisions.json`. U7a proves this refusal; it does not add the
-adjudication stages.
+re-derives both worklists and verdict joins and refuses if either adjudication
+stage is pending or absent, an H/X state is not final-passable, a disposition
+is raw, lineage equivalence was refused, or a `blocked_fallback` lacks an exact
+operator decision in `audit/_run/handoff_blocked_decisions.json`. On a blocked
+stage every worklist item lacking a valid verdict must itself be
+`blocked_fallback`.
 
 ## Operator-approved bC correction cycle
 
@@ -138,7 +162,8 @@ the snapshot and plan, requires late-observation evidence bytes to remain unchan
 each old → new disposition against the monotone matrix; it accepts no row-carried LO provenance
 and no undeclared cell edit.
 
-In full-replication mode, rerun b7 in replay-plus-extension mode for new-row links, then rerun
+In full-replication mode, no lineage rerun is required: bC patches only reciprocal link cells
+on existing rows and mints new rows no ledger entry cites. Rerun b7 in replay-plus-extension mode for new-row links, then rerun
 b8 **scoped to the new rows only** and rerun b9. In code-errors-only mode b7 remains skipped;
 rerun b8 scoped to the new rows only, then b9. A correction that adds an output includes its
 companion claims edit in the same BC-ID group. Never create another supplementary wave.

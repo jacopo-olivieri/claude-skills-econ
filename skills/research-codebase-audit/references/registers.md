@@ -133,8 +133,31 @@ copied verbatim. `resolved` names a containing C-row; `disposition` uses the voc
 `build_handoff_ledger.py --stage claims_b3b` freezes the new stage-era ledger.
 
 Final-passable H states are `satisfied`, `resolved`, `disposition_accepted`; final-passable X
-states are `covered`, `resolved`, `disposition_accepted`. U7a has no legal path from a pending
-disposition/forwarded tail to the adjudicated states.
+states are `covered`, `resolved`, `disposition_accepted`.
+
+### Claims adjudication tables
+
+`claims_adjudication.py --build-worklist --stage claims_adjudication` emits one
+item per non-blocked mapping and raw disposition. The verdict artifact has exact
+columns `Obligation ID | Work Kind | Verdict | Reason | Minted C-ID | Paper
+Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data
+Source | Output IDs | Status | Severity | Issue Description | Blocked Check |
+Related Error IDs | Covering Range`. Mapping verdicts are
+`capture_confirmed` or `reject_and_resolve`; disposition verdicts are
+`disposition_accepted` or `reject_and_resolve`. A reject-and-resolve row fills
+every claim cell, mints only inside the plan's 50-ID adjudication range, and
+carries a resolver-valid containing range. Other verdicts use `—` in every mint
+cell. Every row has a non-empty Reason. Empty work uses exact `No adjudication
+verdicts.`
+
+After bC, the lineage builder emits only changed, absent, branched, or dead
+carriers from the frozen `snapshots/claims_adjudication_lineage/` ledger and
+claims register. Its verdict columns are `Obligation ID | Verdict | Reason`; verdicts
+are `equivalence_confirmed` or `equivalence_refused`. Byte-identical unbranched
+`duplicate_of:` chains carry mechanically and receive no row. Claims splits
+have no machine lineage table, so an absent ledger carrier always becomes work.
+Empty work uses exact `No lineage verdicts.` A refused equivalence or tombstone
+dead-end refuses close-run.
 
 ## Severity rubric (shared by claims and code errors)
 

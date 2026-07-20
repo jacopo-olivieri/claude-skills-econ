@@ -18,6 +18,17 @@ repo-relative source path and a U1-canonical mechanism using
 and unexpected candidate IDs within the declared scenario files count toward
 the same false-positive ceiling.
 
+Candidate sheets may also declare ``expected_claim_obligations`` for the U7
+S-706 dual-accept contract.  Each target scores when the worker emits either a
+claim row whose Paper Quote contains the target assertion, a terminal covered
+X row whose carried quote contains the resolved target anchor, or a filed H
+row whose own resolver-verified anchor contains the target.
+
+Adjudication-mode sheets declare ``expected_verdicts`` keyed by obligation ID.
+The expected verdict may be ``null`` to require mechanical carry with no
+worker verdict (the S-708 lineage control).  Unexpected verdict IDs consume
+the ordinary false-positive ceiling.
+
 The CLI reads root configuration from ``--data-root`` or
 ``RCA_REPLAY_DATA_ROOT``.  ``score`` handles one run directory; ``spread``
 scores every ``run-NNN`` directory for the scenario and presents all scores
@@ -40,6 +51,9 @@ from pathlib import Path
 import definition_use as du
 import lint_registers as registers
 import mechanism_schema as mechanism
+from anchor_resolver import AnchorError, contains as anchor_contains, resolve_quote
+from claim_handoffs import HANDOFF_COLS, X_COVERAGE_COLS
+from claims_adjudication import ADJUDICATION_VERDICT_COLS, LINEAGE_VERDICT_COLS
 
 
 FORMAT_VERSION = 1
@@ -117,6 +131,8 @@ def load_sheet(path, scoring_mode="b5"):
         raise ScoreFormatError("answer sheet false_positive_ceiling must be nonnegative")
     if scoring_mode == "candidate":
         return _load_candidate_sheet(value)
+    if scoring_mode == "adjudication":
+        return _load_adjudication_sheet(value)
     if scoring_mode != "b5":
         raise ScoreFormatError(f"unknown scoring mode {scoring_mode!r}")
     recoveries = value.get("expected_recoveries")
@@ -163,8 +179,12 @@ def load_sheet(path, scoring_mode="b5"):
 
 def _load_candidate_sheet(value):
     expected = value.get("expected_candidates")
-    if not isinstance(expected, list) or not expected:
-        raise ScoreFormatError("candidate answer sheet requires expected_candidates")
+    obligations = value.get("expected_claim_obligations", [])
+    if not isinstance(expected, list) or not isinstance(obligations, list) \
+            or not (expected or obligations):
+        raise ScoreFormatError(
+            "candidate answer sheet requires expected_candidates or expected_claim_obligations"
+        )
     contract = value.get("output_contract")
     if not isinstance(contract, dict):
         raise ScoreFormatError("candidate answer sheet requires output_contract")
@@ -205,6 +225,50 @@ def _load_candidate_sheet(value):
         if identity in identities:
             raise ScoreFormatError(f"duplicate expected candidate identity {identity}")
         identities.add(identity)
+    obligation_paths = contract.get("obligation_paths", paths)
+    if not isinstance(obligation_paths, list) or not obligation_paths or not all(
+            isinstance(path, str) and path for path in obligation_paths):
+        raise ScoreFormatError("obligation_paths must be a non-empty string list")
+    obligation_keys = set()
+    for index, row in enumerate(obligations):
+        required_obligation = {"key", "target_anchor", "target_quote"}
+        if not isinstance(row, dict) or not required_obligation <= set(row):
+            raise ScoreFormatError(f"expected claim obligation {index} is missing required fields")
+        if row["key"] in keys or row["key"] in obligation_keys:
+            raise ScoreFormatError(f"duplicate expected recovery key {row['key']}")
+        obligation_keys.add(row["key"])
+        if not isinstance(row["target_anchor"], str) or not row["target_anchor"]:
+            raise ScoreFormatError(f"expected claim obligation {row['key']} has invalid anchor")
+        if not isinstance(row["target_quote"], str) or not row["target_quote"]:
+            raise ScoreFormatError(f"expected claim obligation {row['key']} has invalid quote")
+    return value
+
+
+def _load_adjudication_sheet(value):
+    expected = value.get("expected_verdicts")
+    if not isinstance(expected, list) or not expected:
+        raise ScoreFormatError("adjudication answer sheet requires expected_verdicts")
+    contract = value.get("output_contract")
+    paths = contract.get("verdict_paths") if isinstance(contract, dict) else None
+    if not isinstance(paths, list) or not paths or not all(
+            isinstance(path, str) and path for path in paths):
+        raise ScoreFormatError("adjudication output_contract requires verdict_paths")
+    keys, ids = set(), set()
+    allowed = {
+        None, "capture_confirmed", "reject_and_resolve", "disposition_accepted",
+        "equivalence_confirmed", "equivalence_refused",
+    }
+    for index, row in enumerate(expected):
+        if not isinstance(row, dict) or not {"key", "obligation_id", "verdict"} <= set(row):
+            raise ScoreFormatError(f"expected verdict {index} is missing required fields")
+        if row["key"] in keys or row["obligation_id"] in ids:
+            raise ScoreFormatError("adjudication sheet has duplicate key or obligation ID")
+        keys.add(row["key"])
+        ids.add(row["obligation_id"])
+        if not re.fullmatch(r"[HX]-\d{4}", row["obligation_id"]):
+            raise ScoreFormatError(f"invalid obligation ID {row['obligation_id']!r}")
+        if row["verdict"] not in allowed:
+            raise ScoreFormatError(f"invalid expected verdict {row['verdict']!r}")
     return value
 
 
@@ -350,7 +414,81 @@ def _load_candidate_tables(sandbox, sheet):
     return rows, files
 
 
-def score_candidates(sheet, rows):
+def _load_claim_obligation_outputs(sandbox, sheet):
+    patterns = sheet["output_contract"].get(
+        "obligation_paths", sheet["output_contract"]["candidate_paths"])
+    files = _glob_files(sandbox, patterns)
+    claims, handoffs, coverage = [], [], []
+    for relative in files:
+        path = Path(sandbox) / relative
+        text = path.read_text(encoding="utf-8")
+        for headers, rows, _line in du.parse_markdown_tables(text):
+            if headers == registers.CLAIMS_COLS:
+                claims.extend(dict(zip(headers, row)) for row in rows
+                              if len(row) == len(headers))
+            elif headers == HANDOFF_COLS:
+                handoffs.extend(dict(zip(headers, row)) for row in rows
+                                if len(row) == len(headers))
+            elif headers == X_COVERAGE_COLS:
+                coverage.extend(dict(zip(headers, row)) for row in rows
+                                if len(row) == len(headers))
+    return claims, handoffs, coverage, files
+
+
+def score_claim_obligations(sheet, sandbox, claims, handoffs, coverage):
+    manifest = _load_json(
+        Path(sandbox) / "audit/_run/manifest.json", "sandbox manifest")
+    source_set = manifest.get("paper_source_set")
+    if not isinstance(source_set, list) or not source_set:
+        raise ScoreFormatError("claim-obligation scoring requires paper_source_set")
+    source_set = [{
+        **entry,
+        "source_path": str((Path(sandbox) / entry["source_path"]).resolve())
+        if not Path(entry["source_path"]).is_absolute() else entry["source_path"],
+        "audit_path": str((Path(sandbox) / entry["audit_path"]).resolve())
+        if not Path(entry["audit_path"]).is_absolute() else entry["audit_path"],
+    } for entry in source_set]
+    recoveries, matched = [], set()
+    for expected in sheet.get("expected_claim_obligations", []):
+        try:
+            target = resolve_quote(
+                source_set, expected["target_anchor"], expected["target_quote"], sandbox)
+        except AnchorError as exc:
+            raise ScoreFormatError(
+                f"answer target {expected['key']} does not resolve: {exc}") from exc
+        routes = []
+        for row in claims:
+            if expected["target_quote"] in row.get("Paper Quote", ""):
+                routes.append(("claim_row", row.get("Claim ID", "")))
+        for row in coverage:
+            if row.get("Outcome") != "covered":
+                continue
+            try:
+                carried = resolve_quote(
+                    source_set, row["Covering Range"], row["Covering Quote"], sandbox)
+            except AnchorError:
+                continue
+            if anchor_contains(carried, target):
+                routes.append(("covered_x", row.get("X ID", "")))
+        for row in handoffs:
+            try:
+                filed = resolve_quote(source_set, row["Anchor"], row["Quote"], sandbox)
+            except AnchorError:
+                continue
+            if anchor_contains(filed, target):
+                routes.append(("filed_h", row.get("H ID", "")))
+        matched.update(routes)
+        recoveries.append({
+            "key": expected["key"], "target_anchor": expected["target_anchor"],
+            "accepted_routes": [list(route) for route in routes],
+            "mechanism_outcome": "hit" if routes else "absent",
+            "status": "score" if routes else "red",
+            "problems": [] if routes else ["no Rule-A claim, covered X, or resolver-valid H route"],
+        })
+    return recoveries, matched
+
+
+def score_candidates(sheet, rows, obligation_recoveries=None):
     recoveries = []
     matched_ids = set()
     for expected in sheet["expected_candidates"]:
@@ -393,11 +531,82 @@ def score_candidates(sheet, rows):
     })
     ceiling = sheet["false_positive_ceiling"]
     false_positive_ok = len(false_positive_ids) <= ceiling
+    recoveries.extend(obligation_recoveries or [])
     return {
         "status": "score" if all(row["status"] == "score" for row in recoveries)
         and false_positive_ok else "red",
         "recoveries": recoveries, "false_positive_ids": false_positive_ids,
         "false_positive_ceiling": ceiling, "false_positive_ok": false_positive_ok,
+    }
+
+
+def _load_adjudication_outputs(sandbox, sheet):
+    files = _glob_files(sandbox, sheet["output_contract"]["verdict_paths"])
+    if not files:
+        raise ScoreFormatError("adjudication verdict output is absent")
+    exact_schemas = (ADJUDICATION_VERDICT_COLS, LINEAGE_VERDICT_COLS)
+    tables = []
+    rows = []
+    for relative in files:
+        path = Path(sandbox) / relative
+        text = path.read_text(encoding="utf-8")
+        for headers, table, _line in du.parse_markdown_tables(text):
+            if headers not in [list(schema) for schema in exact_schemas]:
+                continue
+            tables.append((path, headers, table))
+    if not tables:
+        raise ScoreFormatError(
+            "adjudication verdict output has no table with the exact "
+            "first-stage or lineage verdict header schema"
+        )
+    if len(tables) != 1:
+        raise ScoreFormatError(
+            "adjudication verdict output must contain exactly one "
+            f"exact-schema verdict table, found {len(tables)}"
+        )
+    path, headers, table = tables[0]
+    for raw in table:
+        if len(raw) != len(headers):
+            raise ScoreFormatError(f"{path}: malformed adjudication verdict row")
+        rows.append(dict(zip(headers, raw)))
+    return rows, files
+
+
+def score_adjudication(sheet, rows):
+    by_id = {}
+    for row in rows:
+        obligation_id = row.get("Obligation ID", "")
+        if obligation_id in by_id:
+            raise ScoreFormatError(f"duplicate adjudication verdict {obligation_id}")
+        by_id[obligation_id] = row
+    recoveries = []
+    expected_ids = set()
+    for expected in sheet["expected_verdicts"]:
+        obligation_id = expected["obligation_id"]
+        expected_ids.add(obligation_id)
+        row = by_id.get(obligation_id)
+        wanted = expected["verdict"]
+        problems = []
+        if wanted is None:
+            if row is not None:
+                problems.append(f"mechanical-carry control unexpectedly has verdict {row.get('Verdict')!r}")
+        elif row is None:
+            problems.append("expected adjudication verdict is absent")
+        elif row.get("Verdict") != wanted:
+            problems.append(f"verdict {row.get('Verdict')!r} != {wanted!r}")
+        recoveries.append({
+            "key": expected["key"], "obligation_id": obligation_id,
+            "expected_verdict": wanted, "observed_verdict": row.get("Verdict") if row else None,
+            "status": "score" if not problems else "red", "problems": problems,
+        })
+    false_positive_ids = sorted(set(by_id) - expected_ids)
+    false_positive_ok = len(false_positive_ids) <= sheet["false_positive_ceiling"]
+    return {
+        "status": "score" if all(row["status"] == "score" for row in recoveries)
+        and false_positive_ok else "red",
+        "recoveries": recoveries, "false_positive_ids": false_positive_ids,
+        "false_positive_ceiling": sheet["false_positive_ceiling"],
+        "false_positive_ok": false_positive_ok,
     }
 
 
@@ -515,7 +724,14 @@ def score_run(scenario_path, scenario, sheet_path, sheet, run_dir):
     if mode == "candidate":
         try:
             candidates, output_paths = _load_candidate_tables(sandbox, sheet)
-            content = score_candidates(sheet, candidates)
+            obligation_recoveries = []
+            if sheet.get("expected_claim_obligations"):
+                claim_rows, handoff_rows, x_rows, obligation_paths = (
+                    _load_claim_obligation_outputs(sandbox, sheet))
+                obligation_recoveries, _matched = score_claim_obligations(
+                    sheet, sandbox, claim_rows, handoff_rows, x_rows)
+                output_paths = sorted(set(output_paths + obligation_paths))
+            content = score_candidates(sheet, candidates, obligation_recoveries)
         except ScoreFormatError as exc:
             output_paths = _glob_files(
                 sandbox, sheet.get("output_contract", {}).get("candidate_paths", []))
@@ -527,6 +743,26 @@ def score_run(scenario_path, scenario, sheet_path, sheet, run_dir):
                     "mechanism_outcome": "unscorable", "status": "red",
                     "problems": [problem],
                 } for expected in sheet["expected_candidates"]],
+                "false_positive_ids": [],
+                "false_positive_ceiling": sheet["false_positive_ceiling"],
+                "false_positive_ok": False, "format_problems": [problem],
+            }
+    elif mode == "adjudication":
+        try:
+            verdicts, output_paths = _load_adjudication_outputs(sandbox, sheet)
+            content = score_adjudication(sheet, verdicts)
+        except ScoreFormatError as exc:
+            output_paths = _glob_files(
+                sandbox, sheet.get("output_contract", {}).get("verdict_paths", []))
+            problem = str(exc)
+            content = {
+                "status": "red", "recoveries": [{
+                    "key": expected["key"],
+                    "obligation_id": expected["obligation_id"],
+                    "expected_verdict": expected["verdict"],
+                    "observed_verdict": None, "status": "red",
+                    "problems": [problem],
+                } for expected in sheet["expected_verdicts"]],
                 "false_positive_ids": [],
                 "false_positive_ceiling": sheet["false_positive_ceiling"],
                 "false_positive_ok": False, "format_problems": [problem],
@@ -615,8 +851,11 @@ def main(argv=None):
                 f"answer sheet digest mismatch: expected {expected_digest}, actual {actual_digest}"
             )
         scoring_mode = scenario.get("scoring_mode", "b5")
-        if scoring_mode not in {"b5", "candidate"}:
-            raise ScoreFormatError(f"scenario scoring_mode must be b5 or candidate, got {scoring_mode!r}")
+        if scoring_mode not in {"b5", "candidate", "adjudication"}:
+            raise ScoreFormatError(
+                "scenario scoring_mode must be b5, candidate, or adjudication, "
+                f"got {scoring_mode!r}"
+            )
         sheet = load_sheet(sheet_path, scoring_mode=scoring_mode)
         label = _registry_label(data_root, scenario_path.stem)
         result_root = data_root / "results" / label

@@ -29,6 +29,14 @@
     {"type": "validate", "validator": "lint:b3b-claims"},
     {"type": "validate", "validator": "handoff:ledger", "when": "paper_source_set"}
   ],
+  "claims_adjudication": [
+    {"type": "artifact", "pattern": "_run/claims_adjudication_worklist.json"},
+    {"type": "artifact", "pattern": "_run/claims_adjudication_verdicts.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/handoff_ledger.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/claims_register.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/output_register.md"},
+    {"type": "validate", "validator": "handoff:adjudication"}
+  ],
   "claims_b4": [
     {"type": "artifact", "pattern": "plans/claims_recheck_plan.md"},
     {"type": "validate", "validator": "lint:b4-claims"}
@@ -105,6 +113,13 @@
   "bC": [
     {"type": "artifact", "pattern": "plans/late_observation_corrections.md"},
     {"type": "validate", "validator": "lint:bC"}
+  ],
+  "claims_adjudication_lineage": [
+    {"type": "artifact", "pattern": "_run/claims_adjudication_lineage_worklist.json"},
+    {"type": "artifact", "pattern": "_run/claims_adjudication_lineage_verdicts.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication_lineage/handoff_ledger.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication_lineage/claims_register.md"},
+    {"type": "validate", "validator": "handoff:adjudication-lineage"}
   ],
   "b7": [
     {"type": "artifact", "pattern": "claims_register.md"},

@@ -108,9 +108,12 @@ def _manifest_shard_state(manifest, stage, raw):
 
 
 def _claim_rows(audit, stage, base=False):
-    later_snapshot = ("claims_b3b" if stage == "claims_b3" or base else "claims_b6a")
-    snap = audit / "_run" / "snapshots" / later_snapshot / "claims_register.md"
-    path = snap if snap.is_file() else audit / "claims_register.md"
+    later_snapshots = (("claims_b3b",) if stage == "claims_b3" or base else
+                       ("claims_adjudication", "claims_b6a"))
+    path = next((audit / "_run/snapshots" / name / "claims_register.md"
+                 for name in later_snapshots
+                 if (audit / "_run/snapshots" / name / "claims_register.md").is_file()),
+                audit / "claims_register.md")
     lint = registers.Lint()
     loaded = registers.load_register(lint, path, registers.CLAIMS_COLS)
     if loaded is None or lint.errors:

@@ -153,6 +153,27 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
 
 The recheck inventory (b4) then picks up every new issue-flagged and `unclear` row.
 
+## claims_adjudication — H/X capture verdicts
+
+Run after `claims_b3b` and before `claims_b4`.
+
+1. Start the stage. Copy canonical claims and outputs to
+   `audit/_run/snapshots/claims_adjudication/`, and copy the b3b-era ledger to
+   that directory before any mint.
+2. Run `claims_adjudication.py <package-root> --audit-dir audit --stage
+   claims_adjudication --build-worklist`. For an empty list, dispatch no worker;
+   the builder writes the exact zero-verdict artifact.
+3. Otherwise dispatch one fresh-context worker with
+   `prompts/claims-adjudicator.md` (role: `claims_adjudication`). It writes only
+   `audit/_run/claims_adjudication_verdicts.md`. Retry one failed application
+   once.
+4. Run the script with `--apply`. It validates exact verdict completeness,
+   vocabulary, mint range, claim schema, and containment; then atomically
+   projects the claims and ledger. Finish `done`.
+5. After a second failure finish `blocked` with the reason. The blocker path
+   re-derives the worklist and degrades every item lacking a valid verdict to
+   `blocked_fallback`.
+
 ## b4 — Recheck plan (conductor-computed, no LLM)
 
 Build the recheck inventory **mechanically** from the canonical claims register (claims rows
@@ -164,6 +185,9 @@ merge):
 - every `unclear` row, plus
 - a deterministic sample of `confirmed` rows, stratified by Claim Type, using the claims stream
   parameters in the deterministic recheck sampling rule (`references/registers.md`).
+
+Also include every C-ID minted by `claims_adjudication`, unconditionally, with
+the exact Reason `adjudicated_handoff`.
 
 Cluster per `review_depth` (manifest). At `shallow`/`standard`: group the inventory by Claim
 Type into clusters of ≤ 8 IDs. At `deep`: every **substantive ID** gets its own single-ID

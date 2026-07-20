@@ -105,6 +105,7 @@ Write `audit/_run/manifest.json`:
     "claims_b1_planner": "high", "claims_b2_section": "high",
     "claims_b3_merge": "high", "claims_b3c_conventions": "high",
     "claims_b3b_second_read": "high", "claims_b3b_merge": "high",
+    "claims_adjudication": "high", "claims_adjudication_lineage": "high",
     "claims_b5_recheck_cluster": "high", "claims_b6_merge": "high",
     "code_b1_planner": "high", "code_b2_chunk": "high", "code_b3_merge": "high",
     "b3d_conventions_scan": "high", "code_b3b_second_read": "high",
@@ -133,7 +134,9 @@ edit those blocks by hand.
 `claims_b1`…`claims_b5`, then `claims_b6a` → `claims_b5s` → `claims_b6b`; claims consolidation
 `claims_b3c`; `code_b1`…`code_b5`, then `code_b6a` → `code_b5s` → `code_b6b`; detector
 emission `code_b3d`, the
-second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
+second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4),
+`claims_adjudication` after claims b3b, `claims_adjudication_lineage` after bC,
+then `b7`, `b8`, `b9` (finalize keys
 exist only where the mode runs them), plus optional operator-approved `bC`. Worker shard outcomes are recorded only with
 `certify_stage.py set-shard`; the stage itself is certified separately.
 
@@ -196,12 +199,14 @@ each stream:
 | `claims_b1`–`claims_b3` (plan → section workers → merge) | `b1-claims`–`b3-claims` | `references/pipeline-claims.md` |
 | `claims_b3c` shared-conventions consolidation | — | `references/pipeline-claims.md` |
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
+| `claims_adjudication` H/X capture verdicts | `claims_adjudication.py --check` | `references/pipeline-claims.md` |
 | `claims_b4`–`claims_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-claims`, `b5-claims`, `b6a-claims`, `b5s-claims`, `b6b-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
 | `code_b3d` detector emission, conventions scan, and mapping (replication waits for certified `claims_b3c`) | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
 | `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
 | `code_b4`–`code_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-code`, `b5-code`, `b6a-code`, `b5s-code`, `b6b-code` | `references/pipeline-code-errors.md` |
 | optional `bC` late-observation correction | `bC` | `references/pipeline-finalize.md` |
+| `claims_adjudication_lineage` final carrier verdicts | `claims_adjudication.py --check` | `references/pipeline-finalize.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
 | `b8` author-facing rewrite | `b8` | `references/pipeline-finalize.md` |
 | `b9` Excel export (`scripts/export_xlsx.py`, never an LLM) | `b9` | `references/pipeline-finalize.md` |
@@ -259,6 +264,8 @@ files carries exactly one of these keys; b4 is conductor-computed and has no pla
 | `claims_b3c_conventions` | claims b3c consolidation | high |
 | `claims_b3b_second_read` | claims b3b second read | high |
 | `claims_b3b_merge` | claims b3b merge | high |
+| `claims_adjudication` | claims H/X capture adjudicator | high |
+| `claims_adjudication_lineage` | claims final-carrier lineage adjudicator | high |
 | `claims_b5_recheck_cluster` | claims b5 recheck cluster | high |
 | `claims_b6_merge` | claims b6a/b6b merge | high |
 | `code_b1_planner` | code b1 planner | high |

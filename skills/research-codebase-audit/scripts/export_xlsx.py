@@ -138,6 +138,10 @@ SHEET_GUIDE = [
         "error: its type, location, the author-facing description, and why it matters.",
     ),
     (
+        "Handoff ledger",
+        "Terminal state of every cross-span claim obligation, including any explicitly accepted blocked fallback.",
+    ),
+    (
         "Late observations (unverified)",
         "Observations raised during the single supplementary wave. These are explicitly unverified and never mutate the registers without an approved bC correction plan.",
     ),
@@ -152,6 +156,10 @@ LO_SHEET_COLS = ["Stream"] + LO_COLS
 LO_COVERAGE_COLS = [
     "Stream", "Required", "b6b State", "Collection State", "Artifact Head",
     "Blocker Evidence IDs",
+]
+HANDOFF_LEDGER_COLS = [
+    "Obligation ID", "Kind", "Source Shard", "Anchor", "Destination Worker",
+    "Terminal State", "Covering Claim ID", "Disposition",
 ]
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -359,6 +367,31 @@ def derive_late_observation_coverage(audit, manifest, mode):
     return rows
 
 
+def handoff_ledger_rows(audit):
+    path = audit / "_run/handoff_ledger.json"
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read handoff ledger {path}: {exc}") from exc
+    rows = []
+    for entry in sorted(ledger.get("H", []) + ledger.get("X", []),
+                        key=lambda row: row.get("id", "")):
+        disposition = entry.get("disposition") or {}
+        anchor = entry.get("anchor", "")
+        if isinstance(anchor, dict):
+            end = anchor.get("end_line", anchor.get("start_line", ""))
+            lines = (str(anchor.get("start_line", "")) if end == anchor.get("start_line")
+                     else f"{anchor.get('start_line', '')}-{end}")
+            anchor = f"{anchor.get('source_path', '')}:{lines}"
+        rows.append([
+            entry.get("id", ""), entry.get("kind", ""),
+            entry.get("source_shard", ""), anchor,
+            entry.get("destination_worker", ""), entry.get("state", ""),
+            entry.get("covering_c_id") or "", disposition.get("reason", ""),
+        ])
+    return rows
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -404,6 +437,8 @@ def main() -> int:
         sheets_present.insert(0, "Paper Claims")
         status_usage["claims"] = sorted({r[ch.index("Status")] for r in cr if r[ch.index("Status")]})
         status_usage["claims_cols"] = ch
+        if manifest.get("paper_source_set"):
+            sheets_present.append("Handoff ledger")
 
     eh, er = drop_and_augment(e_headers, e_rows)
     status_usage["errors"] = sorted({r[eh.index("Status")] for r in er if r[eh.index("Status")]})
@@ -415,6 +450,13 @@ def main() -> int:
     write_overview(wb, sheets_present, status_usage, warnings)
     if args.mode == "replication":
         write_data_sheet(wb, "Paper Claims", ch, cr)
+        if manifest.get("paper_source_set"):
+            try:
+                handoff_rows = handoff_ledger_rows(audit)
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            write_data_sheet(wb, "Handoff ledger", HANDOFF_LEDGER_COLS, handoff_rows)
     write_data_sheet(wb, "Code Errors", eh, er)
     write_data_sheet(wb, "Late observations (unverified)", LO_SHEET_COLS, lo_rows)
     write_data_sheet(wb, "Late observation coverage", LO_COVERAGE_COLS, coverage_rows)

@@ -21,6 +21,7 @@ ROLE_KEYS = (
     "codemap",
     "claims_b1_planner", "claims_b2_section", "claims_b3_merge",
     "claims_b3c_conventions", "claims_b3b_second_read", "claims_b3b_merge",
+    "claims_adjudication", "claims_adjudication_lineage",
     "claims_b5_recheck_cluster", "claims_b6_merge",
     "code_b1_planner", "code_b2_chunk", "code_b3_merge",
     "b3d_conventions_scan", "code_b3b_second_read", "code_b3b_merge",

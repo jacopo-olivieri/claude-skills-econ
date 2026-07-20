@@ -1867,7 +1867,7 @@ def reconcile_code_coverage(lint, audit, plan, allocations, manifest):
 POST_STAGE_SNAPSHOTS = {
     ("b3", "claims"): ("claims_b3b",),
     ("b3", "code"): ("code_b3d",),
-    ("b3b", "claims"): ("claims_b6a",),
+    ("b3b", "claims"): ("claims_adjudication", "claims_b6a"),
     ("b3b", "code"): ("code_b6a",),
 }
 
@@ -2641,6 +2641,26 @@ def required_recheck_ids(lint, audit, stream):
     return required, substantive
 
 
+def adjudicator_minted_ids(lint, audit):
+    """Return every C-ID minted by a validated reject-and-resolve verdict."""
+    path = audit / "_run/claims_adjudication_verdicts.md"
+    if not path.is_file():
+        return set()
+    text = read_text(lint, path) or ""
+    minted = set()
+    for headers, rows, _line in parse_tables(text):
+        if not {"Verdict", "Minted C-ID"} <= set(headers):
+            continue
+        for raw in rows:
+            if len(raw) != len(headers):
+                lint.fail(f"{path}: malformed adjudication verdict row")
+                continue
+            row = dict(zip(headers, raw))
+            if row["Verdict"] == "reject_and_resolve":
+                minted.add(row["Minted C-ID"])
+    return minted
+
+
 def check_conventions_artifact(lint, audit):
     """Advisory well-formedness check on the optional b3c shared-conventions
     artifact `audit/_run/conventions.md`, consumed by the b4-code recheck grep.
@@ -2690,6 +2710,9 @@ def stage_b4(lint, audit, stream, manifest=None):
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
+    adjudicated = adjudicator_minted_ids(lint, audit) if stream == "claims" else set()
+    required |= adjudicated
+    substantive |= adjudicated
     id_letter = "C" if stream == "claims" else "E"  # the inventory's own ID letter
     inv_ids = {row.get("ID", "") for row in inventory}
     assignments = {}
@@ -2702,6 +2725,10 @@ def stage_b4(lint, audit, stream, manifest=None):
                   f"(a mandatory row would silently skip the recheck)")
     for row in inventory:
         i = row.get("ID", "")
+        if i in adjudicated and row.get("Reason") != "adjudicated_handoff":
+            lint.fail(
+                f"{plan}: adjudicator-minted {i} requires Reason adjudicated_handoff"
+            )
         # (a2) wrong-typed inventory IDs: a claims recheck inventory carries only
         #      C- ids (outputs are never rechecked directly); a code inventory only E-.
         if i and i[0] != id_letter:
@@ -4274,8 +4301,46 @@ def stage_b9(lint, audit, manifest):
         "Overview", "Code Errors", "Late observations (unverified)",
         "Late observation coverage",
     } | ({"Paper Claims"} if mode == "replication" else set())
+    if mode == "replication" and (manifest or {}).get("paper_source_set"):
+        expect.add("Handoff ledger")
     if set(wb.sheetnames) != expect:
         lint.fail(f"workbook sheets {wb.sheetnames} != expected {sorted(expect)}")
+    if "Handoff ledger" in expect and "Handoff ledger" in wb.sheetnames:
+        ledger_path = audit / "_run/handoff_ledger.json"
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            lint.fail(f"{ledger_path}: cannot verify exported handoff ledger ({exc})")
+            ledger = {"H": [], "X": []}
+        columns = [
+            "Obligation ID", "Kind", "Source Shard", "Anchor",
+            "Destination Worker", "Terminal State", "Covering Claim ID",
+            "Disposition",
+        ]
+        expected_rows = []
+        for entry in sorted(ledger.get("H", []) + ledger.get("X", []),
+                            key=lambda row: row.get("id", "")):
+            disposition = entry.get("disposition") or {}
+            anchor = entry.get("anchor", "")
+            if isinstance(anchor, dict):
+                end = anchor.get("end_line", anchor.get("start_line", ""))
+                lines = (str(anchor.get("start_line", ""))
+                         if end == anchor.get("start_line")
+                         else f"{anchor.get('start_line', '')}-{end}")
+                anchor = f"{anchor.get('source_path', '')}:{lines}"
+            expected_rows.append([
+                str(entry.get("id", "")), str(entry.get("kind", "")),
+                str(entry.get("source_shard", "")), str(anchor),
+                str(entry.get("destination_worker", "")), str(entry.get("state", "")),
+                str(entry.get("covering_c_id") or ""),
+                str(disposition.get("reason", "")),
+            ])
+        data = list(wb["Handoff ledger"].values)
+        actual_headers = [str(value) if value is not None else "" for value in data[0]] if data else []
+        actual_rows = [[str(value) if value is not None else "" for value in row]
+                       for row in data[1:]] if data else []
+        if actual_headers != columns or actual_rows != expected_rows:
+            lint.fail("Handoff ledger: sheet does not exactly match handoff_ledger.json")
     # U8 (d): the frozen b8 staging registers must still be present and non-empty.
     check_staging_frozen(lint, audit, mode)
     checks = [("Code Errors", "code_error_register.md", ERROR_COLS, "Error ID", ["Error Description", "Why It Matters"])]

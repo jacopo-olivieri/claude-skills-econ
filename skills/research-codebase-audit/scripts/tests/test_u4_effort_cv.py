@@ -571,6 +571,7 @@ def test_dispatch_role_table_defaults_and_carriers_cover_expected_stage_role_sit
         ("claims_b3c", "claims_b3c_conventions"): 1,
         ("claims_b3b", "claims_b3b_second_read"): 1,
         ("claims_b3b", "claims_b3b_merge"): 1,
+        ("claims_adjudication", "claims_adjudication"): 1,
         ("claims_b5", "claims_b5_recheck_cluster"): 1,
         ("claims_b6a", "claims_b6_merge"): 1,
         ("claims_b5s", "claims_b5_recheck_cluster"): 1,
@@ -588,6 +589,7 @@ def test_dispatch_role_table_defaults_and_carriers_cover_expected_stage_role_sit
         ("b7", "b7_cross_linker"): 1,
         ("b7", "b7_claim_recheck"): 1,
         ("b8", "b8_rewriter"): 1,
+        ("claims_adjudication_lineage", "claims_adjudication_lineage"): 1,
     })
     observed_sites = Counter()
     # SKILL.md declares only the b0 CODEMAP dispatch site; parse it rather
@@ -602,9 +604,13 @@ def test_dispatch_role_table_defaults_and_carriers_cover_expected_stage_role_sit
     ):
         text = path.read_text(encoding="utf-8")
         headings = []
-        for match in re.finditer(r"(?m)^## (b(?:\d+[a-z]?|C))\b", text):
+        for match in re.finditer(
+                r"(?m)^## (b(?:\d+[a-z]?|C)|claims_adjudication(?:_lineage)?)\b", text):
             raw = match.group(1)
-            headings.append((match.start(), f"{stream}_{raw}" if stream else raw))
+            headings.append((
+                match.start(), raw if raw.startswith("claims_adjudication")
+                else (f"{stream}_{raw}" if stream else raw),
+            ))
         for match in re.finditer(r"role:\s*`([a-z0-9_]+)`", text):
             stage = next(value for position, value in reversed(headings)
                          if position < match.start())

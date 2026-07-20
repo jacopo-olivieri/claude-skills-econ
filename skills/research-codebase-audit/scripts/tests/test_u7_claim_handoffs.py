@@ -1,6 +1,7 @@
 """U7a Part-I tests: deterministic claim-handoff spine and Tier-1 drills."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 import regbuild as rb
 
 anchor = rb.load_script("anchor_resolver")
+adjudication = rb.load_script("claims_adjudication")
 crossref = rb.load_script("build_crossref_inventory")
 handoffs = rb.load_script("build_handoff_ledger")
 ch = rb.load_script("claim_handoffs")
@@ -17,6 +19,8 @@ cs = rb.load_script("certify_stage")
 lint = rb.load_script("lint_registers")
 paper_sources = rb.load_script("paper_sources")
 score_fixture = rb.load_script("score_fixture")
+score_replay = rb.load_script("score_replay")
+mech = rb.load_script("mechanism_schema")
 
 pytestmark = pytest.mark.u7
 
@@ -242,6 +246,45 @@ def add_b3b_resolution(root, rows, body_worker):
     cs.set_shard(root, "claims_b3b", "audit/_work_second_read/r1.md", "done")
     handoffs.build(root, audit, "claims_b3b")
     return forwarded, shard
+
+
+def prepare_adjudication(tmp_path):
+    root, rows, body, _appendix = prepared_b3(tmp_path)
+    add_b3b_resolution(root, rows, body)
+    audit = root / "audit"
+    snap = audit / "_run/snapshots/claims_adjudication"
+    snap.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(audit / "claims_register.md", snap / "claims_register.md")
+    shutil.copy2(audit / "output_register.md", snap / "output_register.md")
+    shutil.copy2(audit / "_run/handoff_ledger.json", snap / "handoff_ledger.json")
+    worklist = adjudication.build_worklist(root, audit, "claims_adjudication")
+    return root, worklist
+
+
+def freeze_lineage_inputs(root):
+    audit = root / "audit"
+    snap = audit / "_run/snapshots/claims_adjudication_lineage"
+    snap.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(audit / "claims_register.md", snap / "claims_register.md")
+    shutil.copy2(audit / "_run/handoff_ledger.json", snap / "handoff_ledger.json")
+
+
+def write_adjudication_verdicts(root, worklist, overrides=None):
+    overrides = overrides or {}
+    rows = []
+    for item in worklist["items"]:
+        verdict = overrides.get(item["id"])
+        if verdict is None:
+            verdict = ("capture_confirmed" if item["work_kind"] == "mapping"
+                       else "disposition_accepted")
+        rows.append([
+            item["id"], item["work_kind"], verdict, "fresh adjudicator checked capture",
+            *(["—"] * (len(adjudication.ADJUDICATION_VERDICT_COLS) - 4)),
+        ])
+    path = root / "audit/_run/claims_adjudication_verdicts.md"
+    path.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, rows),
+                    encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------- intake/b1
@@ -530,7 +573,7 @@ def test_deterministic_chain_reaches_b3b_then_close_run_refuses_pending_tail(tmp
     assert ledger["H"][0]["state"] == "resolved"
     result = cli(root, "close-run")
     assert result.returncode == 1
-    assert "claims_adjudication is absent" in result.stderr
+    assert "claims_adjudication is pending" in result.stderr
     assert (root / "audit/_run/RUNNING").is_file()
 
 
@@ -548,13 +591,24 @@ def test_blocked_operator_decisions_are_exact_joined_and_cannot_bypass_stage_ref
         json.dumps(decisions, indent=2), encoding="utf-8")
     result = cli(root, "close-run")
     assert result.returncode == 1
-    assert "claims_adjudication is absent" in result.stderr
+    assert "claims_adjudication is pending" in result.stderr
     decisions.append({"id": "X-9999", "decision": "accept_blocked",
                       "reason": "extra", "date": "2026-07-20"})
     (root / "audit/_run/handoff_blocked_decisions.json").write_text(
         json.dumps(decisions, indent=2), encoding="utf-8")
     result = cli(root, "close-run")
     assert "unknown obligation X-9999" in result.stderr
+
+
+def test_close_run_refuses_forged_manifest_with_absent_adjudication_key(tmp_path):
+    root, _rows, _body, _appendix = prepared_b3(tmp_path)
+    manifest_path = root / "audit/_run/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["stages"]["claims_adjudication"]
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    result = cli(root, "close-run")
+    assert result.returncode == 1
+    assert "claims_adjudication is absent" in result.stderr
 
 
 def test_inventory_keeps_fig_abbreviation_in_one_sentence(tmp_path):
@@ -700,3 +754,551 @@ def test_score_fixture_split_assertion_accepts_distinct_workers(tmp_path):
     status, note = score_fixture.check_u7_allocation_split(audit)
     assert status == "PASS"
     assert "W1" in note and "W2" in note
+
+
+# ---------------------------------------------------------- U7b adjudication
+
+
+def test_adjudication_done_exactly_closes_mapping_and_disposition(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    assert {item["work_kind"] for item in worklist["items"]} == {
+        "mapping", "disposition",
+    }
+    write_adjudication_verdicts(root, worklist)
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    ledger = json.loads((root / "audit/_run/handoff_ledger.json").read_text())
+    states = {row["id"]: row["state"] for row in ledger["H"] + ledger["X"]}
+    mapping = next(item for item in worklist["items"] if item["work_kind"] == "mapping")
+    disposition = next(item for item in worklist["items"]
+                       if item["work_kind"] == "disposition")
+    assert states[mapping["id"]] == mapping["state"]
+    assert states[disposition["id"]] == "disposition_accepted"
+    adjudication.check_done(root, root / "audit", "claims_adjudication")
+
+
+def test_adjudicator_mint_requires_containment_and_reserved_range_tier1(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    item = next(item for item in worklist["items"] if item["work_kind"] == "mapping")
+    base = rb.claims_row(
+        "C-8100", context=PROSE_CONTEXT,
+        quote="Reference speeds occupy a separate range.",
+        text="Reference speeds occupy a separate range.", status="confirmed",
+    )
+    claim = dict(zip(lint.CLAIMS_COLS, base))
+    rows = []
+    for current in worklist["items"]:
+        if current["id"] == item["id"]:
+            rows.append([
+                current["id"], current["work_kind"], "reject_and_resolve",
+                "the old carrier omitted the assertion", "C-8100",
+                *[claim[column] for column in lint.CLAIMS_COLS if column != "Claim ID"],
+                current["resolved_anchor"]["source_path"] + ":2",
+            ])
+        else:
+            rows.append([
+                current["id"], current["work_kind"], "disposition_accepted",
+                "the pointer genuinely has no predicate", *(["—"] *
+                    (len(adjudication.ADJUDICATION_VERDICT_COLS) - 4)),
+            ])
+    path = root / "audit/_run/claims_adjudication_verdicts.md"
+    path.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, rows),
+                    encoding="utf-8")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    claims = (root / "audit/claims_register.md").read_text()
+    assert "C-8100" in claims
+
+    # Deliberately break the Tier-1 containment check: clause/caption text
+    # elsewhere cannot discharge the assertion.
+    rows[0][-1] = item["resolved_anchor"]["source_path"] + ":3"
+    path.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, rows),
+                    encoding="utf-8")
+    with pytest.raises(adjudication.AdjudicationError,
+                       match="does not contain|not found|0 occurrences"):
+        adjudication._validate_verdicts(root, root / "audit", "claims_adjudication", worklist)
+
+
+def test_verdict_deletion_and_handwritten_acceptance_are_rederived_tier1(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    path = write_adjudication_verdicts(root, worklist)
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    text = path.read_text()
+    first = worklist["items"][0]["id"]
+    path.write_text("\n".join(line for line in text.splitlines()
+                              if not line.startswith(f"| {first} |")) + "\n",
+                    encoding="utf-8")
+    with pytest.raises(adjudication.AdjudicationError, match="exactly cover"):
+        adjudication.check_done(root, root / "audit", "claims_adjudication")
+
+    # A ledger edit is not a receipt: restore the table without the disposition
+    # verdict, then hand-write disposition_accepted in the ledger.
+    ledger_path = root / "audit/_run/handoff_ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    disposition = next(item for item in worklist["items"]
+                       if item["work_kind"] == "disposition")
+    for row in ledger["H"] + ledger["X"]:
+        if row["id"] == disposition["id"]:
+            row["state"] = "disposition_accepted"
+    ledger_path.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+    with pytest.raises(adjudication.AdjudicationError, match="exactly cover"):
+        adjudication.check_done(root, root / "audit", "claims_adjudication")
+
+
+def test_zero_work_both_stages_and_lineage_mechanical_carry(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    write_adjudication_verdicts(root, worklist)
+    cs.start_stage(root, "claims_adjudication")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "done")
+    freeze_lineage_inputs(root)
+    cs.start_stage(root, "claims_adjudication_lineage")
+    lineage = adjudication.build_worklist(
+        root, root / "audit", "claims_adjudication_lineage")
+    assert lineage["items"] == []
+    assert (root / "audit/_run/claims_adjudication_lineage_verdicts.md").read_text() \
+        == "No lineage verdicts.\n"
+    adjudication.apply_done(root, root / "audit", "claims_adjudication_lineage")
+    cs.finish_stage(root, "claims_adjudication_lineage", "done")
+
+
+def test_adjudication_zero_work_uses_explicit_worklist_and_unsharded_verdict(tmp_path):
+    root, _worklist = prepare_adjudication(tmp_path)
+    empty = {"format_version": 1, "stage": "claims_b3b", "H": [], "X": []}
+    for relative in (
+            "audit/_run/snapshots/claims_adjudication/handoff_ledger.json",
+            "audit/_run/snapshots/claims_b3b/handoff_ledger.json",
+            "audit/_run/handoff_ledger.json"):
+        (root / relative).write_text(json.dumps(empty, indent=2) + "\n", encoding="utf-8")
+    path = root / "audit/_run/claims_adjudication_verdicts.md"
+    path.unlink(missing_ok=True)
+    built = rb.run_script(
+        "claims_adjudication.py", root, "--audit-dir", root / "audit",
+        "--stage", "claims_adjudication", "--build-worklist")
+    assert built.returncode == 0, built.stdout + built.stderr
+    worklist = json.loads(
+        (root / "audit/_run/claims_adjudication_worklist.json").read_text())
+    assert worklist["items"] == []
+    assert path.read_text() == "No adjudication verdicts.\n"
+    cs.start_stage(root, "claims_adjudication")
+    applied = rb.run_script(
+        "claims_adjudication.py", root, "--audit-dir", root / "audit",
+        "--stage", "claims_adjudication", "--apply")
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    cs.finish_stage(root, "claims_adjudication", "done")
+
+
+def test_blocked_stage_degrades_pending_items_and_close_requires_decisions(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    cs.start_stage(root, "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "blocked", "worker died after retry")
+    ledger_path = root / "audit/_run/handoff_ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    assert {row["state"] for row in ledger["H"] + ledger["X"]} == {"blocked_fallback"}
+
+    freeze_lineage_inputs(root)
+    adjudication.build_worklist(root, root / "audit", "claims_adjudication_lineage")
+    cs.start_stage(root, "claims_adjudication_lineage")
+    cs.finish_stage(root, "claims_adjudication_lineage", "blocked", "no lineage work")
+    refused = cli(root, "close-run")
+    assert refused.returncode == 1
+    assert "has no operator decision" in refused.stderr
+    decisions = [{
+        "id": row["id"], "decision": "accept_blocked", "reason": "operator reviewed blocker",
+        "date": "2026-07-20",
+    } for row in sorted(ledger["H"] + ledger["X"], key=lambda value: value["id"])]
+    (root / "audit/_run/handoff_blocked_decisions.json").write_text(
+        json.dumps(decisions, indent=2), encoding="utf-8")
+    assert cli(root, "close-run").returncode == 0
+
+
+def test_blocked_stage_applies_valid_partial_mint_before_degrading_rest(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    item = next(current for current in worklist["items"]
+                if current["work_kind"] == "mapping")
+    claim = dict(zip(lint.CLAIMS_COLS, rb.claims_row(
+        "C-8100", context=PROSE_CONTEXT,
+        quote="Reference speeds occupy a separate range.",
+        text="Reference speeds occupy a separate range.", status="confirmed",
+    )))
+    path = root / "audit/_run/claims_adjudication_verdicts.md"
+    path.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, [[
+        item["id"], item["work_kind"], "reject_and_resolve", "old carrier omitted it",
+        "C-8100", *[claim[column] for column in lint.CLAIMS_COLS
+                    if column != "Claim ID"],
+        item["resolved_anchor"]["source_path"] + ":2",
+    ]]), encoding="utf-8")
+
+    cs.start_stage(root, "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "blocked", "worker died after partial output")
+    ledger = json.loads((root / "audit/_run/handoff_ledger.json").read_text())
+    by_id = {row["id"]: row for row in ledger["H"] + ledger["X"]}
+    assert by_id[item["id"]]["state"] == "resolved"
+    assert by_id[item["id"]]["covering_c_id"] == "C-8100"
+    assert all(row["state"] == "blocked_fallback" for key, row in by_id.items()
+               if key != item["id"])
+    assert "C-8100" in (root / "audit/claims_register.md").read_text()
+    adjudication.check_blocked(root, root / "audit", "claims_adjudication")
+
+
+def test_pending_adjudication_stage_refuses_close_run(tmp_path):
+    root, _worklist = prepare_adjudication(tmp_path)
+    result = cli(root, "close-run")
+    assert result.returncode == 1
+    assert "claims_adjudication is pending" in result.stderr
+
+
+def test_lineage_changed_carrier_requires_verdict_and_refusal_blocks_close(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    write_adjudication_verdicts(root, worklist)
+    cs.start_stage(root, "claims_adjudication")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "done")
+    stable = root / "audit/_run/snapshots/claims_b6a"
+    stable.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "audit/claims_register.md", stable / "claims_register.md")
+    shutil.copy2(root / "audit/output_register.md", stable / "output_register.md")
+    claims_path = root / "audit/claims_register.md"
+    claims_path.write_text(claims_path.read_text().replace(
+        "The appendix asserts that reference speeds occupy a separate range.",
+        "The carrier dropped the original assertion."), encoding="utf-8")
+    freeze_lineage_inputs(root)
+    cs.start_stage(root, "claims_adjudication_lineage")
+    lineage = adjudication.build_worklist(
+        root, root / "audit", "claims_adjudication_lineage")
+    assert len(lineage["items"]) == 1
+    item = lineage["items"][0]
+    verdict_path = root / "audit/_run/claims_adjudication_lineage_verdicts.md"
+    verdict_path.write_text(rb.md_table(adjudication.LINEAGE_VERDICT_COLS, [[
+        item["id"], "equivalence_refused", "the assertion text was removed",
+    ]]), encoding="utf-8")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication_lineage")
+    cs.finish_stage(root, "claims_adjudication_lineage", "done")
+    result = cli(root, "close-run")
+    assert result.returncode == 1
+    assert "lineage equivalence refused" in result.stderr
+
+
+def test_b4_requires_adjudicated_handoff_reason(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    item = next(item for item in worklist["items"] if item["work_kind"] == "mapping")
+    claim_values = dict(zip(lint.CLAIMS_COLS, rb.claims_row(
+        "C-8100", context=PROSE_CONTEXT,
+        quote="Reference speeds occupy a separate range.",
+        text="Reference speeds occupy a separate range.", status="confirmed")))
+    other = next(current for current in worklist["items"] if current["id"] != item["id"])
+    verdicts = root / "audit/_run/claims_adjudication_verdicts.md"
+    verdicts.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, [[
+        item["id"], "mapping", "reject_and_resolve", "missing assertion", "C-8100",
+        *[claim_values[column] for column in lint.CLAIMS_COLS if column != "Claim ID"],
+        item["resolved_anchor"]["source_path"] + ":2",
+    ], [
+        other["id"], other["work_kind"], "disposition_accepted", "valid pointer disposal",
+        *(["—"] * (len(adjudication.ADJUDICATION_VERDICT_COLS) - 4)),
+    ]]), encoding="utf-8")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    plan = root / "audit/plans/claims_recheck_plan.md"
+    plan.write_text(
+        "# Plan\n\nSee audit_readme.md for vocabulary.\n\n"
+        + rb.md_table(["ID", "Reason", "Likely Evidence"], [[
+            "C-8100", "issue-flagged", "paper",
+        ]]) + "\n" + rb.md_table(
+            ["Cluster ID", "Cluster Name", "Assigned IDs", "Shard File"], [[
+                "K1", "adjudication", "C-8100", "audit/_recheck/k1.md",
+            ]]),
+        encoding="utf-8")
+    failed = rb.lint(rb.AuditDir(root), "b4-claims")
+    assert failed.returncode == 1
+    assert "requires Reason adjudicated_handoff" in failed.stdout
+    plan.write_text(plan.read_text().replace("issue-flagged", "adjudicated_handoff"),
+                    encoding="utf-8")
+    passed = rb.lint(rb.AuditDir(root), "b4-claims")
+    assert passed.returncode == 0, passed.stdout
+
+
+def test_adjudication_scorer_requires_positive_controls_and_no_verdict_control():
+    sheet = {
+        "false_positive_ceiling": 0,
+        "expected_verdicts": [
+            {"key": "reject", "obligation_id": "H-0001", "verdict": "reject_and_resolve"},
+            {"key": "accept", "obligation_id": "X-0001", "verdict": "capture_confirmed"},
+            {"key": "carry", "obligation_id": "X-0002", "verdict": None},
+        ],
+    }
+    scored = score_replay.score_adjudication(sheet, [
+        {"Obligation ID": "H-0001", "Verdict": "reject_and_resolve"},
+        {"Obligation ID": "X-0001", "Verdict": "capture_confirmed"},
+    ])
+    assert scored["status"] == "score"
+    always_reject = score_replay.score_adjudication(sheet, [
+        {"Obligation ID": "H-0001", "Verdict": "reject_and_resolve"},
+        {"Obligation ID": "X-0001", "Verdict": "reject_and_resolve"},
+    ])
+    assert always_reject["status"] == "red"
+
+
+def test_s706_dual_accept_scores_resolver_valid_handoff(tmp_path):
+    root = source_package(tmp_path)
+    manifest = json.loads((root / "audit/_run/manifest.json").read_text())
+    appendix = next(entry for entry in manifest["paper_source_set"]
+                    if entry["source_path"].endswith("appendix.tex"))
+    expected = {
+        "key": "truck-speed-claim", "target_anchor": appendix["source_path"] + ":2",
+        "target_quote": "Reference speeds occupy a separate range.",
+    }
+    handoff = {
+        "H ID": "H-0001", "Anchor": expected["target_anchor"],
+        "Quote": expected["target_quote"], "Asserted Substance": "reference speeds differ",
+        "Referenced Objects": "Figure A2",
+    }
+    sheet = {"expected_claim_obligations": [expected]}
+    scored, routes = score_replay.score_claim_obligations(
+        sheet, root, [], [handoff], [])
+    assert scored[0]["status"] == "score"
+    assert ("filed_h", "H-0001") in routes
+
+
+def test_b9_exports_and_exactly_lints_handoff_ledger_sheet(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    write_adjudication_verdicts(root, worklist)
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    audit = root / "audit"
+    (audit / "code_error_register.md").write_text(
+        rb.register_text("Errors", lint.ERROR_COLS, []), encoding="utf-8")
+    for stream in ("claims", "code"):
+        (audit / f"late_observations_{stream}.md").write_text(
+            f"# Late observations — {stream}\n\nNo late observations.\n\n"
+            "## Dispositions\n\nNo dispositions.\n", encoding="utf-8")
+    staging = audit / "_staging"
+    staging.mkdir(exist_ok=True)
+    shutil.copy2(audit / "claims_register.md", staging / "claims_register.md")
+    shutil.copy2(audit / "code_error_register.md", staging / "code_error_register.md")
+    result = rb.run_script(
+        "export_xlsx.py", "--audit-dir", audit, "--mode", "replication")
+    assert result.returncode == 0, result.stdout + result.stderr
+    from openpyxl import load_workbook
+    workbook = load_workbook(audit / "code_review.xlsx", read_only=True)
+    assert "Handoff ledger" in workbook.sheetnames
+    passed = rb.lint(rb.AuditDir(root), "b9")
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    ledger = json.loads((audit / "_run/handoff_ledger.json").read_text())
+    ledger["H"] = []
+    (audit / "_run/handoff_ledger.json").write_text(
+        json.dumps(ledger, indent=2), encoding="utf-8")
+    failed = rb.lint(rb.AuditDir(root), "b9")
+    assert failed.returncode == 1
+    assert "does not exactly match" in failed.stdout
+
+
+# ------------------------------------------------------- U7b phase-D repairs
+
+
+def _mint_verdict_rows(worklist, item, mint_id, covering_suffix=":2"):
+    claim = dict(zip(lint.CLAIMS_COLS, rb.claims_row(
+        mint_id, context=PROSE_CONTEXT,
+        quote="Reference speeds occupy a separate range.",
+        text="Reference speeds occupy a separate range.", status="confirmed",
+    )))
+    rows = []
+    for current in worklist["items"]:
+        if current["id"] == item["id"]:
+            rows.append([
+                current["id"], current["work_kind"], "reject_and_resolve",
+                "the old carrier omitted the assertion", mint_id,
+                *[claim[column] for column in lint.CLAIMS_COLS
+                  if column != "Claim ID"],
+                current["resolved_anchor"]["source_path"] + covering_suffix,
+            ])
+        else:
+            rows.append([
+                current["id"], current["work_kind"], "disposition_accepted",
+                "the pointer genuinely has no predicate",
+                *(["—"] * (len(adjudication.ADJUDICATION_VERDICT_COLS) - 4)),
+            ])
+    return rows
+
+
+def test_adjudicator_mint_outside_reserved_range_refuses(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    item = next(item for item in worklist["items"] if item["work_kind"] == "mapping")
+    rows = _mint_verdict_rows(worklist, item, "C-8150")
+    (root / "audit/_run/claims_adjudication_verdicts.md").write_text(
+        rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, rows), encoding="utf-8")
+    with pytest.raises(adjudication.AdjudicationError,
+                       match="outside adjudication range"):
+        adjudication._validate_verdicts(
+            root, root / "audit", "claims_adjudication", worklist)
+
+
+def test_certification_and_verify_run_refuse_sabotaged_verdicts_tier1(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    item = next(item for item in worklist["items"] if item["work_kind"] == "mapping")
+    path = root / "audit/_run/claims_adjudication_verdicts.md"
+    cs.start_stage(root, "claims_adjudication")
+    # Incomplete verdict table refuses at finish, through the production surface.
+    path.write_text(rb.md_table(
+        adjudication.ADJUDICATION_VERDICT_COLS,
+        _mint_verdict_rows(worklist, item, "C-8100")[:-1]), encoding="utf-8")
+    with pytest.raises(cs.CertificationError, match="exactly cover"):
+        cs.finish_stage(root, "claims_adjudication", "done")
+    # A non-containing mint refuses at finish.
+    path.write_text(rb.md_table(
+        adjudication.ADJUDICATION_VERDICT_COLS,
+        _mint_verdict_rows(worklist, item, "C-8100", ":3")), encoding="utf-8")
+    with pytest.raises(cs.CertificationError,
+                       match="does not contain|not found|0 occurrences"):
+        cs.finish_stage(root, "claims_adjudication", "done")
+    # Healthy evidence certifies and verify-run stays quiet.
+    healthy = rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS,
+                          _mint_verdict_rows(worklist, item, "C-8100"))
+    path.write_text(healthy, encoding="utf-8")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "done")
+    good = cli(root, "verify-run")
+    assert good.returncode == 0, good.stdout + good.stderr
+    # Post-certification verdict deletion refuses at verify-run.
+    path.write_text("\n".join(line for line in healthy.splitlines()
+                              if not line.startswith(f"| {item['id']} |")) + "\n",
+                    encoding="utf-8")
+    deleted = cli(root, "verify-run")
+    assert deleted.returncode == 1
+    assert "exactly cover" in deleted.stdout + deleted.stderr
+    # Post-certification containment corruption refuses at verify-run.
+    path.write_text(healthy.replace(
+        item["resolved_anchor"]["source_path"] + ":2",
+        item["resolved_anchor"]["source_path"] + ":3"), encoding="utf-8")
+    corrupted = cli(root, "verify-run")
+    assert corrupted.returncode == 1
+    assert "CLAIMS ADJUDICATION REFUSED" in corrupted.stdout + corrupted.stderr
+
+
+def test_lineage_certification_and_verify_run_refuse_sabotage_tier1(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    write_adjudication_verdicts(root, worklist)
+    cs.start_stage(root, "claims_adjudication")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "done")
+    stable = root / "audit/_run/snapshots/claims_b6a"
+    stable.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "audit/claims_register.md", stable / "claims_register.md")
+    shutil.copy2(root / "audit/output_register.md", stable / "output_register.md")
+    claims_path = root / "audit/claims_register.md"
+    claims_path.write_text(claims_path.read_text().replace(
+        "The appendix asserts that reference speeds occupy a separate range.",
+        "The carrier dropped the original assertion."), encoding="utf-8")
+    freeze_lineage_inputs(root)
+    cs.start_stage(root, "claims_adjudication_lineage")
+    lineage = adjudication.build_worklist(
+        root, root / "audit", "claims_adjudication_lineage")
+    assert len(lineage["items"]) == 1
+    item = lineage["items"][0]
+    verdict_path = root / "audit/_run/claims_adjudication_lineage_verdicts.md"
+    # A required verdict deleted before finish refuses at finish.
+    verdict_path.write_text("No lineage verdicts.\n", encoding="utf-8")
+    with pytest.raises(cs.CertificationError, match="exactly cover"):
+        cs.finish_stage(root, "claims_adjudication_lineage", "done")
+    healthy = rb.md_table(adjudication.LINEAGE_VERDICT_COLS, [[
+        item["id"], "equivalence_confirmed", "the carrier still bears the assertion",
+    ]])
+    verdict_path.write_text(healthy, encoding="utf-8")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication_lineage")
+    cs.finish_stage(root, "claims_adjudication_lineage", "done")
+    good = cli(root, "verify-run")
+    assert good.returncode == 0, good.stdout + good.stderr
+    # Post-certification verdict mutation refuses at verify-run.
+    verdict_path.write_text(healthy.replace(
+        "equivalence_confirmed", "capture_confirmed"), encoding="utf-8")
+    mutated = cli(root, "verify-run")
+    assert mutated.returncode == 1
+    assert "invalid lineage verdict" in mutated.stdout + mutated.stderr
+
+
+def test_dead_carrier_confirmation_refused_and_close_run_rederives_tier1(tmp_path):
+    root, worklist = prepare_adjudication(tmp_path)
+    write_adjudication_verdicts(root, worklist)
+    cs.start_stage(root, "claims_adjudication")
+    adjudication.apply_done(root, root / "audit", "claims_adjudication")
+    cs.finish_stage(root, "claims_adjudication", "done")
+    stable = root / "audit/_run/snapshots/claims_b6a"
+    stable.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "audit/claims_register.md", stable / "claims_register.md")
+    shutil.copy2(root / "audit/output_register.md", stable / "output_register.md")
+    claims_path = root / "audit/claims_register.md"
+    claims_path.write_text("\n".join(
+        line for line in claims_path.read_text().splitlines()
+        if not line.startswith("| C-2000 |")) + "\n", encoding="utf-8")
+    freeze_lineage_inputs(root)
+    cs.start_stage(root, "claims_adjudication_lineage")
+    lineage = adjudication.build_worklist(
+        root, root / "audit", "claims_adjudication_lineage")
+    assert len(lineage["items"]) == 1
+    assert lineage["items"][0]["terminal_c_id"] is None
+    verdict_path = root / "audit/_run/claims_adjudication_lineage_verdicts.md"
+    verdict_path.write_text(rb.md_table(adjudication.LINEAGE_VERDICT_COLS, [[
+        lineage["items"][0]["id"], "equivalence_confirmed", "looks equivalent to me",
+    ]]), encoding="utf-8")
+    with pytest.raises(cs.CertificationError, match="no terminal live carrier"):
+        cs.finish_stage(root, "claims_adjudication_lineage", "done")
+    # A forged done status cannot slip a hand-confirmed dead carrier past
+    # close-run: the dead-end refusal is re-derived from the worklist artifact.
+    manifest_path = root / "audit/_run/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["stages"]["claims_adjudication_lineage"]["status"] = "done"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    result = cli(root, "close-run")
+    assert result.returncode == 1
+    assert "lineage dead-end with no live carrier" in result.stderr
+
+
+def test_score_run_adjudication_requires_exact_schema_tables(tmp_path):
+    scenario = {
+        "format_version": 1, "stage": "claims_adjudication",
+        "route": "deterministic_stage", "scoring_mode": "adjudication",
+        "promised_outputs": ["audit/_run/claims_adjudication_verdicts.md"],
+        "answer_sheet": "answers/sheet.json", "runs": 1,
+    }
+    scenario_path = tmp_path / "opaque-x1.json"
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    sheet = {
+        "format_version": 1,
+        "mechanism_schema_version": mech.MECHANISM_SCHEMA_VERSION,
+        "disposition_complete": True, "false_positive_ceiling": 0,
+        "output_contract": {
+            "verdict_paths": ["audit/_run/claims_adjudication_verdicts.md"],
+        },
+        "expected_verdicts": [
+            {"key": "accept", "obligation_id": "H-0001",
+             "verdict": "capture_confirmed"},
+        ],
+    }
+    sheet_path = tmp_path / "sheet.json"
+    sheet_path.write_text(json.dumps(sheet), encoding="utf-8")
+    run_dir = tmp_path / "run-001"
+    out = run_dir / "sandbox/audit/_run"
+    out.mkdir(parents=True)
+    (run_dir / "replay-record.json").write_text(json.dumps({
+        "format_version": 1, "scenario_id": "opaque-x1",
+        "stage": "claims_adjudication", "route": "deterministic_stage",
+        "run_index": 1, "timestamp": "2026-07-20T00:00:00+00:00",
+        "identity": {
+            "model_requested": "not-applicable", "model_reported": "not-applicable",
+            "cli_version": "not-applicable", "code_commit": "a" * 40,
+            "code_dirty": True, "requested_effort": "not-applicable",
+            "observed_effort": "not-applicable",
+            "mechanism_schema_version": mech.MECHANISM_SCHEMA_VERSION,
+        },
+        "promised_outputs_found": ["audit/_run/claims_adjudication_verdicts.md"],
+    }, indent=2), encoding="utf-8")
+    verdict_path = out / "claims_adjudication_verdicts.md"
+    # An invalid two-column artifact must score red, not green.
+    verdict_path.write_text(
+        "| Obligation ID | Verdict |\n| --- | --- |\n"
+        "| H-0001 | capture_confirmed |\n", encoding="utf-8")
+    red = score_replay.score_run(scenario_path, scenario, sheet_path, sheet, run_dir)
+    assert red["status"] == "red"
+    assert any("exact" in problem for problem in red.get("format_problems", []))
+    # The exact first-stage schema scores green.
+    verdict_path.write_text(rb.md_table(adjudication.ADJUDICATION_VERDICT_COLS, [[
+        "H-0001", "mapping", "capture_confirmed", "checked capture",
+        *(["—"] * (len(adjudication.ADJUDICATION_VERDICT_COLS) - 4)),
+    ]]), encoding="utf-8")
+    green = score_replay.score_run(scenario_path, scenario, sheet_path, sheet, run_dir)
+    assert green["status"] == "score"

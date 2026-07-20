@@ -30,10 +30,11 @@ OBLIGATIONS_PATH = SCRIPT_DIR / "stage_obligations.json"
 FULL_STAGES = (
     "b0",
     "claims_b1", "claims_b2", "claims_b3", "claims_b3c", "claims_b3b",
+    "claims_adjudication",
     "claims_b4", "claims_b5", "claims_b6a", "claims_b5s", "claims_b6b",
     "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
     "code_b6a", "code_b5s", "code_b6b",
-    "bC", "b7", "b8", "b9",
+    "bC", "claims_adjudication_lineage", "b7", "b8", "b9",
 )
 CODE_ONLY_STAGES = (
     "b0",
@@ -386,6 +387,16 @@ def _validator_commands(identifier, package_root, audit, stage_entry_value, stag
             str(package_root), "--audit-dir", str(audit),
             "--stage", stage, "--check",
         ]]
+    if identifier in {"handoff:adjudication", "handoff:adjudication-lineage"}:
+        wanted = ("claims_adjudication" if identifier == "handoff:adjudication"
+                  else "claims_adjudication_lineage")
+        if stage != wanted:
+            raise CertificationError(f"{identifier} cannot validate stage {stage!r}")
+        return [[
+            sys.executable, str(SCRIPT_DIR / "claims_adjudication.py"),
+            str(package_root), "--audit-dir", str(audit),
+            "--stage", stage, "--check",
+        ]]
     lint_stage = VALIDATORS.get(identifier)
     if lint_stage is None:
         raise CertificationError(f"unknown validator identifier {identifier!r}")
@@ -508,6 +519,17 @@ def finish_stage(package_root, stage, outcome, reason=None):
     if outcome == "blocked":
         if reason is None or not reason.strip():
             raise CertificationError("a blocked outcome requires a non-empty --reason")
+        if stage in {"claims_adjudication", "claims_adjudication_lineage"}:
+            result = subprocess.run([
+                sys.executable, str(SCRIPT_DIR / "claims_adjudication.py"),
+                str(package_root), "--audit-dir", str(package_root / "audit"),
+                "--stage", stage, "--block",
+            ], capture_output=True, text=True, cwd=package_root)
+            if result.returncode:
+                raise CertificationError(
+                    f"cannot record blocked {stage} honestly: "
+                    + (result.stdout + result.stderr).strip()
+                )
         entry["status"] = "blocked"
         entry["reason"] = " ".join(reason.split())
         write_manifest_atomic(package_root, manifest)
@@ -750,6 +772,17 @@ def _refuse_pending_handoff_obligations(package_root, manifest):
         elif status == "done":
             stage_failures = resolve_stage_obligations(package_root, manifest, stage)
             failures.extend(f"stage {stage}: {failure}" for failure in stage_failures)
+        elif status == "blocked":
+            result = subprocess.run([
+                sys.executable, str(SCRIPT_DIR / "claims_adjudication.py"),
+                str(package_root), "--audit-dir", str(package_root / "audit"),
+                "--stage", stage, "--check-blocked",
+            ], capture_output=True, text=True, cwd=package_root)
+            if result.returncode:
+                failures.append(
+                    f"stage {stage}: blocked-path re-derivation failed: "
+                    + (result.stdout + result.stderr).strip()
+                )
     audit, run_dir, _, _ = audit_paths(package_root)
     ledger_path = run_dir / "handoff_ledger.json"
     try:
@@ -811,6 +844,46 @@ def _refuse_pending_handoff_obligations(package_root, manifest):
             failures.append(f"blocked decision names unknown obligation {obligation_id}")
         elif by_id[obligation_id].get("state") != "blocked_fallback":
             failures.append(f"blocked decision names non-blocked obligation {obligation_id}")
+    lineage_path = run_dir / "claims_adjudication_lineage_verdicts.md"
+    lineage_verdict_ids = set()
+    if lineage_path.is_file():
+        for headers, rows, _line in registers.parse_tables(
+                lineage_path.read_text(encoding="utf-8")):
+            if headers == ["Obligation ID", "Verdict", "Reason"]:
+                lineage_verdict_ids.update(row[0] for row in rows if len(row) == 3)
+                refused = [row[0] for row in rows if len(row) == 3
+                           and row[1] == "equivalence_refused"]
+                if refused:
+                    failures.append(
+                        "lineage equivalence refused for " + ", ".join(sorted(refused))
+                    )
+    # N1: re-derive the dead-carrier refusal from the certified worklist
+    # artifact itself — a hand-confirmed verdict table is not trusted here.
+    lineage_worklist_path = run_dir / "claims_adjudication_lineage_worklist.json"
+    if lineage_worklist_path.is_file():
+        try:
+            lineage_worklist = json.loads(
+                lineage_worklist_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append(f"cannot read lineage worklist: {exc}")
+            lineage_worklist = {}
+        lineage_blocked = (
+            stages.get("claims_adjudication_lineage", {}).get("status") == "blocked"
+            if isinstance(stages, dict) else False
+        )
+        for item in lineage_worklist.get("items", []) or []:
+            if not isinstance(item, dict) or item.get("terminal_c_id") is not None:
+                continue
+            item_id = item.get("id")
+            blocked_release = (
+                lineage_blocked and item_id not in lineage_verdict_ids
+                and by_id.get(item_id, {}).get("state") == "blocked_fallback"
+            )
+            if not blocked_release:
+                failures.append(
+                    f"lineage dead-end with no live carrier: {item_id} "
+                    f"({item.get('reason', 'dead chain')})"
+                )
     if failures:
         raise CertificationError(
             "close-run refused: pending handoff obligation(s): " + " | ".join(failures)

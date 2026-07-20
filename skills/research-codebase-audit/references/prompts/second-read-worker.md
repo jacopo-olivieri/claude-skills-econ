@@ -13,9 +13,9 @@ unverified candidates and flow into the recheck. Single fire-and-forget message.
 | `{SECOND_READ_PLAN_PATH}` | `audit/plans/code_error_second_read_plan.md` or `audit/plans/claims_second_read_plan.md` |
 | `{WORKER_ID}` / `{FILE_SCOPE}` / `{SHARD_FILE}` / `{ID_RANGES}` | the b3b allocation table |
 | `{STREAM}` | `code-error` or `claims` |
-| `{READ_REASON}` | allocation-table Reason: `detector`, `flagged`, or `clean_sample` (`handoff` is reserved for U7 and not populated here) |
-| `{KNOWN_FINDINGS_BLOCK}` | detector/flagged: the Already-logged block below; clean_sample: empty |
-| `{SEARCH_MANDATE}` | detector/flagged: find a missed defect; clean_sample: conduct a fresh full read where a genuinely clean result is acceptable |
+| `{READ_REASON}` | allocation-table Reason: `detector`, `flagged`, `clean_sample`, or `handoff` |
+| `{KNOWN_FINDINGS_BLOCK}` | detector/flagged: the Already-logged block below; clean_sample or handoff-only: empty |
+| `{SEARCH_MANDATE}` | detector/flagged: find a missed defect; clean_sample: conduct a fresh full read where a genuinely clean result is acceptable; handoff: resolve every `{ASSIGNED_HANDOFF_IDS}` entry and perform the ordinary broad recall scan |
 | `{MANDATE_LENS}` | conductor: `the same broad defect scan the first reader ran` at standard depth; a **distinct** lens (e.g. "focus on data-shape and merge-cardinality assumptions", "focus on units and scaling", "focus on sample and timing") on the second `deep`-depth pass |
 | `{PAPER_SOURCE_SET}` | manifest `paper_source_set` mapping (claims stream only) |
 | `{ASSIGNED_HANDOFF_IDS}` | allocation column, or `none` |

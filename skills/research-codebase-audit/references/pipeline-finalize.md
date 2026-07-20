@@ -1,13 +1,13 @@
 # Pipeline — finalize (cross-link, rewrite, export)
 
-Runs after both streams (or the only stream) reach `done`/`blocked` at b6.
+Runs after both streams (or the only stream) reach `done`/`blocked` at b6b.
 
 ## Mode skip rules
 
 | Mode | b7 cross-link | b8 rewrite | b9 export |
 | --- | --- | --- | --- |
-| Full replication | yes | both registers | Overview + Paper Claims + Code Errors |
-| Code-errors-only | **skip** (no claims register) | code register only | Overview + Code Errors |
+| Full replication | yes | both registers | Overview + Paper Claims + Code Errors + both late-observation sheets |
+| Code-errors-only | **skip** (no claims register) | code register only | Overview + Code Errors + both late-observation sheets |
 
 A stream that ended with blocked stages still finalizes: blocked rows carry their status into
 the export; blocked *stages* are listed in the final report, and cross-link runs on whatever
@@ -108,6 +108,9 @@ canon exists.
      `warnings` (CODEMAP preconditions score).
    - Author-facing columns in; every `*_Original` column out; `Potential Issue` computed on
      the Paper Claims sheet only.
+   - `audit/_run/late_observation_coverage.md` and the two workbook sheets derive from the b6b
+     artifacts and manifest. `Artifact Head` / `Blocker Evidence IDs` are the explicit-absence
+     values `not recorded` / `none recorded`; a blocked b6b reports degraded coverage.
 3. `lint_registers.py --stage b9`: workbook opens; per-sheet row counts and ID sets match the
    registers; excluded/required columns verified.
 4. Certify with `certify_stage.py finish --stage b9 --outcome done`.
@@ -115,4 +118,23 @@ canon exists.
 ## After b9
 
 Return to SKILL.md for the single `close-run` instruction, then Phase 4 (report + targeted manual
-QA follow-up).
+QA follow-up). `close-run` is the completion-report gate: with late observations recorded, it
+refuses until the first Phase-4 disposition batch replaces every `pending` state (b9 itself
+exports pending rows on the unverified sheet without refusing).
+
+## Operator-approved bC correction cycle
+
+Enter `bC` only after explicit operator approval of one or more Phase-4 late observations.
+Write `audit/plans/late_observation_corrections.md` using the exact plan serialization in
+`registers.md`, snapshot the applicable canonical registers **and each present
+`late_observations_<stream>.md` artifact** under `audit/_run/snapshots/bC/`, apply the declared
+rows/patches and disposition transitions through staging and atomic promotion, then run
+`lint_registers.py --stage bC` and certify `bC`. The lint compares canonical registers against
+the snapshot and plan, requires late-observation evidence bytes to remain unchanged, and checks
+each old → new disposition against the monotone matrix; it accepts no row-carried LO provenance
+and no undeclared cell edit.
+
+In full-replication mode, rerun b7 in replay-plus-extension mode for new-row links, then rerun
+b8 **scoped to the new rows only** and rerun b9. In code-errors-only mode b7 remains skipped;
+rerun b8 scoped to the new rows only, then b9. A correction that adds an output includes its
+companion claims edit in the same BC-ID group. Never create another supplementary wave.

@@ -29,16 +29,16 @@ OBLIGATIONS_PATH = SCRIPT_DIR / "stage_obligations.json"
 FULL_STAGES = (
     "b0",
     "claims_b1", "claims_b2", "claims_b3", "claims_b3c", "claims_b3b",
-    "claims_b4", "claims_b5", "claims_b6",
+    "claims_b4", "claims_b5", "claims_b6a", "claims_b5s", "claims_b6b",
     "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
-    "code_b6",
-    "b7", "b8", "b9",
+    "code_b6a", "code_b5s", "code_b6b",
+    "bC", "b7", "b8", "b9",
 )
 CODE_ONLY_STAGES = (
     "b0",
     "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
-    "code_b6",
-    "b8", "b9",
+    "code_b6a", "code_b5s", "code_b6b",
+    "bC", "b8", "b9",
 )
 
 LEGAL_START_STATES = {"pending", "blocked"}
@@ -52,18 +52,27 @@ VALIDATORS = {
     "lint:b3b-claims": "b3b-claims",
     "lint:b4-claims": "b4-claims",
     "lint:b5-claims": "b5-claims",
+    "lint:b6a-claims": "b6a-claims",
+    "lint:b5s-claims": "b5s-claims",
+    "lint:b6b-claims": "b6b-claims",
     "lint:b1-code": "b1-code",
     "lint:b2-code": "b2-code",
     "lint:b3-code": "b3-code",
     "lint:b3b-code": "b3b-code",
     "lint:b4-code": "b4-code",
     "lint:b5-code": "b5-code",
+    "lint:b6a-code": "b6a-code",
+    "lint:b5s-code": "b5s-code",
+    "lint:b6b-code": "b6b-code",
+    "lint:bC": "bC",
     "lint:b8": "b8",
     "lint:b9": "b9",
 }
 SHARD_VALIDATORS = {
-    "lint:b2-claims", "lint:b5-claims", "lint:b2-code", "lint:b5-code",
+    "lint:b2-claims", "lint:b5-claims", "lint:b5s-claims",
+    "lint:b2-code", "lint:b5-code", "lint:b5s-code",
 }
+ZERO_WORK_SHARD_VALIDATORS = {"lint:b5s-claims", "lint:b5s-code"}
 
 
 class CertificationError(RuntimeError):
@@ -320,6 +329,12 @@ def _validator_commands(identifier, package_root, audit, stage_entry_value):
             sys.executable, str(SCRIPT_DIR / "assemble_boundary.py"),
             str(package_root), "--audit-dir", str(audit), "--check",
         ]]
+    if identifier == "boundary:assemble-supplementary":
+        return [[
+            sys.executable, str(SCRIPT_DIR / "assemble_boundary.py"),
+            str(package_root), "--audit-dir", str(audit), "--check",
+            "--supplementary",
+        ]]
     lint_stage = VALIDATORS.get(identifier)
     if lint_stage is None:
         raise CertificationError(f"unknown validator identifier {identifier!r}")
@@ -332,6 +347,9 @@ def _validator_commands(identifier, package_root, audit, stage_entry_value):
     if identifier not in SHARD_VALIDATORS:
         return [base]
     shards = stage_entry_value.get("shards")
+    if (not isinstance(shards, dict) or not shards) \
+            and identifier in ZERO_WORK_SHARD_VALIDATORS:
+        return [base]
     if not isinstance(shards, dict) or not shards:
         raise CertificationError(f"validator {identifier!r} requires recorded shard paths")
     nonterminal = []
@@ -461,8 +479,9 @@ def set_shard(package_root, stage, shard, status, reason=None):
         )
     if status == "blocked" and (reason is None or not reason.strip()):
         raise CertificationError("a blocked shard requires a non-empty --reason")
-    if stage == "code_b5" and status == "blocked":
-        _write_code_b5_blocked_fallback(package_root, shard_path, reason)
+    if stage in {"code_b5", "code_b5s"} and status == "blocked":
+        _write_code_b5_blocked_fallback(
+            package_root, shard_path, reason, supplementary=stage == "code_b5s")
     previous = shards.get(shard, {})
     retries = int(previous.get("retries", 0))
     if previous.get("status") == "blocked" and status == "done":
@@ -501,9 +520,12 @@ def _write_text_atomic(path, payload):
         raise
 
 
-def _write_code_b5_blocked_fallback(package_root, shard_path, reason):
+def _write_code_b5_blocked_fallback(package_root, shard_path, reason,
+                                    supplementary=False):
     audit = package_root / "audit"
-    plan_path = audit / "plans/code_error_recheck_plan.md"
+    plan_path = audit / "plans" / (
+        "code_error_supplementary_recheck_plan.md" if supplementary
+        else "code_error_recheck_plan.md")
     try:
         plan_text = plan_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -569,6 +591,9 @@ def _write_code_b5_blocked_fallback(package_root, shard_path, reason):
         + "\n### Witness outcomes\n\n"
         + _md_table(registers.WITNESS_OUTCOME_COLS, [])
         + "\n### Verification records\n\nNo verification records.\n"
+        + "\n### Coverage\n\nEvery assigned row was dispositioned or blocked.\n"
+        + "\n### Footer dispositions\n\n"
+        + _md_table(registers.FOOTER_COLS, [])
     )
     _write_text_atomic(shard_path, payload)
 
@@ -644,7 +669,34 @@ def demote_stage(package_root, stage, reason=None):
 def close_run(package_root):
     manifest = read_manifest(package_root)
     require_canonical_identity(package_root, manifest)
+    _refuse_pending_late_observations(package_root)
     remove_running_marker(package_root)
+
+
+def _refuse_pending_late_observations(package_root):
+    """The completion-report gate (checklist U6 §9).
+
+    The Phase-4 first disposition batch must replace every ``pending`` state
+    before the run closes.  b9 deliberately does not enforce this — the
+    export publishes pending rows on the explicitly unverified sheet.
+    """
+    audit, _, _, _ = audit_paths(package_root)
+    lint = registers.Lint()
+    pending = []
+    for stream in ("claims", "code"):
+        if not (audit / f"late_observations_{stream}.md").is_file():
+            continue
+        _path, _rows, dispositions = registers._late_observation_rows(
+            lint, audit, stream)
+        pending.extend(row["LO ID"] for row in dispositions
+                       if row["State"] == "pending")
+    if pending:
+        raise CertificationError(
+            "close-run refused: late-observation disposition(s) still pending: "
+            + ", ".join(sorted(pending))
+            + " — the Phase-4 first disposition batch replaces every pending "
+            "state before the run closes"
+        )
 
 
 def build_parser():

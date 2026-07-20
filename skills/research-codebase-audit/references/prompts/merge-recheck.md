@@ -1,6 +1,7 @@
 # Skeleton — recheck merge (mutates rows)
 
-Dispatched at b6-claims / b6-code. One coordinator subagent per stream. This merge **mutates**
+Dispatched at b6a-claims / b6a-code and reused at b6b-claims / b6b-code. One coordinator
+subagent per stream. This merge **mutates**
 existing canonical rows per the verdict mapping; it adds rows only for declared splits. Fill
 slots only.
 
@@ -14,6 +15,7 @@ slots only.
 | `{SUMMARY_FILE}` | `audit/claims_recheck_summary.md` or `audit/code_error_recheck_summary.md` |
 | `{COORD_ID_RANGE}` | the plan's `Merge-coordinator range:` line(s) — claims stream passes both the C- and O- ranges, code stream the E- range |
 | `{BLOCKED_SHARDS}` | conductor: blocked cluster shards, or "none" |
+| `{MERGE_PHASE}` | `b6a` (may mint footer-derived discoveries and writes the supplementary plan) or `b6b` (mints no rows; footer candidates become late observations/dismissals) |
 
 ## Skeleton
 
@@ -29,6 +31,8 @@ registers.
 ## TASK
 
 You are the recheck merge coordinator.
+Merge phase: {MERGE_PHASE}. Apply the phase-specific supplementary contract in
+`{CONTRACT_PATH}` exactly.
 
 Read: `{RECHECK_PLAN_PATH}`, `{CONTRACT_PATH}`, all shards in `{SHARD_DIR}`, and the
 canonical registers {REGISTER_FILES}.

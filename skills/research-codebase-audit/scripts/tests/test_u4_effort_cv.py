@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -559,18 +560,60 @@ def test_init_accepts_and_preserves_complete_effort_exceptions(tmp_path):
         "effort_map"] == effort
 
 
-def test_dispatch_role_table_defaults_and_carriers_cover_every_site_once():
-    dispatch_roles = []
-    for path in ROLE_DOCS:
-        dispatch_roles.extend(re.findall(
-            r"role:\s*`([a-z0-9_]+)`", path.read_text(encoding="utf-8")
-        ))
+def test_dispatch_role_table_defaults_and_carriers_cover_expected_stage_role_sites():
+    expected_sites = Counter({
+        ("b0", "codemap"): 1,
+        ("claims_b1", "claims_b1_planner"): 1,
+        ("claims_b2", "claims_b2_section"): 1,
+        ("claims_b3", "claims_b3_merge"): 1,
+        ("claims_b3c", "claims_b3c_conventions"): 1,
+        ("claims_b3b", "claims_b3b_second_read"): 1,
+        ("claims_b3b", "claims_b3b_merge"): 1,
+        ("claims_b5", "claims_b5_recheck_cluster"): 1,
+        ("claims_b6a", "claims_b6_merge"): 1,
+        ("claims_b5s", "claims_b5_recheck_cluster"): 1,
+        ("claims_b6b", "claims_b6_merge"): 1,
+        ("code_b1", "code_b1_planner"): 1,
+        ("code_b2", "code_b2_chunk"): 1,
+        ("code_b3", "code_b3_merge"): 1,
+        ("code_b3d", "b3d_conventions_scan"): 1,
+        ("code_b3b", "code_b3b_second_read"): 1,
+        ("code_b3b", "code_b3b_merge"): 1,
+        ("code_b5", "code_b5_recheck_cluster"): 1,
+        ("code_b6a", "code_b6_merge"): 1,
+        ("code_b5s", "code_b5_recheck_cluster"): 1,
+        ("code_b6b", "code_b6_merge"): 1,
+        ("b7", "b7_cross_linker"): 1,
+        ("b7", "b7_claim_recheck"): 1,
+        ("b8", "b8_rewriter"): 1,
+    })
+    observed_sites = Counter()
+    # SKILL.md declares only the b0 CODEMAP dispatch site; parse it rather
+    # than seeding it, so a deleted or duplicated declaration is caught.
+    skill_text = ROLE_DOCS[0].read_text(encoding="utf-8")
+    for role in re.findall(r"role:\s*`([a-z0-9_]+)`", skill_text):
+        observed_sites[("b0", role)] += 1
+    for path, stream in (
+        (ROLE_DOCS[1], "claims"),
+        (ROLE_DOCS[2], "code"),
+        (ROLE_DOCS[3], None),
+    ):
+        text = path.read_text(encoding="utf-8")
+        headings = []
+        for match in re.finditer(r"(?m)^## (b(?:\d+[a-z]?|C))\b", text):
+            raw = match.group(1)
+            headings.append((match.start(), f"{stream}_{raw}" if stream else raw))
+        for match in re.finditer(r"role:\s*`([a-z0-9_]+)`", text):
+            stage = next(value for position, value in reversed(headings)
+                         if position < match.start())
+            observed_sites[(stage, match.group(1))] += 1
+    assert observed_sites == expected_sites
+    dispatch_roles = [role for (_stage, role) in observed_sites]
     skill = (rb.SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     table_roles = re.findall(
         r"(?m)^\| `([a-z0-9_]+)` \| .* \| (?:low|medium|high|xhigh|max) \|$",
         skill,
     )
-    assert len(dispatch_roles) == len(set(dispatch_roles))
     assert set(dispatch_roles) == set(table_roles) == set(dispatch.ROLE_KEYS)
     assert set(dispatch.DEFAULT_EFFORT_MAP) == set(dispatch.ROLE_KEYS)
     assert set(dispatch.DEFAULT_EFFORT_MAP.values()) <= set(dispatch.EFFORT_TIERS)

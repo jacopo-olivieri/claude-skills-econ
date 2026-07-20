@@ -166,16 +166,40 @@ b5-claims --shard <path>`), and retry follow b2. Record a passing shard with
 shard with `--status blocked --reason "<lint failure>"`. Workers judge assigned IDs only and
 mint no IDs.
 
-## b6 — Recheck merge (mutates rows)
+## b6a — Phase-one merge and supplementary plan
 
-1. Snapshot both registers to `audit/_run/snapshots/claims_b6/`.
+1. Snapshot both registers to `audit/_run/snapshots/claims_b6a/`.
 2. Dispatch one coordinator with `prompts/merge-recheck.md` (stream = claims; role:
-   `claims_b6_merge`), with
-   `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_recheck.md`. It applies the verdict →
-   register mapping from that contract, writes staging registers and
-   `audit/claims_recheck_summary.md`, declaring any splits/merges.
-3. `lint_registers.py --stage b6-claims` (row counts vs snapshot unless declared; statuses in
-   the b6+ allowed set; summary exists). On pass, atomic rename.
+   `claims_b6_merge`). It writes staging registers and `audit/claims_recheck_summary.md`.
+   The summary carries exact `Splits declared: <n>`, `Merges declared: <n>`, and
+   `Discoveries declared: C=<n>; O=<n>; E=0` lines, the main b5 footer dispositions, and the
+   output-discovery disposition table specified in `registers.md`.
+3. The coordinator also writes `audit/plans/claims_supplementary_recheck_plan.md` using the
+   supplementary naming/range contract in `registers.md`. Its inventory is exactly every new
+   C-ID and split descendant minted at b6a; output rows never enter the inventory. An empty
+   inventory uses the exact zero-work form there.
+4. Atomically promote, then run `lint_registers.py --stage b6a-claims` and certify
+   `claims_b6a`. The certification lint reads canon plus the frozen snapshot, never staging.
 
-Stream complete: certify with `certify_stage.py finish --stage claims_b6 --outcome done`;
-`confirmation_needed`/`blocked` rows survive as-is.
+## b5s — One supplementary recheck wave
+
+Start `claims_b5s`. For a non-empty plan, dispatch `prompts/recheck-cluster-worker.md` once per
+cluster (role: `claims_b5_recheck_cluster`), filling the supplementary plan and shard paths.
+Use the same validator and ledger contract as b5: `lint_registers.py --stage b5s-claims
+--shard <path>`, then `set-shard --stage claims_b5s`. A worker never mints register rows;
+fresh defect observations use the typed footer's recheck-context `candidate` form. For an empty
+inventory, dispatch no worker and run the unsharded `b5s-claims` lint. In both cases `finish
+--stage claims_b5s --outcome done` certifies from the plan artifact; there is no dummy shard.
+
+## b6b — Final supplementary merge and late observations
+
+1. Snapshot both registers to `audit/_run/snapshots/claims_b6b/`.
+2. Dispatch the existing merge coordinator (role: `claims_b6_merge`) over the supplementary
+   plan/shards. It may mutate assigned rows but mint no rows. It writes
+   `audit/claims_supplementary_recheck_summary.md` and
+   `audit/late_observations_claims.md` using the exact contracts in `registers.md`.
+3. Atomically promote, then run `lint_registers.py --stage b6b-claims` and certify
+   `claims_b6b`. The lint proves every supplementary inventory row has one ledger disposition,
+   every footer entry becomes a late observation or explicit dismissal, and no row vanishes.
+
+The stream is complete after exactly this one b6a→b5s→b6b cycle.

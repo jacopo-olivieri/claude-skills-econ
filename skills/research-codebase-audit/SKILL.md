@@ -35,9 +35,11 @@ Invariants you never break:
   `audit/_run/snapshots/<stage-key>/`. Exception: the final b8 promotion copies instead of
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
-  are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
+  are stream-qualified: `b0`, `b1-claims`…`b5-claims`, `b1-code`…`b5-code`, the second-read
   sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
-  `b2`, `b5`, and `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  `b2`, `b5`, `b5s`, and `b3b` are the shard-lintable stages; the supplementary boundaries are
+  `b6a-<stream>`, `b5s-<stream>`, and `b6b-<stream>`, and the approved correction stage is `bC`;
+  `b3b` lints a second-read shard with
   `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
   with the lint report appended to its prompt. On second failure, record that shard/stage
   `blocked` with `certify_stage.py set-shard` or `finish --outcome blocked`, and continue
@@ -125,10 +127,11 @@ initialization, every stage-status or shard-status change goes through `certify_
 edit those blocks by hand.
 
 `init` derives the ordered stage keys from `mode`. They are stream-qualified: `b0`,
-`claims_b1`…`claims_b6`, claims consolidation `claims_b3c`, `code_b1`…`code_b6`, detector
+`claims_b1`…`claims_b5`, then `claims_b6a` → `claims_b5s` → `claims_b6b`; claims consolidation
+`claims_b3c`; `code_b1`…`code_b5`, then `code_b6a` → `code_b5s` → `code_b6b`; detector
 emission `code_b3d`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
-exist only where the mode runs them). Worker shard outcomes are recorded only with
+exist only where the mode runs them), plus optional operator-approved `bC`. Worker shard outcomes are recorded only with
 `certify_stage.py set-shard`; the stage itself is certified separately.
 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
@@ -160,6 +163,7 @@ Completion: manifest written and every field above resolved with the user.
    run identity, creates the mode's pending stage entries, and creates `audit/_run/RUNNING`.
 1. Create `audit/` with empty registers per `references/registers.md`, plus
    `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`,
+   `audit/_recheck_supplementary/`, `audit/_code_error_recheck_supplementary/`,
    `audit/_staging/`, `audit/_run/snapshots/`, and `audit/plans/`.
 2. Run `scripts/build_worker_contracts.py --audit-dir audit` to generate
    `audit/audit_readme.md` and the per-role contracts in `audit/_run/contracts/`. Workers read
@@ -187,11 +191,12 @@ each stream:
 | `claims_b1`–`claims_b3` (plan → section workers → merge) | `b1-claims`–`b3-claims` | `references/pipeline-claims.md` |
 | `claims_b3c` shared-conventions consolidation | — | `references/pipeline-claims.md` |
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
-| `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
+| `claims_b4`–`claims_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-claims`, `b5-claims`, `b6a-claims`, `b5s-claims`, `b6b-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
 | `code_b3d` detector emission, conventions scan, and mapping (replication waits for certified `claims_b3c`) | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
 | `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
-| `code_b4`–`code_b6` (recheck plan → cluster workers → merge) | `b4-code`–`b6-code` | `references/pipeline-code-errors.md` |
+| `code_b4`–`code_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-code`, `b5-code`, `b6a-code`, `b5s-code`, `b6b-code` | `references/pipeline-code-errors.md` |
+| optional `bC` late-observation correction | `bC` | `references/pipeline-finalize.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
 | `b8` author-facing rewrite | `b8` | `references/pipeline-finalize.md` |
 | `b9` Excel export (`scripts/export_xlsx.py`, never an LLM) | `b9` | `references/pipeline-finalize.md` |
@@ -226,7 +231,10 @@ Mechanics:
   stages/shards are reported at the end, not retried in a loop.
 
 Completion: b9 is certified `done`, and `audit/code_review.xlsx` exists and passes the b9 lint.
-Run `certify_stage.py close-run` once.
+Run `certify_stage.py close-run` once. `close-run` is the completion-report gate: it refuses
+while any late-observation disposition is still `pending`, so a run that collected late
+observations closes only after the first Phase-4 disposition batch (registers.md § late
+observations) has replaced every pending state.
 
 **Resolved role-key table.** Every production dispatch site in this file and the three pipeline
 files carries exactly one of these keys; b4 is conductor-computed and has no planner role.
@@ -241,7 +249,7 @@ files carries exactly one of these keys; b4 is conductor-computed and has no pla
 | `claims_b3b_second_read` | claims b3b second read | high |
 | `claims_b3b_merge` | claims b3b merge | high |
 | `claims_b5_recheck_cluster` | claims b5 recheck cluster | high |
-| `claims_b6_merge` | claims b6 recheck merge | high |
+| `claims_b6_merge` | claims b6a/b6b merge | high |
 | `code_b1_planner` | code b1 planner | high |
 | `code_b2_chunk` | code b2 chunk worker | high |
 | `code_b3_merge` | code b3 first merge | high |
@@ -249,7 +257,7 @@ files carries exactly one of these keys; b4 is conductor-computed and has no pla
 | `code_b3b_second_read` | code b3b second read | high |
 | `code_b3b_merge` | code b3b merge | high |
 | `code_b5_recheck_cluster` | code b5 recheck cluster | high |
-| `code_b6_merge` | code b6 recheck merge | high |
+| `code_b6_merge` | code b6a/b6b merge | high |
 | `b7_cross_linker` | b7 cross-link | high |
 | `b7_claim_recheck` | b7 conditional claims recheck | high |
 | `b8_rewriter` | b8 rewrite | medium |

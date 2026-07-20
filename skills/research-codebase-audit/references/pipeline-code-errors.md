@@ -187,17 +187,51 @@ Record each passing shard with `certify_stage.py set-shard --stage code_b5 --sha
 done`, or a twice-failing shard with `--status blocked --reason "<lint failure>"`.
 The blocked command writes one conductor fallback ledger row per assigned ID. After every shard is
 terminal, run `scripts/verify_dismissals.py <package-root> --audit-dir audit`; it always writes
-`audit/_run/dismissal_receipts.md`, using the explicit-zero form when no mapped `not_error` is
+`audit/_run/code_b6a/dismissal_receipts.md`, using the explicit-zero form when no mapped `not_error` is
 proposed. No new IDs; no hunting for unrelated errors.
 
-## b6 — Recheck merge (mutates rows)
+## b6a — Phase-one merge and supplementary plan
 
 Snapshot → `prompts/merge-recheck.md` (stream = code, role: `code_b6_merge`, `{CONTRACT_PATH}` =
 `audit/_run/contracts/merge_recheck.md`) → staging +
-`audit/code_error_recheck_summary.md`. Then run `scripts/assemble_boundary.py <package-root>
---audit-dir audit` before `lint_registers.py --stage b6-code`; only the assembler may apply a
+`audit/code_error_recheck_summary.md`. Snapshot to `audit/_run/snapshots/code_b6a/`. The summary
+uses the exact split/merge/discovery count lines and footer-disposition grammar in
+`registers.md`. Then run `scripts/assemble_boundary.py <package-root> --audit-dir audit`; its
+stage-qualified outputs are `audit/_run/code_b6a/dismissal_receipts.md` and
+`audit/_run/code_b6a/witness_outcomes.md`. Only the assembler may apply a
 mechanically mapped `not_error`. The lint re-joins every mapping, witness outcome, verification
 record, receipt, split-lineage row, and duplicate on the full channel/source/witness key; it
-requires exactly one disposition and final-status agreement. After the lint passes, atomically
-promote the staged register.
-After promotion, certify with `certify_stage.py finish --stage code_b6 --outcome done`.
+requires exactly one disposition and refuses a main-wave heterogeneous aggregate until split.
+
+The coordinator also writes `audit/plans/code_error_supplementary_recheck_plan.md`. Its inventory
+is exactly every new E-ID (discovery or split descendant); output rows never enter code inventory.
+Discovery ranges, paths, exact zero-work text, and count lines follow `registers.md`. Atomically
+promote, run `lint_registers.py --stage b6a-code`, then certify `code_b6a`. Certification reads
+canon, stage snapshots, shards, and stage-qualified evidence only — never `_staging`.
+
+## b5s — One supplementary recheck wave
+
+Start `code_b5s`. A non-empty plan dispatches the same skeleton (role:
+`code_b5_recheck_cluster`) and uses the same 17-column ledger, witness, receipt, and footer
+validator with only plan/shard paths parameterized: `lint_registers.py --stage b5s-code --shard
+<path>`. Record terminal shards under `code_b5s`. New suspicions go in the recheck-context typed
+footer, never the register. An empty plan dispatches nobody; the unsharded b5s lint verifies the
+exact empty-inventory artifact and `finish --stage code_b5s --outcome done` certifies it without
+a dummy shard or alternate contract. After non-empty terminal shards, run
+`scripts/verify_dismissals.py <package-root> --audit-dir audit --supplementary`; it projects
+detector witnesses through b6a split lineage and writes the stage-qualified b6b receipt surface
+(or its exact zero form).
+
+## b6b — Final supplementary merge
+
+Snapshot to `audit/_run/snapshots/code_b6b/`. Dispatch the same merge coordinator (role:
+`code_b6_merge`) over the supplementary plan and shards. It mutates assigned rows but mints no
+rows, writes `audit/code_error_supplementary_recheck_summary.md`,
+`audit/late_observations_code.md`, and `audit/_run/code_b6b/witness_outcomes.md`. Footer
+candidates become LO rows joined by
+`path#OBS-####` or explicit dismissals. Atomically promote, run `lint_registers.py --stage
+b6b-code`, then run `scripts/assemble_boundary.py <package-root> --audit-dir audit
+--supplementary`; it writes the exact explicit-zero witness artifact when no mapped split
+descendant exists and otherwise reuses the canonical witness/receipt boundary under the b6b
+homes. Certify `code_b6b`. This final lint enforces supplementary ledger closure,
+detector materiality reassessment, and unconditional `MIXED` refusal. There is no second wave.

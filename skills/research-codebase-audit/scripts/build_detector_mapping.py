@@ -301,28 +301,6 @@ def _raw_register_rows(path):
     raise MappingError(f"{path}: expected exactly one {' | '.join(ERROR_COLS)} table")
 
 
-def _split_descendant_ids(audit):
-    path = audit / "code_error_recheck_summary.md"
-    if not path.is_file():
-        return set()
-    tables = [rows for headers, rows, _line in
-              du.parse_markdown_tables(path.read_text(encoding="utf-8"))
-              if headers == LINEAGE_COLS]
-    if not tables:
-        return set()
-    if len(tables) != 1:
-        raise MappingError(f"{path}: expected at most one split-lineage table")
-    descendants = set()
-    for row in tables[0]:
-        if len(row) != len(LINEAGE_COLS):
-            raise MappingError(f"{path}: malformed split-lineage row")
-        descendant = _norm(row[1])
-        if not re.fullmatch(r"E-\d{4}", descendant):
-            raise MappingError(f"{path}: invalid descendant Error ID {descendant}")
-        descendants.add(descendant)
-    return descendants
-
-
 def _validate_staging_converse(register_path, snapshot_path, decisions, register,
                                snapshot):
     new_ids = {row["Error ID"] for row in decisions.values()
@@ -350,7 +328,9 @@ def _validate_staging_converse(register_path, snapshot_path, decisions, register
 def _validate_replay_key_closure(audit, register, snapshot, decisions):
     new_ids = {row["Error ID"] for row in decisions.values()
                if row["Mapping Kind"] == "new_candidate"}
-    expected = set(snapshot) | new_ids | _split_descendant_ids(audit)
+    # ``register`` is the frozen post-b3b image during replay.  Later b6a/bC
+    # discoveries and split descendants are intentionally outside b3d's era.
+    expected = set(snapshot) | new_ids
     actual = set(register)
     if actual != expected:
         extra = sorted(actual - expected)
@@ -489,7 +469,11 @@ def actionable_rows(rows):
 
 
 def _paths(package_root, audit, check):
-    register = audit / ("code_error_register.md" if check else "_staging/code_error_register.md")
+    if check:
+        frozen = audit / "_run/snapshots/code_b3b/code_error_register.md"
+        register = frozen if frozen.is_file() else audit / "code_error_register.md"
+    else:
+        register = audit / "_staging/code_error_register.md"
     snapshot = audit / "_run/snapshots/code_b3d/code_error_register.md"
     return register, snapshot
 

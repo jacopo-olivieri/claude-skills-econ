@@ -149,17 +149,21 @@ Write the shard with:
 2. Files inspected
 3. Commands run, if any
 4. Row-level ledger:
-   | ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |
+   claims: `ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note`;
+   code-error: one table with
+   `ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note | Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs`.
    `Proposed Note` follows the three-part structure (paper says → code shows → why it
    matters) whenever the verdict keeps or creates an issue.
 5. Cluster summary: findings to keep / demote / needing confirmation / blocked, and
    consequences the cross-linking stage should know about.
+6. Typed footer table `Entry ID | Kind | Register IDs | Observation | Reason`. In recheck
+   context a defect observation uses `candidate` with an empty Register IDs cell; workers never
+   mint IDs. A genuine non-defect uses `not_rowed_observation` with its one-line reason.
 
-For the code-error stream, append these columns to the row-level ledger exactly:
-`Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism |
-Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs`.
-Follow the structured matrix in `{CONTRACT_PATH}`. Under `### Witness outcomes`, write the exact
-pre-boundary witness table for `confirmed_error`, `not_error`, and `duplicate` only, keyed by the
+For the code-error stream, follow the structured matrix in `{CONTRACT_PATH}`. Under
+`### Witness outcomes`, write exactly `Channel | Source ID | Witness ID | Verdict | Mech Class |
+Mech Object | Mech Relation | Mech Expected | Mech Actual | Proposed Severity | Duplicate Target`
+for `confirmed_error`, `not_error`, and `duplicate` only, keyed by the
 full Channel/Source ID/Witness ID tuple. Percent-escape reserved characters; never emit canonical
 mechanism bytes or `MIXED`. Under `### Verification records`, write the exact MF or DU/CV
 channel-typed table. Persist every DU/CV dismissal probe beside the shard and name it in

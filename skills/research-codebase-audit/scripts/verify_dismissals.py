@@ -37,6 +37,7 @@ RECEIPT_COLS = [
     "Exit Status", "Accepted (yes/no)", "Result Digest (sha256)",
 ]
 ZERO_RECEIPTS = "No mapped not_error dismissal receipts were required."
+SUPPLEMENTARY_ZERO_RECEIPTS = "No supplementary dismissal receipts were required."
 
 
 class VerificationError(RuntimeError):
@@ -84,9 +85,10 @@ def _rows(path, columns):
     return found
 
 
-def load_shards(audit):
+def load_shards(audit, supplementary=False):
     ledgers, records = [], {}
-    root = audit / "_code_error_recheck"
+    root = audit / ("_code_error_recheck_supplementary"
+                    if supplementary else "_code_error_recheck")
     if not root.is_dir():
         return ledgers, records
     for path in sorted(root.rglob("*.md")):
@@ -101,9 +103,15 @@ def load_shards(audit):
     return ledgers, records
 
 
-def _mapped_dismissal_obligations(audit, ledgers):
-    _declared, _display, mappings = detector_mapping.load_mapping(
-        audit / "_run/detector_mapping.md")
+def _mapped_dismissal_obligations(audit, ledgers, supplementary=False):
+    if supplementary:
+        lint = registers.Lint()
+        mappings = registers.supplementary_detector_mappings(lint, audit)
+        if lint.errors:
+            raise VerificationError(" | ".join(lint.errors))
+    else:
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
     ledger_by_id = {}
     for path, row in ledgers:
         ledger_by_id.setdefault(row["ID"], []).append((path, row))
@@ -189,10 +197,11 @@ def _receipt_id(key, record_id):
     return "RCP-" + hashlib.sha256(raw).hexdigest()[:12]
 
 
-def verify(package_root, audit):
-    ledgers, records = load_shards(audit)
+def verify(package_root, audit, supplementary=False):
+    ledgers, records = load_shards(audit, supplementary)
     receipts = []
-    for mapping, (ledger_path, ledger) in _mapped_dismissal_obligations(audit, ledgers):
+    for mapping, (ledger_path, ledger) in _mapped_dismissal_obligations(
+            audit, ledgers, supplementary):
         key = (mapping["Channel"], mapping["Source ID"], mapping["Witness ID"])
         record_ids = _list_cell(ledger["Verification Record IDs"])
         matching = []
@@ -226,10 +235,12 @@ def verify(package_root, audit):
     return receipts
 
 
-def render(receipts):
-    lines = ["# Dismissal receipts", ""]
+def render(receipts, supplementary=False):
+    lines = ["# Supplementary dismissal receipts" if supplementary
+             else "# Dismissal receipts", ""]
     if not receipts:
-        return "\n".join(lines + [ZERO_RECEIPTS, ""])
+        zero = SUPPLEMENTARY_ZERO_RECEIPTS if supplementary else ZERO_RECEIPTS
+        return "\n".join(lines + [zero, ""])
     lines += ["| " + " | ".join(RECEIPT_COLS) + " |",
               "| " + " | ".join(["---"] * len(RECEIPT_COLS)) + " |"]
     for row in sorted(receipts, key=lambda item: (
@@ -255,13 +266,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package_root", type=Path)
     parser.add_argument("--audit-dir", type=Path)
+    parser.add_argument("--supplementary", action="store_true")
     args = parser.parse_args()
     root = args.package_root.expanduser().resolve()
     audit = (args.audit_dir or root / "audit").expanduser().resolve()
-    output = audit / "_run/dismissal_receipts.md"
+    output = audit / ("_run/code_b6b/dismissal_receipts.md"
+                      if args.supplementary
+                      else "_run/code_b6a/dismissal_receipts.md")
     try:
-        receipts = verify(root, audit)
-        _write_atomic(output, render(receipts))
+        receipts = verify(root, audit, args.supplementary)
+        _write_atomic(output, render(receipts, args.supplementary))
     except (VerificationError, detector_mapping.MappingError,
             manifests.OracleError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

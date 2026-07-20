@@ -32,9 +32,21 @@
     {"type": "artifact", "pattern": "_recheck/**/*.md"},
     {"type": "validate", "validator": "lint:b5-claims"}
   ],
-  "claims_b6": [
+  "claims_b6a": [
     {"type": "artifact", "pattern": "claims_register.md"},
-    {"type": "artifact", "pattern": "output_register.md"}
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "artifact", "pattern": "plans/claims_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b6a-claims"}
+  ],
+  "claims_b5s": [
+    {"type": "artifact", "pattern": "plans/claims_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b5s-claims"}
+  ],
+  "claims_b6b": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "artifact", "pattern": "late_observations_claims.md"},
+    {"type": "validate", "validator": "lint:b6b-claims"}
   ],
   "code_b1": [
     {"type": "artifact", "pattern": "plans/code_error_review_plan.md"},
@@ -66,10 +78,28 @@
     {"type": "artifact", "pattern": "_code_error_recheck/**/*.md"},
     {"type": "validate", "validator": "lint:b5-code"}
   ],
-  "code_b6": [
+  "code_b6a": [
     {"type": "artifact", "pattern": "code_error_register.md"},
-    {"type": "artifact", "pattern": "_run/witness_outcomes.md"},
-    {"type": "validate", "validator": "boundary:assemble"}
+    {"type": "artifact", "pattern": "plans/code_error_supplementary_recheck_plan.md"},
+    {"type": "artifact", "pattern": "_run/code_b6a/witness_outcomes.md"},
+    {"type": "validate", "validator": "boundary:assemble"},
+    {"type": "validate", "validator": "lint:b6a-code"}
+  ],
+  "code_b5s": [
+    {"type": "artifact", "pattern": "plans/code_error_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b5s-code"}
+  ],
+  "code_b6b": [
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "late_observations_code.md"},
+    {"type": "artifact", "pattern": "_run/code_b6b/dismissal_receipts.md"},
+    {"type": "artifact", "pattern": "_run/code_b6b/witness_outcomes.md"},
+    {"type": "validate", "validator": "boundary:assemble-supplementary"},
+    {"type": "validate", "validator": "lint:b6b-code"}
+  ],
+  "bC": [
+    {"type": "artifact", "pattern": "plans/late_observation_corrections.md"},
+    {"type": "validate", "validator": "lint:bC"}
   ],
   "b7": [
     {"type": "artifact", "pattern": "claims_register.md"},

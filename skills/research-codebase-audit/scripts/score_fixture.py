@@ -605,7 +605,7 @@ def check_channel_adjudication(audit, expected):
     for row in ledgers:
         ledger_by_id.setdefault(_clean(row["ID"]), []).append(row)
 
-    receipt_path = audit / "_run/dismissal_receipts.md"
+    receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
     receipt_rows = []
     if receipt_path.is_file():
         text = receipt_path.read_text(encoding="utf-8", errors="replace")
@@ -613,7 +613,7 @@ def check_channel_adjudication(audit, expected):
             text, dismissal_verifier.RECEIPT_COLS, exact=True)
         if rows is not None:
             receipt_rows = [dict(zip(headers, row)) for row in rows]
-    boundary_path = audit / "_run/witness_outcomes.md"
+    boundary_path = audit / "_run/code_b6a/witness_outcomes.md"
     if not boundary_path.is_file():
         return "FAIL", f"assembled witness boundary missing: {boundary_path}"
     boundary_text = boundary_path.read_text(encoding="utf-8", errors="replace")
@@ -853,7 +853,7 @@ def check_channel_definition_use(audit):
         }
         if record_coverage != mapped_witnesses["D-03"]:
             return "FAIL", "D-03 lacks a qualifying synthetic verification record per witness"
-        receipt_path = audit / "_run/dismissal_receipts.md"
+        receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
         receipt_coverage = set()
         if receipt_path.is_file():
             receipt_text = receipt_path.read_text(encoding="utf-8", errors="replace")

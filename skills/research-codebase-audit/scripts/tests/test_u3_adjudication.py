@@ -64,6 +64,7 @@ def _shard_text(ledger_rows, outcome_rows=(), mf_records=(), probe_records=()):
         text += rb.md_table(rb.PROBE_VERIFICATION_COLS, list(probe_records)) + "\n"
     if not mf_records and not probe_records:
         text += "No verification records.\n"
+    text += "\n### Footer dispositions\n\n" + rb.md_table(rb._lint_mod.FOOTER_COLS, [])
     return text
 
 
@@ -108,6 +109,7 @@ def _case(tmp_path, *, channel="DU", verdict="confirmed_error",
     clusters = [("K1", "detector", eid, "`audit/_code_error_recheck/k1.md`")]
     a.write("plans/code_error_recheck_plan.md",
             rb.recheck_plan_text("code", inventory, clusters))
+    a.write("plans/code_error_second_read_plan.md", "# Code second-read plan\n")
     a.write("plans/code_error_review_plan.md", rb._code_b1_plan())
     status_map = {
         "confirmed_error": "confirmed", "not_error": "not_error",
@@ -159,6 +161,14 @@ def _case(tmp_path, *, channel="DU", verdict="confirmed_error",
     a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [final],
                      title="Code-error register")
     a.write_recheck_summary("code")
+    summary = a.audit / "code_error_recheck_summary.md"
+    summary.write_text(
+        summary.read_text() + "Discoveries declared: C=0; O=0; E=0\n",
+        encoding="utf-8")
+    a.write(
+        "plans/code_error_supplementary_recheck_plan.md",
+        rb.recheck_plan_text("code", [], [])
+        + "\nNo supplementary recheck inventory.\n")
     return root, a, shard, ledger, mapping
 
 
@@ -569,12 +579,14 @@ def test_code_b5_blocked_shard_gets_conductor_fallback(tmp_path):
     assert "| blocked |" in text and "### Witness outcomes" in text
 
 
-def test_code_b6_obligations_register_boundary_replay():
-    obligations = certify.load_obligations()["code_b6"]
+def test_code_b6a_obligations_register_boundary_replay():
+    obligations = certify.load_obligations()["code_b6a"]
     assert obligations == [
         {"type": "artifact", "pattern": "code_error_register.md"},
-        {"type": "artifact", "pattern": "_run/witness_outcomes.md"},
+        {"type": "artifact", "pattern": "plans/code_error_supplementary_recheck_plan.md"},
+        {"type": "artifact", "pattern": "_run/code_b6a/witness_outcomes.md"},
         {"type": "validate", "validator": "boundary:assemble"},
+        {"type": "validate", "validator": "lint:b6a-code"},
     ]
 
 
@@ -698,6 +710,7 @@ def _completed_b3d_b6_run(tmp_path, verdict="not_error"):
     clusters = [("K1", "detector", "E-7000", "`audit/_code_error_recheck/k1.md`")]
     a.write("plans/code_error_recheck_plan.md",
             rb.recheck_plan_text("code", inventory, clusters))
+    a.write("plans/code_error_second_read_plan.md", "# Code second-read plan\n")
     a.write("plans/code_error_review_plan.md", rb._code_b1_plan())
     if verdict == "not_error":
         ledger = rb.code_ledger_row(
@@ -728,13 +741,24 @@ def _completed_b3d_b6_run(tmp_path, verdict="not_error"):
                      rb.ERROR_COLS, [candidate])
     a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [merged])
     a.write_recheck_summary("code")
+    summary = a.audit / "code_error_recheck_summary.md"
+    summary.write_text(
+        summary.read_text() + "Discoveries declared: C=0; O=0; E=0\n",
+        encoding="utf-8")
+    a.write(
+        "plans/code_error_supplementary_recheck_plan.md",
+        rb.recheck_plan_text("code", [], [])
+        + "\nNo supplementary recheck inventory.\n")
     assembled = rb.run_script("assemble_boundary.py", root, "--audit-dir", a.audit)
     assert assembled.returncode == 0, assembled.stdout + assembled.stderr
     os.replace(a.audit / "_staging/code_error_register.md",
                a.audit / "code_error_register.md")
     manifest = json.loads((a.audit / "_run/manifest.json").read_text())
     manifest["stages"]["code_b3d"]["status"] = "done"
-    manifest["stages"]["code_b6"]["status"] = "done"
+    manifest["stages"]["code_b5"]["status"] = "done"
+    manifest["stages"]["code_b5"]["shards"] = {
+        "audit/_code_error_recheck/k1.md": {"status": "done", "retries": 0}}
+    manifest["stages"]["code_b6a"]["status"] = "done"
     certify.write_manifest_atomic(root, manifest)
     return root, a
 
@@ -743,7 +767,7 @@ def test_completed_verify_run_rederives_b3d_and_b6_then_catches_hand_flip(tmp_pa
     root, a = _completed_b3d_b6_run(tmp_path)
     passed = _cli(root, "verify-run")
     assert passed.returncode == 0, passed.stdout + passed.stderr
-    assert "code_b3d" in passed.stdout and "code_b6" in passed.stdout
+    assert "code_b3d" in passed.stdout and "code_b6a" in passed.stdout
     register = a.audit / "code_error_register.md"
     register.write_text(register.read_text().replace("| not_error |  |", "| confirmed | 2 |"),
                         encoding="utf-8")

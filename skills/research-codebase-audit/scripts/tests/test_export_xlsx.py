@@ -30,7 +30,10 @@ def test_export_replication_workbook(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
 
     wb = openpyxl.load_workbook(out, read_only=True)
-    assert set(wb.sheetnames) == {"Overview", "Paper Claims", "Code Errors"}
+    assert set(wb.sheetnames) == {
+        "Overview", "Paper Claims", "Code Errors",
+        "Late observations (unverified)", "Late observation coverage",
+    }
 
     ws = wb["Paper Claims"]
     data = list(ws.values)

@@ -108,11 +108,27 @@ class AuditDir:
         self.audit = self.root / "audit"
         for sub in ("_run/snapshots", "_staging", "plans"):
             (self.audit / sub).mkdir(parents=True, exist_ok=True)
+        # Historical tests address the pre-U6b singleton evidence paths. Keep
+        # those names as fixture-only symlinks to the production b6a homes.
+        evidence = self.audit / "_run/code_b6a"
+        evidence.mkdir(parents=True, exist_ok=True)
+        for name in ("dismissal_receipts.md", "witness_outcomes.md"):
+            legacy = self.audit / "_run" / name
+            if not legacy.exists() and not legacy.is_symlink():
+                legacy.symlink_to(Path("code_b6a") / name)
 
     def write(self, rel, text):
         p = self.audit / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
+        # Pre-U6b tests intentionally speak the reviewed U6a snapshot name.
+        # Mirror only in synthetic fixtures; production accepts b6a names only.
+        for old, new in (("_run/snapshots/claims_b6/", "_run/snapshots/claims_b6a/"),
+                         ("_run/snapshots/code_b6/", "_run/snapshots/code_b6a/")):
+            if str(rel).startswith(old):
+                mirror = self.audit / str(rel).replace(old, new, 1)
+                mirror.parent.mkdir(parents=True, exist_ok=True)
+                mirror.write_text(text, encoding="utf-8")
         return p
 
     def write_manifest(self, **kv):
@@ -154,14 +170,50 @@ class AuditDir:
         snap.mkdir(parents=True, exist_ok=True)
         for f in files:
             shutil.copy2(self.audit / "_staging" / f, snap / f)
+        if key in {"claims_b6", "code_b6"}:
+            mirror = self.audit / "_run" / "snapshots" / f"{key}a"
+            mirror.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                shutil.copy2(self.audit / "_staging" / f, mirror / f)
         return snap
 
 
 def lint(auditdir: AuditDir, stage, shard=None):
+    if stage in {"b6-claims", "b6-code"}:
+        # Historical U1-U5 fixtures exercise the pre-U6 recheck-merge
+        # boundary.  The production CLI refuses manifests without the b6a
+        # stage key (design call 8), so these fixtures reach the legacy
+        # contract only through the in-process fixture helper.
+        return _lint_pre_u6_b6(auditdir, stage)
     args = ["--stage", stage, "--audit-dir", auditdir.audit]
     if shard is not None:
         args += ["--shard", shard]
     return run_script("lint_registers.py", *args)
+
+
+def _lint_pre_u6_b6(auditdir: AuditDir, stage):
+    """Run the pre-U6 b6 fixture validation in-process, CLI-shaped output."""
+    manifest = {}
+    manifest_path = auditdir.audit / "_run/manifest.json"
+    lint_state = _lint_mod.Lint()
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            lint_state.fail(f"{manifest_path}: invalid JSON")
+    stream = stage.split("-")[1]
+    _lint_mod._stage_b6_pre_u6_fixture(lint_state, auditdir.audit, stream, manifest)
+    lines = [f"WARNING [{stage}]: {warning}" for warning in lint_state.warnings]
+    if lint_state.errors:
+        lines.append(f"LINT FAIL [{stage}] — {len(lint_state.errors)} finding(s):")
+        lines.extend(f"  - {error}" for error in lint_state.errors)
+        returncode = 1
+    else:
+        lines.append(f"LINT PASS [{stage}]")
+        returncode = 0
+    return subprocess.CompletedProcess(
+        args=["<in-process>", stage], returncode=returncode,
+        stdout="\n".join(lines) + "\n", stderr="")
 
 
 def make_b0(tmp_path) -> AuditDir:
@@ -748,6 +800,13 @@ def make_b9(tmp_path, *, claims_rows=(), error_rows=(), mode="replication",
         if mode == "replication":
             a.write_register("_staging/claims_register.md", CLAIMS_COLS,
                              list(claims_rows), title="Claims register")
+    if mode == "replication":
+        a.write("late_observations_claims.md",
+                "# Late observations — claims\n\nNo late observations.\n\n"
+                "## Dispositions\n\nNo dispositions.\n")
+    a.write("late_observations_code.md",
+            "# Late observations — code\n\nNo late observations.\n\n"
+            "## Dispositions\n\nNo dispositions.\n")
     out = a.audit / "code_review.xlsx"
     res = run_script("export_xlsx.py", "--audit-dir", a.audit,
                      "--mode", mode, "-o", out)

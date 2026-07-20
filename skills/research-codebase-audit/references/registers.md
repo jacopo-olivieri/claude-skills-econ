@@ -658,10 +658,10 @@ exactly one ledger row.
 `confirmed_error` · `not_error` · `duplicate` · `confirmation_needed` · `blocked` · `deferred`
 (`deferred` = deliberately not pursued under the ladder/off-limits list.)
 
-Code-error shards use the ordinary nine ledger columns followed by:
+Code-error shards use one 17-column ledger table — never a split pair:
 
-| Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note | Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
 `Accepted Error Type` uses the closed code-error taxonomy. `Accepted Mechanism` is a one-line
 causal account. Separate field patches with ` || ` and write each as `Column := value`; only
@@ -674,9 +674,17 @@ For mechanically mapped rows, use this complete matrix:
 | `confirmed_error` | `confirmed` | 1–4 | accepted type and mechanism; every witness; no duplicate target |
 | `not_error` | `not_error` | `—` | a verification record for every mapped channel/source/witness; no duplicate target |
 | `duplicate` | `duplicate_of:<mapped ID>` | `—` | mapped target, matching accepted type/mechanism, every transferred witness |
-| `confirmation_needed` | `confirmation_needed` | 1–4 | blocker-shaped note; no duplicate target |
+| `confirmation_needed` | `confirmation_needed` | 1–4 | blocker-shaped note; no duplicate target; detector-minted rows also record the materiality ruling below |
 | `blocked` | `blocked` | carried forward | documented attempted-check blocker; no witness outcomes |
 | `deferred` | `blocked` | carried forward | off-limits citation; no witness outcomes |
+
+For a detector-minted row, the carry-forward verdicts `confirmation_needed`, `blocked`, and
+`deferred` still record a current materiality ruling in
+`Proposed Note` as exactly `[materiality_reassessment] severity=<1-4>; basis=<one-line text>`.
+The b6b lint applies that ruling at the merge; a provisional detector severity cannot ship. For
+`blocked`/`deferred` a non-empty `Proposed Severity` must equal the recorded materiality
+severity; for `confirmation_needed` the two may differ (uncertainty caps the applied ruling) —
+the register still carries the materiality severity.
 
 `duplicate_of:` derivation exists only for mechanically mapped targets. A mapped row
 suspected of duplicating an **unmapped** register row rests `confirmed` (or
@@ -684,7 +692,8 @@ suspected of duplicating an **unmapped** register row rests `confirmed` (or
 `Proposed Register Change` for operator review.
 
 Under `### Witness outcomes`, emit exactly the pre-boundary columns `Channel`, `Source ID`,
-`Witness ID`, `Verdict`, the five `Mech …` fields, `Proposed Severity`, and `Duplicate Target`.
+`Witness ID`, `Verdict`, `Mech Class`, `Mech Object`, `Mech Relation`, `Mech Expected`,
+`Mech Actual`, `Proposed Severity`, and `Duplicate Target`.
 Emit rows only for `confirmed_error`, `not_error`, and `duplicate`. Percent-escape reserved cell
 characters with `mechanism_schema.encode_cell`; never write canonical mechanism bytes or
 `MIXED`. Under `### Verification records`, use the MF or DU/CV channel-typed schema defined in
@@ -750,6 +759,93 @@ Code errors:
 | `blocked` | `blocked` | kept |
 | `deferred` | `blocked` (note: deferred under ladder/off-limits) | kept |
 
+## Supplementary-wave contract
+
+There is exactly one supplementary cycle: b6a → b5s → b6b. It reuses the b5 ledger/footer
+validator and the b6 merge roles; only these paths select the supplementary inputs:
+
+| Surface | Claims | Code errors |
+| --- | --- | --- |
+| Plan | `audit/plans/claims_supplementary_recheck_plan.md` | `audit/plans/code_error_supplementary_recheck_plan.md` |
+| Shard directory | `audit/_recheck_supplementary/` | `audit/_code_error_recheck_supplementary/` |
+| b6b summary | `audit/claims_supplementary_recheck_summary.md` | `audit/code_error_supplementary_recheck_summary.md` |
+| Late observations | `audit/late_observations_claims.md` | `audit/late_observations_code.md` |
+
+The b6a code evidence homes are `audit/_run/code_b6a/dismissal_receipts.md` and
+`audit/_run/code_b6a/witness_outcomes.md`; b6b uses
+`audit/_run/code_b6b/dismissal_receipts.md` and
+`audit/_run/code_b6b/witness_outcomes.md`. The receipt verifier and boundary assembler select
+the supplementary shards and b6b homes with `--supplementary`, projecting detector mappings
+through b6a split lineage. When no mapped split descendant needs evidence, the b6b witness
+artifact has the exact zero-work text
+`# Supplementary witness outcomes` followed by `No supplementary mapped witness outcomes.`;
+b6b still mints no rows. The dismissal artifact analogously uses
+`# Supplementary dismissal receipts` followed by
+`No supplementary dismissal receipts were required.` Stage snapshots always use
+`audit/_run/snapshots/<stage-key>/`.
+
+Each supplementary plan retains the b4 inventory table `ID | Reason | Likely Evidence`, cluster
+table `Cluster ID | Cluster Name | Assigned IDs | Shard File`, and verdict-vocabulary pointer.
+Each accepted fresh discovery range is one line
+`Declared supplementary discovery range: C-####–C-####` (or O/E). Range capacity equals the
+accepted discovery count; split descendants remain in their previously declared coordinator
+range. The plan inventory exactly covers new C/E rows; output discoveries are never inventory.
+When inventory is empty, include the exact line `No supplementary recheck inventory.` with empty
+inventory/cluster tables and dispatch no shard. The plan itself certifies this zero-work case.
+
+Every b6a summary carries exact lines `Splits declared: <n>`, `Merges declared: <n>`, and
+`Discoveries declared: C=<n>; O=<n>; E=<n>`. Main b5 and supplementary b5s shards both end in
+the ordinary typed footer. In recheck context, `candidate` keeps its defect meaning but its
+`Register IDs` cell is empty because workers cannot mint rows. Main b5 dispositions at b6a use
+`audit/path.md#OBS-#### | candidate:<IDs>` or `dismissed:<reason>`. At b6b, candidate footer
+entries use `late_observation:<LO-ID>` or `dismissed:<reason>`; b6b never uses a candidate
+register disposition.
+
+An output discovery takes exactly one branch. Structural output-only discovery is `orphan` and
+has no mapping row. Otherwise the b6a summary has one row under
+`Output ID | Claim ID | Claim Verdict | Output Status`, with this closed mapping:
+
+| Claim verdict | Output status |
+| --- | --- |
+| `substantiated` / `substantiated_but_reframe` | `inconsistent` |
+| `row_note_only` / `not_substantiated` | `mapped` |
+| `confirmation_needed` / `blocked` | `unclear` |
+
+`listed` is transient pre-merge vocabulary and is illegal at b6a and later.
+
+## Late observations and bC corrections
+
+Each late-observation artifact contains `LO ID | Source Shard | Anchor | Observation`, with
+sequential stream IDs `LO-C-####` / `LO-E-####`. `Source Shard` is exactly
+`audit/path/to/shard.md#OBS-####`. With no rows, write exactly `No late observations.`. Under
+`## Dispositions`, use `LO ID | Prior State | State` (or exact `No dispositions.` for an empty
+artifact). `Prior State` records the state replaced by this ordinary Phase-4 edit; each row is
+locally linted against the monotone matrix, and bC additionally requires it to equal the frozen
+pre-stage state.
+States are `pending`, `acknowledged_unverified`, `qa_commissioned:QA-####`,
+`qa_closed:QA-####:conclusive`, `qa_closed:QA-####:inconclusive`, or `minted:BC-####`.
+The allowed transitions are: pending → acknowledged/commissioned/minted; commissioned → closed
+with the same QA ID and an explicit qualifier; acknowledged or conclusive closure → minted;
+inconclusive closure → a new commissioned state or minted; minted is immutable. b9 exports
+pending rows as-is on the explicitly unverified sheet; the completion-report gate is
+`certify_stage.py close-run`, which refuses to close the run until the first Phase-4
+disposition batch has replaced every pending state. Before bC, copy each
+present late-observation artifact to
+`audit/_run/snapshots/bC/late_observations_<stream>.md`; bC requires unchanged observation rows
+and validates each disposition transition against that frozen prior state.
+
+The bC plan is `audit/plans/late_observation_corrections.md`, with columns
+`BC ID | LO ID | Register | Operation | Row ID | Payload JSON | Old Value SHA256` and range lines
+`Declared bC range: C-####–C-####` (or O/E). `Register` is `claims`, `output`, or `code_error`;
+`Operation` is `new_row` or `patch`. A new-row payload is a JSON object exactly matching every
+column/value in the final row and uses `—` for the old hash. A patch payload is exactly
+`{"field":"Output IDs","new_value":"…"}` for claims or
+`{"field":"Claim IDs","new_value":"…"}` for outputs. Its old-value hash is lowercase SHA-256
+of the UTF-8 preimage `register + NUL + row_id + NUL + field + NUL + old_value`. The lint joins
+register row → plan row → LO disposition; registers gain no LO-provenance column. A BC ID refers
+to one LO ID, an output correction includes a claims edit under the same BC ID, and no field
+outside reciprocal C↔O links is patchable.
+
 ## Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`)
 
 - First-pass shards use **exactly the canonical column set** of their target register(s). A
@@ -775,9 +871,9 @@ Code errors:
 - **Blocked-shard marker**: a shard is blocked when the conductor records it blocked with
   `certify_stage.py set-shard`; ID-range exhaustion is represented by a typed
   `not_rowed_observation` whose reason states the exhaustion and triggers that conductor action.
-- Recheck shards contain the row-level ledger
-  `| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |`
-  plus files inspected, commands run, and a cluster summary.
+- Recheck shards contain the single row-level ledger specified above, plus files inspected,
+  commands run, a cluster summary, and the typed footer. The same contract applies under the two
+  supplementary shard directories.
 
 ### Shard write-up rules (consulted at write-up, not while reading)
 

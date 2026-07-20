@@ -53,10 +53,13 @@ def _table_rows(path, columns):
     return found
 
 
-def load_inputs(audit):
+def load_inputs(audit, supplementary=False):
     ledgers, outcomes, records = [], {}, {}
-    root = audit / "_code_error_recheck"
+    root = audit / ("_code_error_recheck_supplementary"
+                    if supplementary else "_code_error_recheck")
     if not root.is_dir():
+        if supplementary:
+            return ledgers, outcomes, records
         raise BoundaryError(f"missing code recheck shard directory: {root}")
     for path in sorted(root.rglob("*.md")):
         ledgers.extend((path, row) for row in _table_rows(path, CODE_LEDGER_COLS))
@@ -74,15 +77,18 @@ def load_inputs(audit):
     return ledgers, outcomes, records
 
 
-def load_receipts(audit):
-    path = audit / "_run/dismissal_receipts.md"
+def load_receipts(audit, supplementary=False):
+    path = audit / ("_run/code_b6b/dismissal_receipts.md"
+                    if supplementary else "_run/code_b6a/dismissal_receipts.md")
     if not path.is_file() or path.stat().st_size == 0:
         raise BoundaryError(f"missing dismissal receipts artifact: {path}")
     rows = _table_rows(path, verifier.RECEIPT_COLS)
     text = path.read_text(encoding="utf-8")
-    if not rows and verifier.ZERO_RECEIPTS not in text:
+    zero = (verifier.SUPPLEMENTARY_ZERO_RECEIPTS
+            if supplementary else verifier.ZERO_RECEIPTS)
+    if not rows and zero not in text:
         raise BoundaryError(f"{path}: missing receipt table or exact explicit-zero form")
-    if rows and verifier.ZERO_RECEIPTS in text:
+    if rows and zero in text:
         raise BoundaryError(f"{path}: receipts table conflicts with explicit-zero form")
     ids = [row["Receipt ID"] for row in rows]
     if len(ids) != len(set(ids)):
@@ -118,7 +124,19 @@ def load_lineage(audit, mappings):
 
 
 def _register(path):
-    parsed = detector_mapping.parse_register(path)
+    lint = registers.Lint()
+    loaded = registers.load_register(
+        lint, path, registers.ERROR_COLS, allow_extra=True)
+    if loaded is None or lint.errors:
+        raise BoundaryError(" | ".join(lint.errors) or f"cannot load register: {path}")
+    headers, rows = loaded
+    parsed = {}
+    for row in rows:
+        data = dict(zip(headers, row))
+        error_id = data.get("Error ID", "")
+        if error_id in parsed:
+            raise BoundaryError(f"{path}: Error ID {error_id} appears more than once")
+        parsed[error_id] = data
     return parsed
 
 
@@ -183,15 +201,21 @@ def _canonical_outcome(mapping, ledger, outcome, records, receipts, register_row
     }, canonical
 
 
-def assemble(audit, register_path):
-    _declared, _display, mappings = detector_mapping.load_mapping(
-        audit / "_run/detector_mapping.md")
-    mappings = detector_mapping.actionable_rows(mappings)
-    ledgers, outcomes, records = load_inputs(audit)
-    receipts = load_receipts(audit)
+def assemble(audit, register_path, supplementary=False):
+    if supplementary:
+        lint = registers.Lint()
+        mappings = registers.supplementary_detector_mappings(lint, audit)
+        if lint.errors:
+            raise BoundaryError(" | ".join(lint.errors))
+    else:
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
+        mappings = detector_mapping.actionable_rows(mappings)
+    ledgers, outcomes, records = load_inputs(audit, supplementary)
+    receipts = load_receipts(audit, supplementary)
     register = _register(register_path)
     ledgers_by_id = _ledger_by_id(ledgers)
-    lineage, split_originals = load_lineage(audit, mappings)
+    lineage, split_originals = ({}, set()) if supplementary else load_lineage(audit, mappings)
     mapped_ids = {row["Error ID"] for row in mappings} | set(lineage.values())
     post_rows, groups, canonical_by_group = [], {}, {}
     group_ledgers = {}
@@ -226,7 +250,9 @@ def assemble(audit, register_path):
             )
         dispositions[error_id] = expected
     dismissals = []
-    snapshot_path = audit / "_run/snapshots/code_b6/code_error_register.md"
+    snapshot_path = audit / ("_run/snapshots/code_b6b/code_error_register.md"
+                             if supplementary else
+                             "_run/snapshots/code_b6a/code_error_register.md")
     premerge = (_register(snapshot_path) if snapshot_path.is_file() else register)
     for error_id, rows in groups.items():
         aggregate = mechanisms.aggregate_row_mechanism([
@@ -268,8 +294,12 @@ def assemble(audit, register_path):
         dispositions
 
 
-def render(post_rows, dismissals):
-    lines = ["# Witness outcomes", "",
+def render(post_rows, dismissals, supplementary=False):
+    if supplementary and not post_rows and not dismissals:
+        return ("# Supplementary witness outcomes\n\n"
+                "No supplementary mapped witness outcomes.\n")
+    lines = ["# Supplementary witness outcomes" if supplementary
+             else "# Witness outcomes", "",
              "| " + " | ".join(POST_COLS) + " |",
              "| " + " | ".join(["---"] * len(POST_COLS)) + " |"]
     for row in post_rows:
@@ -325,7 +355,7 @@ def _check_dispositions(register_path, dispositions):
     hand-flipped to a status (or severity) its sole ledger disposition never
     authorized, `not_error` included.
     """
-    register = detector_mapping.parse_register(register_path)
+    register = _register(register_path)
     for error_id, (status, severity) in sorted(dispositions.items()):
         row = register.get(error_id)
         if row is None:
@@ -352,12 +382,21 @@ def _check_dispositions(register_path, dispositions):
             )
 
 
-def check_boundary(audit):
+def check_boundary(audit, supplementary=False):
     """Re-derive the boundary from promotion-surviving inputs and verify it."""
-    register_path = audit / "code_error_register.md"
-    rows, dismissals, dispositions = assemble(audit, register_path)
-    payload = render(rows, dismissals)
-    output = audit / "_run/witness_outcomes.md"
+    if supplementary:
+        register_path = next((
+            audit / "_run/snapshots" / stage / "code_error_register.md"
+            for stage in ("b7", "b8", "bC")
+            if (audit / "_run/snapshots" / stage / "code_error_register.md").is_file()
+        ), audit / "code_error_register.md")
+    else:
+        frozen = audit / "_run/snapshots/code_b6b/code_error_register.md"
+        register_path = frozen if frozen.is_file() else audit / "code_error_register.md"
+    rows, dismissals, dispositions = assemble(audit, register_path, supplementary)
+    payload = render(rows, dismissals, supplementary)
+    output = audit / ("_run/code_b6b/witness_outcomes.md"
+                      if supplementary else "_run/code_b6a/witness_outcomes.md")
     if not output.is_file() or output.read_text(encoding="utf-8") != payload:
         raise BoundaryError(f"{output}: persisted boundary disagrees with re-derived inputs")
     _check_dispositions(register_path, dispositions)
@@ -376,18 +415,21 @@ def main():
     parser.add_argument("package_root", type=Path)
     parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--supplementary", action="store_true")
     args = parser.parse_args()
     root = args.package_root.expanduser().resolve()
     audit = (args.audit_dir or root / "audit").expanduser().resolve()
-    output = audit / "_run/witness_outcomes.md"
+    output = audit / ("_run/code_b6b/witness_outcomes.md"
+                      if args.supplementary else "_run/code_b6a/witness_outcomes.md")
     try:
         if args.check:
-            check_boundary(audit)
+            check_boundary(audit, args.supplementary)
         else:
             register_path = audit / "_staging/code_error_register.md"
-            rows, dismissals, _dispositions = assemble(audit, register_path)
+            rows, dismissals, _dispositions = assemble(
+                audit, register_path, args.supplementary)
             _apply_dismissals(register_path, dismissals)
-            _write_atomic(output, render(rows, dismissals))
+            _write_atomic(output, render(rows, dismissals, args.supplementary))
     except (BoundaryError, detector_mapping.MappingError,
             mechanisms.MechanismSchemaError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

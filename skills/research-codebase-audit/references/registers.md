@@ -74,8 +74,9 @@ so the note directs the authors to rotate/revoke the credential, not merely dele
 
 ## ID conventions (global, all registers)
 
-- Formats: claims `C-\d{4}`, outputs `O-\d{4}`, code errors `E-\d{4}`; CODEMAP scripts/datasets/
-  boundaries `S-\d{4}` / `D-\d{4}` / `B-\d{4}`.
+- Formats: claims `C-\d{4}`, outputs `O-\d{4}`, code errors `E-\d{4}`, claim handoffs
+  `H-\d{4}`, cross-reference obligations `X-\d{4}`; CODEMAP scripts/datasets/boundaries
+  `S-\d{4}` / `D-\d{4}` / `B-\d{4}`.
 - **All ID ranges are global and non-overlapping across the whole run.** Planners allocate each
   worker a disjoint subrange per ID type (e.g. worker S2 gets `C-0200–C-0299`, `O-0120–O-0149`).
   There are no local or temporary IDs, and no renumbering at merge — the ID a worker assigns is
@@ -88,6 +89,52 @@ so the note directs the authors to rotate/revoke the credential, not merely dele
   for its merge coordinator (e.g. `C-0900–C-0949`), used *only* to mint IDs for declared row
   splits at recheck merge. Recheck **workers** never mint IDs.
 - IDs are never reused, including IDs of rows later demoted to `not_error` or `duplicate_of`.
+
+### Claim anchor ownership and handoffs
+
+The b1 claims plan carries exact columns `Worker ID | Paper Scope | Paper File | Line
+Intervals | Likely Code Scope | Shard File | Claim ID Range | Output ID Range | H ID Range |
+Review Focus`. Its intervals exactly partition every line of every `paper_source_set` file.
+The worker owning the line where an assertion's quote starts records that assertion, even when
+it points to another worker's figure/table; a caption owns only its own text. A sentence
+straddling a boundary belongs to its quote-start line.
+
+A spotter never files a foreign-span claim row. It writes one clause-tight row under
+`### Handoffs` with columns `H ID | Anchor | Quote | Asserted Substance | Referenced Objects`.
+`Anchor` is `path:line` or `path:start-end` (at most five lines). The normalized quote must
+resolve exactly once in the audit twin. Use exact `No handoffs.` for zero rows. Every first-pass
+claims shard also carries `### Cross-reference coverage` with exact columns `X ID | Outcome |
+C-ID / Reason | Evidence | Covering Range | Covering Quote`, exactly one row per mechanically
+assigned X-ID, or exact `No assigned cross-references.`.
+
+`covered` names a C-row and carries that row's exact Paper Quote plus the `path:line-range`
+where that quote resolves (the anchor lives on the coverage row — `Paper Context` stays the
+prose locator above); the resolved covering interval must contain the X assertion interval. `disposition` uses one
+of `bare_pointer`, `duplicate_of_covered`, `non_checkable`, or `out_of_audit_scope`, serializing
+required `field: value` evidence pairs separated by `;`, and uses `—` for covering range/quote.
+A raw disposition is never final.
+
+Required evidence fields are: `bare_pointer` → `sentence`, `no_checkable_predicate`;
+`duplicate_of_covered` → `covering_obligation`, `covering_c_id`; `non_checkable` → `sentence`,
+`why_no_artifact`; `out_of_audit_scope` → `points_to`. Duplicate pointers must reach a
+final-passable covered obligation, agree on C-ID, and contain no cycle.
+
+At b3, `build_handoff_ledger.py --stage claims_b3` exact-set reconciles filed H rows and
+inventory X entries, derives destinations from b1 intervals, verifies containment, writes
+`audit/_run/handoff_ledger.json`, freezes the claims_b3-era ledger under snapshots, and adds
+counts plus SHA-256 to the merge report. H states are `satisfied` or `forwarded`; X states are
+`covered`, `disposition`, or `blocked_fallback`. Certification re-derives the immutable copy.
+
+At b3b, `Assigned Handoff IDs` is `—` or comma-separated H IDs and exactly partitions every
+`forwarded` H entry. The resolver shard's `### Handoffs` table has columns `H ID | Anchor |
+Quote | Asserted Substance | Referenced Objects | Resolution | C-ID / Reason | Evidence |
+Covering Range | Covering Quote`; use `No assigned handoffs.` for zero work. Filing cells are
+copied verbatim. `resolved` names a containing C-row; `disposition` uses the vocabulary above.
+`build_handoff_ledger.py --stage claims_b3b` freezes the new stage-era ledger.
+
+Final-passable H states are `satisfied`, `resolved`, `disposition_accepted`; final-passable X
+states are `covered`, `resolved`, `disposition_accepted`. U7a has no legal path from a pending
+disposition/forwarded tail to the adjudicated states.
 
 ## Severity rubric (shared by claims and code errors)
 

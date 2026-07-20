@@ -120,7 +120,11 @@ canon exists.
 Return to SKILL.md for the single `close-run` instruction, then Phase 4 (report + targeted manual
 QA follow-up). `close-run` is the completion-report gate: with late observations recorded, it
 refuses until the first Phase-4 disposition batch replaces every `pending` state (b9 itself
-exports pending rows on the unverified sheet without refusing).
+exports pending rows on the unverified sheet without refusing). In a full-replication U7 run it
+also refuses if the reserved adjudication stages were skipped, an H/X state is not
+final-passable, or a `blocked_fallback` lacks an exact operator decision in
+`audit/_run/handoff_blocked_decisions.json`. U7a proves this refusal; it does not add the
+adjudication stages.
 
 ## Operator-approved bC correction cycle
 

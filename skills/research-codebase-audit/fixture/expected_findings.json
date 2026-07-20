@@ -221,6 +221,15 @@
       "mechanism": "The same otherwise-clean requirements file pins pandas to two mutually incompatible exact versions, 2.2.2 and 1.5.3. Each line parses alone, so the manifest emitter does not detect this semantic conflict; a whole-file human second read must surface it. U6a PLANT B.",
       "min_severity": 1,
       "failure_class": "clean_file_recall"
+    },
+    {
+      "id": "P-25",
+      "kind": "claim",
+      "expected_type": "quantitative_result or interpretation",
+      "where": "paper/paper.tex body prose ('calculated and reference speeds show substantial overlap') vs appendix Figure A2 and py/make_figures.py",
+      "mechanism": "The body prose says calculated and reference speeds show substantial overlap and points to Figure A2, while make_figures.py plots calculated speeds 8-11 and reference speeds 28-34 in separate appendix panels — disjoint ranges. U7a CLAIM-HANDOFF TEST: the body sentence and appendix figure must execute under different claims workers; the deterministic printed-reference inventory independently assigns the body assertion even though the caption only labels Panel A and Panel B.",
+      "min_severity": 2,
+      "failure_class": "cross_span_claim_handoff"
     }
   ],
   "must_not_find": [

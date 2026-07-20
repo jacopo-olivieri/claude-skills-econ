@@ -32,8 +32,11 @@ def init_root(tmp_path, mode="replication"):
     root.mkdir()
     (root / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
     a = rb.AuditDir(root)
+    extra = ({"allocation_override": {"purpose": "development", "allocation": []}}
+             if mode == "replication" else {})
     a.write_manifest(
-        mode=mode, scope_exclusions=[], off_limits=[], review_depth="standard")
+        mode=mode, scope_exclusions=[], off_limits=[], review_depth="standard",
+        **extra)
     result = cli(root, "init")
     assert result.returncode == 0, result.stdout + result.stderr
     return root, a

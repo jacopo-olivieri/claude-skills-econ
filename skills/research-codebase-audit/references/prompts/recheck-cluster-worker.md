@@ -14,12 +14,12 @@ only.
 | `{STREAM}` | `claims` or `code-error` |
 | `{COMPUTE_BUDGET}` | manifest `compute_budget_minutes` |
 | `{OFF_LIMITS}` | manifest `off_limits` list (`;`-separated), or "none" |
-| `{PAPER_PATH}` | manifest `paper_audit_path` (claims stream only; substituted inside `{STREAM_CHECKS}`) |
-| `{STREAM_CHECKS}` | claims stream: the two-step preliminary check below, with `{PAPER_PATH}` substituted; code stream: `None.` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` audit-twin mapping (claims stream only; substituted inside `{STREAM_CHECKS}`) |
+| `{STREAM_CHECKS}` | claims stream: the two-step preliminary check below, with `{PAPER_SOURCE_SET}` substituted; code stream: `None.` |
 
 Claims-stream text for `{STREAM_CHECKS}`:
 
-> Before any code inspection, for each assigned ID: (a) search `{PAPER_PATH}` for the row's
+> Before any code inspection, for each assigned ID: (a) search `{PAPER_SOURCE_SET}` for the row's
 > verbatim `Paper Quote` — if it does not appear, the claim does not exist in the manuscript:
 > verdict `not_substantiated`, evidence `static_source_verified`, note "quote not found in
 > manuscript"; (b) check `Used in Text` is correct — an issue about a number the text never

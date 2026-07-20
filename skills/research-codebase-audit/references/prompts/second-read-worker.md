@@ -17,7 +17,8 @@ unverified candidates and flow into the recheck. Single fire-and-forget message.
 | `{KNOWN_FINDINGS_BLOCK}` | detector/flagged: the Already-logged block below; clean_sample: empty |
 | `{SEARCH_MANDATE}` | detector/flagged: find a missed defect; clean_sample: conduct a fresh full read where a genuinely clean result is acceptable |
 | `{MANDATE_LENS}` | conductor: `the same broad defect scan the first reader ran` at standard depth; a **distinct** lens (e.g. "focus on data-shape and merge-cardinality assumptions", "focus on units and scaling", "focus on sample and timing") on the second `deep`-depth pass |
-| `{PAPER_PATH}` | manifest `paper_audit_path` (claims stream only) |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` mapping (claims stream only) |
+| `{ASSIGNED_HANDOFF_IDS}` | allocation column, or `none` |
 | `{OFF_LIMITS}` | manifest `off_limits` list (`;`-separated), or "none" |
 | `{COMPUTE_BUDGET}` | manifest `compute_budget_minutes` |
 
@@ -36,6 +37,7 @@ Shard: `{SHARD_FILE}`
 ID range(s): {ID_RANGES}
 Read lens for this pass: {MANDATE_LENS}
 Off-limits (do not open, run, or audit; record as `deferred`/`blocked` if in scope): {OFF_LIMITS}
+Assigned handoff IDs: {ASSIGNED_HANDOFF_IDS}
 
 {KNOWN_FINDINGS_BLOCK}
 
@@ -100,6 +102,11 @@ fragment that gives false reassurance is worse than not probing.
   `not_rowed_observation` with reason `ID range exhausted`, then report the block.
 - Leave cross-link columns (`Related Error IDs` / `Related Claim IDs`) blank.
 - Repo-relative paths everywhere.
+
+For the claims stream, copy every assigned H filing field verbatim into the contract's exact
+ten-column `### Handoffs` resolution table. Resolve it only with a containing C-row whose
+Covering Quote equals that row's Paper Quote, or write a closed-vocabulary disposition. The
+Assigned Handoff IDs column is the sole source of resolution work.
 
 ## OUTPUT
 

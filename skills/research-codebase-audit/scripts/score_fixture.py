@@ -158,6 +158,8 @@ SIGNATURES = {
              ["whitespace", "operator", "invalid", "reject", "parse"]],
     "P-24": [["requirements-recall"], ["pandas"], ["2.2.2"], ["1.5.3"],
              ["conflict", "incompat", "duplicate", "two", "mutually"]],
+    "P-25": [["calculated"], ["reference"], ["speed"],
+             ["overlap", "disjoint", "8", "11", "28", "34"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked
@@ -523,6 +525,59 @@ def check_clean_recall_chain(audit):
             if expected_ids & set(re.findall(r"E-\d{4}", shard_text)):
                 return "PASS", "P-23 detector chain present; P-24 originates in its b3b shard"
     return "FAIL", "P-24 lacks the file's b3b-shard provenance"
+
+
+def check_u7_allocation_split(audit):
+    """P-25 cannot score green when one worker owns assertion and figure."""
+    from claim_handoffs import (
+        allocation_source_entry, load_claims_allocations, parse_line_intervals,
+    )
+    try:
+        manifest = json.loads(
+            (audit / "_run/manifest.json").read_text(encoding="utf-8")
+        )
+        source_set = manifest["paper_source_set"]
+        allocations, _ = load_claims_allocations(
+            audit / "plans/claims_review_plan.md"
+        )
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        return "FAIL", f"cannot inspect executed U7 claims allocation: {exc}"
+    if len({row["Worker ID"] for row in allocations}) < 2:
+        return "FAIL", "executed claims plan has fewer than two workers"
+    paper_entry = next((entry for entry in source_set if str(
+        entry.get("source_path", "")).replace("\\", "/").endswith("paper/paper.tex")), None)
+    if paper_entry is None:
+        return "FAIL", "paper_source_set does not contain paper/paper.tex"
+    lines = Path(paper_entry["source_path"]).read_text(encoding="utf-8").splitlines()
+    assertion = [number for number, line in enumerate(lines, start=1)
+                 if "calculated and reference speeds show substantial overlap" in line]
+    figure = [number for number, line in enumerate(lines, start=1)
+              if "\\label{fig:speed-overlap}" in line]
+    if len(assertion) != 1 or len(figure) != 1:
+        return "FAIL", "P-25 assertion or appendix figure anchor is not unique"
+
+    def owner(line_number):
+        found = []
+        for row in allocations:
+            try:
+                entry = allocation_source_entry(row, source_set, audit.parent)
+                intervals = parse_line_intervals(row["Line Intervals"])
+            except ValueError:
+                continue
+            if (Path(entry["source_path"]).resolve() ==
+                    Path(paper_entry["source_path"]).resolve()
+                    and any(start <= line_number <= end for start, end in intervals)):
+                found.append(row["Worker ID"])
+        return found[0] if len(found) == 1 else None
+
+    assertion_owner, figure_owner = owner(assertion[0]), owner(figure[0])
+    if assertion_owner is None or figure_owner is None:
+        return "FAIL", "P-25 assertion or figure lacks exactly one interval owner"
+    if assertion_owner == figure_owner:
+        return "FAIL", (f"P-25 masking: {assertion_owner} owns both body assertion "
+                        "and appendix figure")
+    return "PASS", (f"body assertion owned by {assertion_owner}; appendix figure "
+                    f"owned by {figure_owner}")
 
 
 def _table_with_headers(text, required, exact=False):
@@ -1057,6 +1112,14 @@ def main() -> int:
     expected = json.loads(args.expected.read_text(encoding="utf-8"))
 
     audit = args.audit_dir
+    run_manifest = {}
+    run_manifest_path = audit / "_run" / "manifest.json"
+    if run_manifest_path.is_file():
+        try:
+            run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    u7_fixture_active = isinstance(run_manifest.get("allocation_override"), dict)
     tagged_rows = []
     for fname, id_col in REGISTERS:
         path = audit / fname
@@ -1161,6 +1224,19 @@ def main() -> int:
     print(f"U6a clean-recall chain: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U6a clean-recall chain check failed")
+    if "P-25" in expected_ids:
+        if u7_fixture_active:
+            status, note = check_u7_allocation_split(audit)
+        else:
+            status, note = ("FAIL", (
+                "run manifest lacks allocation_override: the P-25 fixture run "
+                "must pin its two-worker allocation (fixture/README.md)"
+            ))
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U7a P-25 plant")
+    print(f"U7a allocation split: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U7a allocation split check failed")
     status, note = check_channel_adjudication(audit, expected)
     print(f"U3b adjudication channel: {status} — {note}")
     if status == "FAIL":

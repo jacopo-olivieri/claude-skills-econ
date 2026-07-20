@@ -146,7 +146,9 @@ def make_claims_zero_wave(tmp_path):
     root.mkdir()
     (root / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
     a = rb.AuditDir(root)
-    a.write_manifest(mode="replication", scope_exclusions=[], off_limits=[])
+    a.write_manifest(
+        mode="replication", scope_exclusions=[], off_limits=[],
+        allocation_override={"purpose": "development", "allocation": []})
     before_claim = rb.claims_row(
         "C-0100", status="candidate", severity="2", issue="possible mismatch",
         outputs="O-0100")

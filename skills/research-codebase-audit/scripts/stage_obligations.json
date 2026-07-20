@@ -5,6 +5,9 @@
   ],
   "claims_b1": [
     {"type": "artifact", "pattern": "plans/claims_review_plan.md"},
+    {"type": "artifact", "pattern": "_run/crossref_inventory.json", "when": "paper_source_set"},
+    {"type": "artifact", "pattern": "_run/crossref_assignments.json", "when": "paper_source_set"},
+    {"type": "validate", "validator": "crossref:inventory", "when": "paper_source_set"},
     {"type": "validate", "validator": "lint:b1-claims"}
   ],
   "claims_b2": [
@@ -14,7 +17,8 @@
   "claims_b3": [
     {"type": "artifact", "pattern": "claims_register.md"},
     {"type": "artifact", "pattern": "output_register.md"},
-    {"type": "validate", "validator": "lint:b3-claims"}
+    {"type": "validate", "validator": "lint:b3-claims"},
+    {"type": "validate", "validator": "handoff:ledger", "when": "paper_source_set"}
   ],
   "claims_b3c": [
     {"type": "artifact", "pattern": "_run/conventions.md"}
@@ -22,7 +26,8 @@
   "claims_b3b": [
     {"type": "artifact", "pattern": "claims_register.md"},
     {"type": "artifact", "pattern": "output_register.md"},
-    {"type": "validate", "validator": "lint:b3b-claims"}
+    {"type": "validate", "validator": "lint:b3b-claims"},
+    {"type": "validate", "validator": "handoff:ledger", "when": "paper_source_set"}
   ],
   "claims_b4": [
     {"type": "artifact", "pattern": "plans/claims_recheck_plan.md"},

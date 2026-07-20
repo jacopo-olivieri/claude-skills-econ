@@ -359,12 +359,13 @@ def write_final_registers(tmp_path, claims_rows, error_rows,
 
 def run_scorer(audit):
     # These pre-U6 unit cases exercise the original 21-plant score surface.
-    # U6's two new plants and read-chain artifacts have dedicated tests in
-    # test_u6_read_recall.py.
+    # U6's two plants have dedicated tests in test_u6_read_recall.py; U7a's
+    # P-25 plant and its allocation-split scoring live in
+    # test_u7_claim_handoffs.py.
     expected = json.loads(sf.DEFAULT_EXPECTED.read_text(encoding="utf-8"))
     expected["must_find"] = [
         plant for plant in expected["must_find"]
-        if plant["id"] not in {"P-23", "P-24"}
+        if plant["id"] not in {"P-23", "P-24", "P-25"}
     ]
     expected_path = audit / "_legacy_expected_findings.json"
     expected_path.write_text(json.dumps(expected), encoding="utf-8")

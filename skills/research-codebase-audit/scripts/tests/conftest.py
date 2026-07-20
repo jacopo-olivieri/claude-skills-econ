@@ -29,3 +29,5 @@ def pytest_configure(config):
         "markers", "u5: unit U5 — trimmed replay harness")
     config.addinivalue_line(
         "markers", "u6: unit U6 — clean-file recall and supplementary lifecycle")
+    config.addinivalue_line(
+        "markers", "u7: unit U7 — anchor-preserving claim handoffs")

@@ -25,6 +25,8 @@ from pathlib import Path
 import definition_use as du
 import build_detector_mapping as detector_mapping
 import mechanism_schema as mechanism
+from anchor_resolver import AnchorError, contains as anchor_contains, resolve_quote
+from paper_sources import PaperSourceError, validate_source_set
 
 # --------------------------------------------------------------- constants
 
@@ -980,13 +982,47 @@ def second_read_allocations(lint, path, stream):
                 f"{path}: {entry['Worker ID']} has invalid Reason "
                 f"{entry['Reason']!r}"
             )
-        if not blank_cell(entry["Assigned Handoff IDs"]):
-            lint.fail(
-                f"{path}: {entry['Worker ID']} Assigned Handoff IDs must remain "
-                "empty until U7"
-            )
         allocations.append(entry)
     coord = [parse_range(f"{a}–{b}") for a, b in COORD_RE.findall(text)]
+    if stream == "claims":
+        audit = Path(path).parent.parent
+        ledger_path = audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json"
+        if ledger_path.is_file():
+            try:
+                ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                forwarded = {entry["id"] for entry in ledger.get("H", [])
+                             if entry.get("state") == "forwarded"}
+            except (OSError, json.JSONDecodeError) as exc:
+                lint.fail(f"{ledger_path}: invalid handoff ledger ({exc})")
+                forwarded = set()
+            assigned = []
+            for entry in allocations:
+                raw = entry["Assigned Handoff IDs"]
+                ids = [] if blank_cell(raw) else [item.strip() for item in raw.split(",")]
+                if any(not re.fullmatch(r"H-\d{4}", item) for item in ids):
+                    lint.fail(f"{path}: {entry['Worker ID']} has malformed Assigned Handoff IDs")
+                for handoff_id in ids:
+                    if handoff_id not in forwarded:
+                        lint.fail(f"{path}: {entry['Worker ID']} names non-forwarded {handoff_id}")
+                assigned.extend(ids)
+            duplicates = sorted({item for item in assigned if assigned.count(item) > 1})
+            if duplicates:
+                lint.fail(f"{path}: forwarded H IDs assigned more than once: {duplicates}")
+            if set(assigned) != forwarded:
+                lint.fail(f"{path}: Assigned Handoff IDs do not exactly cover forwarded ledger IDs; "
+                          f"missing={sorted(forwarded - set(assigned))}, "
+                          f"extra={sorted(set(assigned) - forwarded)}")
+        else:
+            for entry in allocations:
+                if not blank_cell(entry["Assigned Handoff IDs"]):
+                    lint.fail(f"{path}: Assigned Handoff IDs must remain empty until U7 "
+                              "ledger activation (claims_b3 ledger snapshot missing)")
+    else:
+        for entry in allocations:
+            if not blank_cell(entry["Assigned Handoff IDs"]):
+                lint.fail(
+                    f"{path}: code-stream Assigned Handoff IDs must remain empty"
+                )
     return allocations, [item for item in coord if item]
 
 
@@ -1274,7 +1310,12 @@ def stage_b0(lint, audit, manifest):
             check_unique(lint, audit / "CODEMAP.md", found, f"{letter}- ID")
         if not re.search(r"PRECONDITIONS:\s*\d\s*/\s*5", cm):
             lint.fail(f"{audit / 'CODEMAP.md'}: missing 'PRECONDITIONS: <n>/5' score line")
-    if manifest:
+    if manifest and manifest.get("paper_source_set") is not None:
+        try:
+            validate_source_set(audit.parent, manifest)
+        except PaperSourceError as exc:
+            lint.fail(f"manifest: {exc}")
+    elif manifest:
         src, blanked = manifest.get("paper_source_path"), manifest.get("paper_audit_path")
         if src and Path(src).suffix == ".tex":
             if not blanked or blanked == src:
@@ -1290,9 +1331,61 @@ def stage_b0(lint, audit, manifest):
                     lint.fail(f"blanked paper line count {n_bl} != source {n_src}")
 
 
-def stage_b1(lint, audit, stream):
+def _stage_b1_claim_handoffs(lint, audit, manifest, plan):
+    """U7 exact plan schema, paper partition, and H/adjudication ranges."""
+    from claim_handoffs import (
+        ADJUDICATION_RANGE_RE, CLAIMS_PLAN_COLS, load_claims_allocations,
+        parse_h_range, validate_partition,
+    )
+    try:
+        allocations, text = load_claims_allocations(plan)
+    except (OSError, ValueError) as exc:
+        lint.fail(str(exc))
+        return None, []
+    expected_override = manifest.get("allocation_override")
+    if isinstance(expected_override, dict) and allocations != expected_override.get("allocation"):
+        lint.fail(f"{plan}: executed allocation does not equal manifest allocation_override")
+    check_unique(lint, plan, [row["Worker ID"] for row in allocations], "Worker ID")
+    check_unique(lint, plan, [row["Shard File"] for row in allocations], "Shard File")
+    ranges = alloc_ranges(lint, plan, allocations, ["Claim ID Range", "Output ID Range"])
+    h_ranges = []
+    for row in allocations:
+        parsed = parse_h_range(row["H ID Range"])
+        if parsed is None:
+            lint.fail(f"{plan}: unparseable H ID Range {row['H ID Range']!r} for {row['Worker ID']}")
+        else:
+            h_ranges.append(parsed)
+    check_disjoint(lint, plan, ranges)
+    check_disjoint(lint, plan, h_ranges)
+    check_identifier_exhaustion(lint, plan, ranges)
+    for _letter, _start, end in h_ranges:
+        if end >= 9999:
+            lint.fail(f"{plan}: handoff identifier space exhausted at H-9999")
+    coord = [parse_range(f"{a}–{b}") for a, b in COORD_RE.findall(text)]
+    coord = [item for item in coord if item]
+    matches = ADJUDICATION_RANGE_RE.findall(text)
+    adjudication = [parse_range(f"{start}–{end}") for start, end in matches]
+    adjudication = [item for item in adjudication if item]
+    if len(adjudication) != 1 or adjudication[0][2] - adjudication[0][1] + 1 != 50:
+        lint.fail(f"{plan}: expected exactly one 50-ID adjudication C-mint range")
+    check_disjoint(lint, plan, ranges + coord + adjudication)
+    if len([item for item in coord if item[0] == "C"]) != 1 \
+            or len([item for item in coord if item[0] == "O"]) != 1:
+        lint.fail(f"{plan}: expected exactly one merge-coordinator range each for C- and O-")
+    try:
+        validate_partition(allocations, manifest["paper_source_set"], audit.parent)
+    except (KeyError, ValueError, OSError) as exc:
+        lint.fail(f"{plan}: {exc}")
+    return allocations, coord
+
+
+def stage_b1(lint, audit, stream, manifest=None):
+    manifest = manifest or {}
     if stream == "claims":
         plan = audit / "plans" / "claims_review_plan.md"
+        if manifest.get("paper_source_set") is not None:
+            _stage_b1_claim_handoffs(lint, audit, manifest, plan)
+            return
         alloc, coord = parse_plan(lint, plan, "Worker ID")
         if alloc is None:
             return
@@ -1383,6 +1476,188 @@ def find_alloc_for_shard(alloc, shard):
     return None
 
 
+def _exact_or_empty_table(lint, path, text, columns, empty_sentence, label):
+    matches = [(rows, line) for headers, rows, line in parse_tables(text)
+               if headers == columns]
+    has_empty = bool(re.search(
+        rf"(?m)^\s*{re.escape(empty_sentence)}\s*$", text
+    ))
+    if len(matches) > 1 or (matches and has_empty):
+        lint.fail(f"{path}: {label} must use exactly one table or exact empty form")
+        return []
+    if not matches:
+        if not has_empty:
+            lint.fail(f"{path}: missing {label}; use exact empty form '{empty_sentence}'")
+        return []
+    rows, _line = matches[0]
+    output = []
+    for index, row in enumerate(rows, start=1):
+        if len(row) != len(columns):
+            lint.fail(f"{path}: {label} row {index} has {len(row)} cells, expected {len(columns)}")
+        else:
+            output.append(dict(zip(columns, row)))
+    return output
+
+
+def _claims_rows_by_id(claims_rows):
+    """Canon membership map for coverage citations. Paper Context stays the
+    prose locator registers.md mandates; the machine anchor travels on the
+    coverage/resolution entry's Covering Range / Covering Quote cells."""
+    by_id = {}
+    for row in claims_rows:
+        claim = dict(zip(CLAIMS_COLS, row)) if not isinstance(row, dict) else row
+        by_id[claim["Claim ID"]] = claim
+    return by_id
+
+
+def _validate_coverage_row(lint, path, row, obligation_anchor, claims_by_id,
+                           source_set, package_root):
+    from claim_handoffs import validate_disposition
+    outcome = row["Outcome"]
+    if outcome == "covered":
+        claim_id = row["C-ID / Reason"]
+        claim = claims_by_id.get(claim_id)
+        if claim is None:
+            lint.fail(f"{path}: covered obligation cites absent claim {claim_id}")
+            return
+        if row["Covering Quote"] != claim["Paper Quote"]:
+            lint.fail(f"{path}: covering quote for {claim_id} is not verbatim Paper Quote")
+            return
+        try:
+            carried = resolve_quote(
+                source_set, row["Covering Range"], row["Covering Quote"], package_root
+            )
+        except AnchorError as exc:
+            lint.fail(f"{path}: {exc}")
+            return
+        if not anchor_contains(carried, obligation_anchor):
+            lint.fail(f"{path}: covering row {claim_id} does not contain the obligation assertion")
+        if not blank_cell(row["Evidence"]):
+            lint.fail(f"{path}: covered obligation Evidence must be blank")
+    elif outcome == "disposition":
+        try:
+            validate_disposition(row["C-ID / Reason"], row["Evidence"])
+        except ValueError as exc:
+            lint.fail(f"{path}: {exc}")
+        if not (blank_cell(row["Covering Range"]) and blank_cell(row["Covering Quote"])):
+            lint.fail(f"{path}: disposition covering range and quote must be blank")
+    else:
+        lint.fail(f"{path}: invalid terminal outcome {outcome!r}")
+
+
+def _validate_u7_b2_shard(lint, audit, shard, text, allocation, claims_rows, manifest):
+    from claim_handoffs import (
+        HANDOFF_COLS, X_COVERAGE_COLS, parse_h_range,
+    )
+    handoffs = _exact_or_empty_table(
+        lint, shard, text, HANDOFF_COLS, "No handoffs.", "Handoffs"
+    )
+    coverage = _exact_or_empty_table(
+        lint, shard, text, X_COVERAGE_COLS, "No assigned cross-references.",
+        "Cross-reference coverage",
+    )
+    source_set = manifest["paper_source_set"]
+    h_range = parse_h_range(allocation.get("H ID Range"))
+    seen = set()
+    for row in handoffs:
+        handoff_id = row["H ID"]
+        if not re.fullmatch(r"H-\d{4}", handoff_id):
+            lint.fail(f"{shard}: invalid handoff ID {handoff_id!r}")
+        elif handoff_id in seen:
+            lint.fail(f"{shard}: duplicate handoff ID {handoff_id}")
+        elif h_range is None or not (h_range[1] <= int(handoff_id[2:]) <= h_range[2]):
+            lint.fail(f"{shard}: {handoff_id} outside the shard's allocated H range")
+        seen.add(handoff_id)
+        if blank_cell(row["Asserted Substance"]) or "\n" in row["Asserted Substance"]:
+            lint.fail(f"{shard}: {handoff_id} requires one-sentence Asserted Substance")
+        try:
+            resolve_quote(source_set, row["Anchor"], row["Quote"], audit.parent)
+        except AnchorError as exc:
+            lint.fail(f"{shard}: {handoff_id}: {exc}")
+    inventory_path = audit / "_run" / "crossref_inventory.json"
+    assignments_path = audit / "_run" / "crossref_assignments.json"
+    try:
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        assignments = json.loads(assignments_path.read_text(encoding="utf-8"))["assignments"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        lint.fail(f"{shard}: cannot load crossref artifacts: {exc}")
+        return
+    by_id = {entry["id"]: entry for entry in inventory.get("entries", [])}
+    expected = {x_id for x_id, worker in assignments.items()
+                if worker == allocation["Worker ID"]}
+    actual = [row["X ID"] for row in coverage]
+    if len(actual) != len(set(actual)):
+        lint.fail(f"{shard}: duplicate X coverage ID")
+    if set(actual) != expected:
+        lint.fail(f"{shard}: X coverage IDs do not equal assignment; "
+                  f"missing={sorted(expected - set(actual))}, extra={sorted(set(actual) - expected)}")
+    claims_by_id = _claims_rows_by_id(claims_rows)
+    for row in coverage:
+        obligation = by_id.get(row["X ID"])
+        if obligation is None:
+            continue
+        _validate_coverage_row(
+            lint, shard, row, obligation["anchor"], claims_by_id,
+            source_set, audit.parent,
+        )
+
+
+def _validate_u7_b3b_resolutions(lint, audit, shard, text, allocation,
+                                 claims_rows, manifest):
+    from claim_handoffs import HANDOFF_COLS, HANDOFF_RESOLUTION_COLS
+    ledger_path = audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        lint.fail(f"{ledger_path}: invalid handoff ledger ({exc})")
+        return set()
+    filed = {entry["id"]: entry for entry in ledger.get("H", [])}
+    raw = allocation["Assigned Handoff IDs"]
+    assigned = set() if blank_cell(raw) else {item.strip() for item in raw.split(",")}
+    rows = _exact_or_empty_table(
+        lint, shard, text, HANDOFF_RESOLUTION_COLS, "No assigned handoffs.",
+        "Handoffs resolution",
+    )
+    actual = [row["H ID"] for row in rows]
+    if len(actual) != len(set(actual)):
+        lint.fail(f"{shard}: duplicate Handoff resolution ID")
+    if set(actual) != assigned:
+        lint.fail(f"{shard}: handoff resolution IDs do not equal Assigned Handoff IDs; "
+                  f"missing={sorted(assigned - set(actual))}, extra={sorted(set(actual) - assigned)}")
+    source_set = manifest["paper_source_set"]
+    claims_by_id = _claims_rows_by_id(claims_rows)
+    cited = set()
+    for row in rows:
+        original = filed.get(row["H ID"])
+        if original is None:
+            lint.fail(f"{shard}: resolution names unknown handoff {row['H ID']}")
+            continue
+        copied = {
+            "H ID": original["id"], "Anchor": original["anchor"],
+            "Quote": original["quote"],
+            "Asserted Substance": original["asserted_substance"],
+            "Referenced Objects": original["referenced_objects"],
+        }
+        for column in HANDOFF_COLS:
+            if row[column] != copied[column]:
+                lint.fail(f"{shard}: {row['H ID']} changes filed {column}")
+        synthetic = {
+            "Outcome": "covered" if row["Resolution"] == "resolved" else row["Resolution"],
+            "C-ID / Reason": row["C-ID / Reason"], "Evidence": row["Evidence"],
+            "Covering Range": row["Covering Range"], "Covering Quote": row["Covering Quote"],
+        }
+        if row["Resolution"] not in {"resolved", "disposition"}:
+            lint.fail(f"{shard}: invalid handoff Resolution {row['Resolution']!r}")
+            continue
+        _validate_coverage_row(
+            lint, shard, synthetic, original["resolved_anchor"], claims_by_id,
+            source_set, audit.parent,
+        )
+        if row["Resolution"] == "resolved" and re.fullmatch(r"C-\d{4}", row["C-ID / Reason"]):
+            cited.add(row["C-ID / Reason"])
+    return cited
+
+
 def stage_b2(lint, audit, stream, shard):
     if shard is None:
         lint.fail("b2 requires --shard")
@@ -1425,6 +1700,14 @@ def stage_b2(lint, audit, stream, shard):
         )
         check_abs_paths(lint, shard, c_rows, CLAIMS_COLS, ["Code/Data Source"])
         check_abs_paths(lint, shard, o_rows, OUTPUT_COLS, ["Output Path/Pattern", "Producing Script"])
+        manifest_path = audit / "_run" / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                manifest = {}
+            if manifest.get("paper_source_set") is not None:
+                _validate_u7_b2_shard(lint, audit, shard, text, a, c_rows, manifest)
     else:
         alloc, _ = parse_plan(lint, audit / "plans" / "code_error_review_plan.md", "Chunk ID")
         a = find_alloc_for_shard(alloc, shard)
@@ -1599,6 +1882,24 @@ def promoted_register(lint, audit, boundary, stream, fname, cols):
     return path, load_register(lint, path, cols)
 
 
+def _validate_handoff_report_block(lint, audit, report_path, report, stage):
+    ledger_path = audit / "_run" / "snapshots" / stage / "handoff_ledger.json"
+    if not ledger_path.is_file():
+        return
+    try:
+        payload = ledger_path.read_bytes()
+        ledger = json.loads(payload)
+    except (OSError, json.JSONDecodeError) as exc:
+        lint.fail(f"{ledger_path}: invalid immutable handoff ledger ({exc})")
+        return
+    expected = {
+        "H": len(ledger.get("H", [])), "X": len(ledger.get("X", [])),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    if report.get("handoff_ledger") != expected:
+        lint.fail(f"{report_path}: handoff_ledger block disagrees with {ledger_path}")
+
+
 def stage_b3(lint, audit, stream, manifest):
     worker_stage = f"{stream}_b2"
     # Direct synthetic row tests from before U6 do not model the worker stage.
@@ -1671,6 +1972,10 @@ def stage_b3(lint, audit, stream, manifest):
     except json.JSONDecodeError as exc:
         lint.fail(f"{report_path}: invalid JSON ({exc})")
         return
+    if stream == "claims":
+        _validate_handoff_report_block(
+            lint, audit, report_path, rep, "claims_b3"
+        )
     if enforce_read_layer:
         reconcile_footer_dispositions(
             lint, audit, alloc, stream, report_path, rep, staging_ids, manifest,
@@ -1753,6 +2058,24 @@ def stage_b3b(lint, audit, stream, manifest):
         lint, plan, ranges + coord + b1_ranges + b1_coord
         + (detector_ranges if stream == "code" else []),
     )
+    handoff_resolution_cids = set()
+    if stream == "claims" and (
+            audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json").is_file():
+        from claim_handoffs import HANDOFF_RESOLUTION_COLS
+        for allocation in alloc or []:
+            if manifest_shard_state(
+                    manifest, "claims_b3b",
+                    normalized_audit_path(allocation["Shard File"])) == "blocked":
+                continue
+            shard_path = audit_path(audit, allocation["Shard File"])
+            shard_text = read_text(lint, shard_path)
+            if shard_text is None:
+                continue
+            for row in tables_by_cols(
+                    lint, shard_path, shard_text, HANDOFF_RESOLUTION_COLS,
+                    "handoff resolutions"):
+                if row["Resolution"] == "resolved":
+                    handoff_resolution_cids.add(row["C-ID / Reason"])
     if stream == "code" and "code_b3d" in (
             manifest.get("stages", {}) if isinstance(manifest, dict) else {}):
         # The post-b3d ordering of the b3b baseline is enforced structurally:
@@ -1803,7 +2126,9 @@ def stage_b3b(lint, audit, stream, manifest):
             status = st_by[i]["Status"]
             if f == "code_error_register.md" and status != "candidate":
                 lint.fail(f"{st_path}: new second-read row {i} status '{status}' (must be 'candidate')")
-            elif f == "claims_register.md" and status not in {"inconsistent", "unclear"}:
+            elif (f == "claims_register.md"
+                  and status not in {"inconsistent", "unclear"}
+                  and i not in handoff_resolution_cids):
                 lint.fail(f"{st_path}: new second-read claim {i} status '{status}' (must be 'inconsistent' or 'unclear')")
             elif f == "output_register.md" and status not in {"mapped", "orphan", "unclear", "inconsistent"}:
                 lint.fail(f"{st_path}: new second-read output {i} status '{status}' (must be mapped/orphan/unclear/inconsistent)")
@@ -1830,6 +2155,10 @@ def stage_b3b(lint, audit, stream, manifest):
     except json.JSONDecodeError as exc:
         lint.fail(f"{report_path}: invalid JSON ({exc})")
         return
+    if stream == "claims":
+        _validate_handoff_report_block(
+            lint, audit, report_path, rep, "claims_b3b"
+        )
     staging_ids = set()
     for f, cols, idc in files:
         _path, loaded = promoted_register(lint, audit, "b3b", stream, f, cols)
@@ -1896,6 +2225,18 @@ def stage_b3b_shard(lint, audit, stream, shard):
             return
         check_claims_rows(lint, shard, c_rows)
         check_output_rows(lint, shard, o_rows)
+        manifest = {}
+        manifest_path = audit / "_run" / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+        handoff_claim_ids = set()
+        if (audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json").is_file():
+            handoff_claim_ids = _validate_u7_b3b_resolutions(
+                lint, audit, shard, text, a, c_rows, manifest
+            )
         cids = col(c_rows, CLAIMS_COLS, "Claim ID")
         oids = col(o_rows, OUTPUT_COLS, "Output ID")
         check_unique(lint, shard, cids + oids, "ID")
@@ -1904,9 +2245,10 @@ def stage_b3b_shard(lint, audit, stream, shard):
                 lint.fail(f"{shard}: {i} outside the second-read-allocated ranges")
         for r in c_rows:
             d = dict(zip(CLAIMS_COLS, r))
-            if d["Status"] not in B3B_CLAIM_STATUSES:
+            if d["Status"] not in B3B_CLAIM_STATUSES and d["Claim ID"] not in handoff_claim_ids:
                 lint.fail(f"{shard}: second-read claim {d['Claim ID']} status "
-                          f"'{d['Status']}' (must be 'inconsistent' or 'unclear')")
+                          f"'{d['Status']}' (must be 'inconsistent'/'unclear' unless "
+                          "cited by a handoff resolution)")
         for r in o_rows:
             d = dict(zip(OUTPUT_COLS, r))
             if d["Status"] not in B3B_OUTPUT_STATUSES:
@@ -4092,7 +4434,7 @@ def main() -> int:
     if stage == "b0":
         stage_b0(lint, audit, manifest)
     elif n == "b1":
-        stage_b1(lint, audit, stream)
+        stage_b1(lint, audit, stream, manifest)
     elif n == "b2":
         stage_b2(lint, audit, stream, args.shard)
     elif n == "b3":

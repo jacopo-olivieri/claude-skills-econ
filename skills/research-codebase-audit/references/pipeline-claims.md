@@ -9,10 +9,14 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 1. Dispatch one planner subagent with `prompts/planner-claims.md` filled (role:
    `claims_b1_planner`); set
    `{CONTRACT_PATH}` to `audit/_run/contracts/planning.md`.
-2. Planner writes `audit/plans/claims_review_plan.md` with the worker allocation table
-   (Worker ID · Paper Scope · Likely Code Scope · Shard File under `audit/_work/` ·
-   Claim ID Range · Output ID Range · Review Focus).
-3. Run `lint_registers.py --stage b1-claims`. Retry-once → blocked-continue as always.
+2. Planner writes `audit/plans/claims_review_plan.md` with the exact allocation columns from
+   `registers.md`, including `Paper File`, `Line Intervals`, and `H ID Range`. Intervals exactly
+   partition every line in `paper_source_set`; reserve one globally disjoint 50-ID
+   `Adjudication range: C-…–C-…` below the table. If `allocation_override` is present, copy its
+   ordered allocation verbatim instead of free-planning; the ordinary b1 lint still applies.
+3. Run `lint_registers.py --stage b1-claims`. After it passes and before any b2 dispatch, run
+   `build_crossref_inventory.py <package-root> --audit-dir audit`. This writes the digest-bound
+   inventory and assignment artifacts. Certifying claims_b1 re-derives and byte-compares both.
 
 **Sizing rules (the planner skeleton carries these verbatim; you verify the plan obeys them):**
 
@@ -26,7 +30,8 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 
 ## b2 — Section workers (parallel, fire-and-forget)
 
-1. For each row of the allocation table, fill `prompts/section-worker.md` (role:
+1. For each row, fill `prompts/section-worker.md` with its assigned X IDs from
+   `crossref_assignments.json` and the inventory path (role:
    `claims_b2_section`; one subagent per
    worker, single message, `worker_model` from the manifest); set `{CONTRACT_PATH}` to
    `audit/_run/contracts/claims_first_pass.md`.
@@ -36,6 +41,9 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
 3. On lint failure: re-dispatch that worker once with the lint report appended. Second failure:
    run `certify_stage.py set-shard --stage claims_b2 --shard <path> --status blocked --reason
    "<lint failure>"`, then continue.
+
+Every claims shard carries the dedicated `### Handoffs` and `### Cross-reference coverage`
+tables (or their exact zero forms) in addition to the frozen typed footer.
 
 ## b3 — First merge (adds rows)
 
@@ -47,7 +55,10 @@ generated role contract). Lint stages here are `--stage b<N>-claims`.
    `audit/_staging/output_register.md`) and `audit/_run/merge_report_claims.json`
    (per register: `shard_rows`, `dedup_removed`, `added`, `conflicts`, `coverage_gaps`,
    `blocked_shards`).
-3. Atomically rename staging over canon, then run `lint_registers.py --stage b3-claims`
+3. Atomically rename staging over canon, then run `build_handoff_ledger.py <package-root>
+   --audit-dir audit --stage claims_b3`. It freezes the b3 ledger snapshot and adds the
+   `handoff_ledger` reconciliation block to the merge report. Then run
+   `lint_registers.py --stage b3-claims`
    (checks the promoted registers + report: no dup IDs, IDs ⊆ union of planned ranges, links
    C↔O bidirectional, cross-link columns blank, row-count reconciliation, typed-footer
    dispositions reconciled — the same lint the `claims_b3` certification obligation re-runs).
@@ -94,12 +105,15 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    `claims_b3b` as required by SKILL.md, then mechanically compute the set of files/sections that
    produced at least one issue-flagged (`inconsistent`) claim — at
    `shallow` only those with a Severity ≥ 3 issue, at `standard`/`deep` any issue-flagged claim.
-   Key each trigger to the claim row's `Code/Data Source` file(s) and `Paper Context` section. If
-   the set is empty, do not dispatch workers; instead freeze the zero-work evidence the b3b
+   Add every destination scope named by a `forwarded` H ledger entry; a handoff-only scope uses
+   Reason `handoff`. Key ordinary triggers to the claim row's `Code/Data Source` file(s) and
+   `Paper Context` section. If the combined set is empty, do not dispatch workers; instead
+   freeze the zero-work evidence the b3b
    certification obligation verifies — write the plan with a header-only allocation table,
    snapshot both registers to `audit/_run/snapshots/claims_b3b/`, and write a zero-work
    `audit/_run/merge_report_claims_b3b.json` (both register entries
-   `{"shard_rows": 0, "dedup_removed": 0, "added": 0}` plus `"footer_dispositions": []`) — then
+   `{"shard_rows": 0, "dedup_removed": 0, "added": 0}` plus `"footer_dispositions": []`), run
+   `build_handoff_ledger.py <package-root> --audit-dir audit --stage claims_b3b`, then
    certify `claims_b3b` done via
    `certify_stage.py finish --stage claims_b3b --outcome done` against the canonical registers
    already promoted by b3.
@@ -107,8 +121,10 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    per flagged file/section, columns `| Worker ID | File/Section Scope | Shard File | Claim ID
    Range | Output ID Range | Reason | Known Findings | Assigned Handoff IDs |` (use the header
    `Shard File` exactly — the b3b lint requires it — and put each shard path, under
-   `audit/_work_second_read/`, in the cell). Reason is `flagged` in U6a; `handoff` is reserved for
-   U7 and Assigned Handoff IDs stays empty until then. Ranges
+   `audit/_work_second_read/`, in the cell). Reason is `flagged` for ordinary recall;
+   `handoff` is used for a scope selected only by forwarded work. `Assigned Handoff IDs` is
+   `—` or a comma-separated allocation and exactly covers every `forwarded` H-ID once across
+   the plan. Ranges
    are fresh and globally disjoint from every b1 range and both merge-coordinator ranges. `Known
    Findings` lists the C-IDs and one-line mechanism already logged there.
 3. **Dispatch** `prompts/second-read-worker.md` (stream = claims; role:
@@ -123,8 +139,12 @@ b3, before the recheck plan (b4), so the new rows flow into the recheck automati
    claims stream with `{CONTRACT_PATH}` set to `audit/_run/contracts/merge_first_pass.md`,
    `{SHARD_DIR}` = `audit/_work_second_read/`, `{PLAN_PATH}` = the b3b allocation plan, and
    `{MERGE_REPORT}` = `audit/_run/merge_report_claims_b3b.json`. The merge
-   **adds** the new rows to the existing canon, preserving every b3 row unchanged.
-5. Atomic rename over canon, then `lint_registers.py --stage b3b-claims` (new claim rows in
+   **adds** the new rows to the existing canon, preserving every b3 row unchanged. Each
+   resolver shard writes the exact handoff-resolution table from `registers.md`; a cited
+   resolution row may use the full first-pass claims status vocabulary.
+5. Atomic rename over canon, then run `build_handoff_ledger.py <package-root> --audit-dir audit
+   --stage claims_b3b`, which freezes the b3b-era ledger and updates the merge report. Run
+   `lint_registers.py --stage b3b-claims` (new claim rows in
    b3b ranges and `inconsistent` or `unclear`; new output rows not `listed`/`confirmed`; no b3
    row deleted or mutated; C↔O links bidirectional; report identity holds — the same lint the
    certification obligation re-runs). On failure, restore canon from

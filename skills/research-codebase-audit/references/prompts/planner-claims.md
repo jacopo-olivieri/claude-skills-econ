@@ -6,7 +6,7 @@ Dispatched at b1-claims. One subagent. Fill slots only.
 | --- | --- |
 | `{REVIEW_MODE_SENTENCE}` | manifest |
 | `{CONTRACT_PATH}` | `audit/_run/contracts/planning.md` |
-| `{PAPER_PATH}` | manifest `paper_audit_path` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` mapping (all audit twins) |
 | `{KNOWN_CONTEXT}` | manifest (or "none") |
 | `{ID_ALLOCATION_START}` | conductor: first free C-/O- numbers (normally `C-0001`, `O-0001`) |
 
@@ -19,7 +19,7 @@ I am preparing a code review of an academic paper and its replication package.
 {REVIEW_MODE_SENTENCE}
 
 Previous setup steps are complete:
-- Paper: `{PAPER_PATH}` (comment-blanked copy; audit only what is PDF-visible).
+- Paper source set: `{PAPER_SOURCE_SET}` (comment-blanked audit twins; audit only PDF-visible text).
 - Pipeline map: `audit/CODEMAP.md` (includes a Materials Inventory — read it first).
 - Audit folder: `audit/` with registers and `{CONTRACT_PATH}`.
 
@@ -49,8 +49,11 @@ registers; do not edit paper or code.
   max(30, 3 × expected outputs). Ranges globally disjoint, allocated upward from
   {ID_ALLOCATION_START}. Additionally reserve a 50-ID merge-coordinator range per register,
   after the last worker range.
-- Every part of the paper (including appendices, footnotes, and table/figure notes) belongs
-  to exactly one worker scope.
+- Every line of every paper source file belongs to exactly one worker interval. Cut at
+  structural boundaries where possible; a crossing sentence belongs to the quote-start line.
+- Anchor-side ownership is absolute: the interval owner records every substantive assertion
+  printed there even when it references another worker's figure/table; a caption owns only
+  its own text.
 
 ## PLAN STRUCTURE
 
@@ -60,12 +63,14 @@ registers; do not edit paper or code.
    context.
 4. **Key Decisions** — how the paper was split and why; where code scopes overlap.
 5. **Worker Allocation Table** —
-   | Worker ID | Paper Scope | Likely Code Scope | Shard File | Claim ID Range | Output ID Range | Review Focus |
+   | Worker ID | Paper Scope | Paper File | Line Intervals | Likely Code Scope | Shard File | Claim ID Range | Output ID Range | H ID Range | Review Focus |
    Shard files under `audit/_work/`, unique per worker. Review Focus: section-specific
    priorities (treatment definitions, main tables, robustness, event timing, sample
    restrictions, artifact number-diffing where artifacts exist). Write ID ranges exactly as
    `C-0200–C-0299`. Directly below the table add one line per register:
-   `Merge-coordinator range: C-…–C-…` and `Merge-coordinator range: O-…–O-…`.
+   `Merge-coordinator range: C-…–C-…` and `Merge-coordinator range: O-…–O-…`. Allocate one
+   disjoint H range per worker and add exactly one 50-ID
+   `Adjudication range: C-…–C-…`.
 6. **Risks & Mitigations** — restricted data, dynamic output names, conversion artifacts,
    duplicate findings across sections, unclear definitions.
 7. **Completion Criteria** — every worker scope reviewed with a coverage note; every shard

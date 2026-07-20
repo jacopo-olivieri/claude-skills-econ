@@ -29,6 +29,11 @@ def write_intake(root, mode="replication", **extra):
         "effort_map": dict(cs.dispatch_tracking.DEFAULT_EFFORT_MAP),
     }
     manifest.update(extra)
+    if manifest.get("mode") == "replication" and "paper_source_path" not in manifest:
+        # U7a: replication init refuses paperless manifests unless they carry
+        # the fixture/development discriminator.
+        manifest.setdefault(
+            "allocation_override", {"purpose": "development", "allocation": []})
     path = root / "audit" / "_run" / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return path
@@ -59,6 +64,9 @@ def simple_run(tmp_path, mode="replication"):
 
 def healthy_b0(tmp_path):
     audit = rb.make_b0(tmp_path)
+    # U7a: paperless replication init needs the fixture/development discriminator.
+    audit.write_manifest(
+        allocation_override={"purpose": "development", "allocation": []})
     cs.init_run(audit.root)
     cs.start_stage(audit.root, "b0")
     return audit

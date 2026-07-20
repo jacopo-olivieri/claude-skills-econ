@@ -5,7 +5,7 @@ Dispatched at b0 (init). One subagent. Skeleton text is invariant; fill slots on
 | Slot | Filled from |
 | --- | --- |
 | `{REVIEW_MODE_SENTENCE}` | manifest `review_mode_sentence` |
-| `{PAPER_PATH}` | manifest `paper_audit_path` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` audit-twin mapping |
 | `{SCOPE_EXCLUSIONS}` | manifest `scope_exclusions` (or "none") |
 | `{KNOWN_CONTEXT}` | manifest `known_context` (or "none") |
 
@@ -16,7 +16,7 @@ Dispatched at b0 (init). One subagent. Skeleton text is invariant; fill slots on
 
 I am reviewing a research codebase/replication package. {REVIEW_MODE_SENTENCE}
 
-The paper source is at `{PAPER_PATH}`.
+The paper source-set mapping is `{PAPER_SOURCE_SET}`.
 
 Out of scope (do not map as reviewable): {SCOPE_EXCLUSIONS}
 

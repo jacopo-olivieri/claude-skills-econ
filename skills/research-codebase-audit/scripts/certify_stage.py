@@ -21,6 +21,7 @@ from source_projection import iter_in_scope_entries
 import build_detector_mapping as detector_mapping
 import dispatch_tracking
 import lint_registers as registers
+import paper_sources
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -251,6 +252,18 @@ def init_run(package_root, clear_stale_marker=False):
         dispatch_tracking.validate_effort_map(manifest.get("effort_map"))
     except dispatch_tracking.DispatchError as exc:
         raise CertificationError(str(exc)) from exc
+    _validate_allocation_override(manifest)
+    if (manifest.get("mode") == "replication"
+            and not manifest.get("paper_source_path")
+            and not isinstance(manifest.get("allocation_override"), dict)):
+        raise CertificationError(
+            "replication mode requires paper_source_path; only a fixture/development "
+            "manifest carrying allocation_override may omit it"
+        )
+    try:
+        paper_sources.build_source_set(package_root, manifest)
+    except paper_sources.PaperSourceError as exc:
+        raise CertificationError(str(exc)) from exc
     replace_running_marker(package_root, clear_stale_marker)
     manifest["run_identity"] = make_run_identity(package_root, manifest)
     manifest["stages"] = {
@@ -258,6 +271,29 @@ def init_run(package_root, clear_stale_marker=False):
         for stage in stages
     }
     write_manifest_atomic(package_root, manifest)
+
+
+def _validate_allocation_override(manifest):
+    if "allocation_override" not in manifest:
+        return
+    from claim_handoffs import CLAIMS_PLAN_COLS
+    value = manifest["allocation_override"]
+    if not isinstance(value, dict) or set(value) != {"purpose", "allocation"}:
+        raise CertificationError(
+            "allocation_override must contain exactly purpose and allocation"
+        )
+    if value["purpose"] not in {"fixture", "development"}:
+        raise CertificationError(
+            "allocation_override purpose must be 'fixture' or 'development'"
+        )
+    if not isinstance(value["allocation"], list):
+        raise CertificationError("allocation_override allocation must be an ordered array")
+    for index, row in enumerate(value["allocation"], start=1):
+        if not isinstance(row, dict) or list(row) != CLAIMS_PLAN_COLS:
+            raise CertificationError(
+                f"allocation_override row {index} must use the exact ordered b1 headers: "
+                + " | ".join(CLAIMS_PLAN_COLS)
+            )
 
 
 def stage_entry(manifest, stage):
@@ -318,7 +354,7 @@ def _resolve_shard_path(package_root, audit, raw):
     return audit / shard
 
 
-def _validator_commands(identifier, package_root, audit, stage_entry_value):
+def _validator_commands(identifier, package_root, audit, stage_entry_value, stage=None):
     if identifier == "detector:mapping":
         return [[
             sys.executable, str(SCRIPT_DIR / "build_detector_mapping.py"),
@@ -334,6 +370,21 @@ def _validator_commands(identifier, package_root, audit, stage_entry_value):
             sys.executable, str(SCRIPT_DIR / "assemble_boundary.py"),
             str(package_root), "--audit-dir", str(audit), "--check",
             "--supplementary",
+        ]]
+    if identifier == "crossref:inventory":
+        return [[
+            sys.executable, str(SCRIPT_DIR / "build_crossref_inventory.py"),
+            str(package_root), "--audit-dir", str(audit), "--check",
+        ]]
+    if identifier == "handoff:ledger":
+        if stage not in {"claims_b3", "claims_b3b"}:
+            raise CertificationError(
+                f"handoff:ledger has no U7a implementation for stage {stage!r}"
+            )
+        return [[
+            sys.executable, str(SCRIPT_DIR / "build_handoff_ledger.py"),
+            str(package_root), "--audit-dir", str(audit),
+            "--stage", stage, "--check",
         ]]
     lint_stage = VALIDATORS.get(identifier)
     if lint_stage is None:
@@ -381,7 +432,8 @@ def _run_validator(identifier, package_root, audit, stage_entry_value):
     failures = []
     try:
         commands = _validator_commands(
-            identifier, package_root, audit, stage_entry_value
+            identifier, package_root, audit, stage_entry_value,
+            stage_entry_value.get("_validator_stage")
         )
     except CertificationError as exc:
         return [str(exc)]
@@ -410,6 +462,13 @@ def resolve_stage_obligations(package_root, manifest, stage, table=None):
         if not isinstance(obligation, dict):
             failures.append(f"stage {stage!r} has a malformed obligation {obligation!r}")
             continue
+        condition = obligation.get("when")
+        if condition is not None:
+            if condition != "paper_source_set":
+                failures.append(f"stage {stage!r} has unknown obligation condition {condition!r}")
+                continue
+            if not manifest.get("paper_source_set"):
+                continue
         obligation_type = obligation.get("type")
         if obligation_type == "artifact":
             pattern = obligation.get("pattern")
@@ -425,7 +484,10 @@ def resolve_stage_obligations(package_root, manifest, stage, table=None):
                 failures.append(f"stage {stage!r} has a validate obligation without an identifier")
                 continue
             failures.extend(
-                _run_validator(identifier, package_root, audit, entry)
+                _run_validator(
+                    identifier, package_root, audit,
+                    {**entry, "_validator_stage": stage},
+                )
             )
         else:
             failures.append(
@@ -670,7 +732,89 @@ def close_run(package_root):
     manifest = read_manifest(package_root)
     require_canonical_identity(package_root, manifest)
     _refuse_pending_late_observations(package_root)
+    _refuse_pending_handoff_obligations(package_root, manifest)
     remove_running_marker(package_root)
+
+
+def _refuse_pending_handoff_obligations(package_root, manifest):
+    """U7 completion gate; U7a intentionally has no legal terminalizer yet."""
+    if manifest.get("mode") != "replication" or not manifest.get("paper_source_set"):
+        return
+    failures = []
+    stages = manifest.get("stages", {})
+    for stage in ("claims_adjudication", "claims_adjudication_lineage"):
+        entry = stages.get(stage) if isinstance(stages, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        if status not in {"done", "blocked"}:
+            failures.append(f"stage {stage} is {status or 'absent'}, not terminal")
+        elif status == "done":
+            stage_failures = resolve_stage_obligations(package_root, manifest, stage)
+            failures.extend(f"stage {stage}: {failure}" for failure in stage_failures)
+    audit, run_dir, _, _ = audit_paths(package_root)
+    ledger_path = run_dir / "handoff_ledger.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        failures.append(f"handoff ledger missing or invalid: {exc}")
+        ledger = {"H": [], "X": []}
+    entries = ledger.get("H", []) + ledger.get("X", [])
+    if not all(isinstance(entry, dict) for entry in entries):
+        failures.append("handoff ledger H/X sections must contain objects")
+        entries = []
+    by_id = {entry.get("id"): entry for entry in entries}
+    decisions_path = run_dir / "handoff_blocked_decisions.json"
+    decisions = []
+    if decisions_path.is_file():
+        try:
+            decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            failures.append(f"invalid handoff_blocked_decisions.json: {exc}")
+            decisions = []
+    if not isinstance(decisions, list):
+        failures.append("handoff_blocked_decisions.json must be a JSON array")
+        decisions = []
+    decision_by_id = {}
+    for index, decision in enumerate(decisions, start=1):
+        if not isinstance(decision, dict) or set(decision) != {
+                "id", "decision", "reason", "date"}:
+            failures.append(f"blocked decision {index} has fields other than id/decision/reason/date")
+            continue
+        obligation_id = decision["id"]
+        if obligation_id in decision_by_id:
+            failures.append(f"duplicate blocked decision for {obligation_id}")
+        decision_by_id[obligation_id] = decision
+        if decision["decision"] != "accept_blocked":
+            failures.append(f"blocked decision for {obligation_id} must be accept_blocked")
+        if not isinstance(decision["reason"], str) or not decision["reason"].strip():
+            failures.append(f"blocked decision for {obligation_id} requires a reason")
+        try:
+            datetime.fromisoformat(str(decision["date"]))
+        except ValueError:
+            failures.append(f"blocked decision for {obligation_id} has a non-ISO date")
+    decision_ids = [item.get("id") for item in decisions if isinstance(item, dict)]
+    if any(not isinstance(item, str) for item in decision_ids):
+        failures.append("handoff_blocked_decisions.json entries require string ids")
+    elif decision_ids != sorted(decision_ids):
+        failures.append("handoff_blocked_decisions.json must be sorted by id")
+    for obligation_id, entry in by_id.items():
+        final = ({"satisfied", "resolved", "disposition_accepted"}
+                 if entry.get("kind") == "H"
+                 else {"covered", "resolved", "disposition_accepted"})
+        state = entry.get("state")
+        if state == "blocked_fallback":
+            if obligation_id not in decision_by_id:
+                failures.append(f"blocked_fallback {obligation_id} has no operator decision")
+        elif state not in final:
+            failures.append(f"handoff obligation {obligation_id} remains {state!r}")
+    for obligation_id in decision_by_id:
+        if obligation_id not in by_id:
+            failures.append(f"blocked decision names unknown obligation {obligation_id}")
+        elif by_id[obligation_id].get("state") != "blocked_fallback":
+            failures.append(f"blocked decision names non-blocked obligation {obligation_id}")
+    if failures:
+        raise CertificationError(
+            "close-run refused: pending handoff obligation(s): " + " | ".join(failures)
+        )
 
 
 def _refuse_pending_late_observations(package_root):

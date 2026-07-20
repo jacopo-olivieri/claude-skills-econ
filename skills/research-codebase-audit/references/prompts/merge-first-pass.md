@@ -15,6 +15,7 @@ only.
 | `{MERGE_REPORT}` | `audit/_run/merge_report_claims.json` or `..._code.json` |
 | `{BLOCKED_SHARDS}` | conductor: list of shards marked blocked, or "none" |
 | `{COVERAGE_KIND}` | claims: `per-section coverage notes reconcile: every part of the paper scope is covered by some shard or explicitly skipped with a reason`; code: `every script in the plan's inventory has a coverage row in some shard footer or a documented blocker` |
+| `{HANDOFF_LEDGER_INSTRUCTION}` | claims: run the deterministic ledger builder after promotion as specified in pipeline-claims; code: `not applicable` |
 
 ## Skeleton
 
@@ -89,6 +90,10 @@ of every non-blocked shard coverage row; omit both for claims.
 5b. Disposition every typed footer entry. A `candidate` entry must use a candidate disposition
 that names the same row IDs; it cannot be dismissed. A `not_rowed_observation` may be promoted
 to a candidate or dismissed with a concrete one-line reason. Never drop an entry silently.
+5c. Claims only: preserve every dedicated H/X shard row as source evidence. Record every claim
+dedup redirect in top-level `dedup_redirects` (`dropped C-ID` → `surviving C-ID`) so the
+deterministic ledger builder can rebind cited rows; a cited row absent from canon without a
+redirect is a merge failure. {HANDOFF_LEDGER_INSTRUCTION}
 6. Do not discard uncertain rows; keep them with their uncertain status and what remains
    unresolved. Mark only concrete problems as issues — ordinary uncertainty is not an issue.
 7. Where workers contradict each other, think hard about whether the rows genuinely

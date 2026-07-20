@@ -58,7 +58,9 @@ def _base_tree(tmp_path, *, name="package", mode="replication", initialize=False
     root.mkdir()
     (root / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
     a = rb.AuditDir(root)
-    a.write_manifest(mode=mode, scope_exclusions=[], off_limits=[])
+    extra = ({"allocation_override": {"purpose": "development", "allocation": []}}
+             if mode == "replication" else {})
+    a.write_manifest(mode=mode, scope_exclusions=[], off_limits=[], **extra)
     a.write_register("code_error_register.md", rb.ERROR_COLS, [])
     if initialize:
         initialized = _cli(root, "init")

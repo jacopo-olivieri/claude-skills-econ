@@ -113,8 +113,11 @@ Write `audit/_run/manifest.json`:
     "b7_claim_recheck": "high", "b8_rewriter": "medium"
   },
   "review_mode_sentence": "…",
-  "paper_source_path": "…", "paper_sha256": "<sha256 of paper_source_path>",
-  "paper_audit_path": "<blanked/converted copy, set at init>",
+  "paper_source_path": "<root .tex or single paper source>",
+  "allocation_override": {
+    "purpose": "fixture | development — OPTIONAL block, fixture/development runs only: omit on production runs; presence makes the run not gate-eligible",
+    "allocation": ["<exact b1 claims allocation objects>"]
+  },
   "git_head": "… | null",
   "warnings": []
 }
@@ -168,9 +171,11 @@ Completion: manifest written and every field above resolved with the user.
 2. Run `scripts/build_worker_contracts.py --audit-dir audit` to generate
    `audit/audit_readme.md` and the per-role contracts in `audit/_run/contracts/`. Workers read
    their role contract, never the skill's own references.
-3. If the paper is LaTeX: run `scripts/blank_tex_comments.py` to produce the audit copy —
-   comments blanked, line numbers preserved, so only PDF-visible content is audited. Record it
-   as `paper_audit_path` (`paper_source_path`/`paper_sha256` keep pointing at the source).
+3. `init` resolves the root paper's complete `\input`/`\include` closure and writes one
+   line-preserving, comment-blanked twin per source under `audit/_run/paper_twins/`. It records
+   `paper_source_set` entries with `source_path`, `source_sha256`, `audit_path`, and
+   `audit_sha256`; the three singular paper fields remain pinned to the root entry only for
+   compatibility. Unsupported inclusion syntax fails intake with its source line.
 4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`; role: `codemap`): produces
    `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, and a **preconditions
    score** (README present? unique output↔script mapping? documented data sources?). Low
@@ -235,6 +240,12 @@ Run `certify_stage.py close-run` once. `close-run` is the completion-report gate
 while any late-observation disposition is still `pending`, so a run that collected late
 observations closes only after the first Phase-4 disposition batch (registers.md § late
 observations) has replaced every pending state.
+In full-replication runs with a paper source set, it also refuses while either reserved U7
+adjudication stage is absent/nonterminal or any H/X ledger entry is non-final. U7a
+intentionally leaves that tail pending; U7b supplies its only legal terminalizer. A
+`blocked_fallback` entry is released only by the exact, ID-joined
+`audit/_run/handoff_blocked_decisions.json` operator artifact; the ledger state is never
+rewritten.
 
 **Resolved role-key table.** Every production dispatch site in this file and the three pipeline
 files carries exactly one of these keys; b4 is conductor-computed and has no planner role.

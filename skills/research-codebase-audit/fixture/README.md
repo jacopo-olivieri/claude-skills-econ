@@ -68,6 +68,14 @@ must enter the b3d manifest artifact/mapping and force a `detector` second read.
 human-only pair of individually legal but mutually incompatible exact pandas pins; if first pass
 does not recover it, its candidate must originate in that file's b3b shard.
 
+**Claim-handoff plant (added 2026-07-20)** — P-25 says the calculated and reference speeds
+substantially overlap in body prose while appendix Figure A2's planted code uses disjoint ranges.
+The run manifest must carry `allocation_override` with purpose `fixture`; its exact b1 allocation
+must use at least two claims workers and place the P-25 body sentence and `fig:speed-overlap`
+appendix figure in different line intervals. It must also allocate every line of the mechanically
+included `artifacts/tab1.tex` source. `score_fixture.py` refuses a one-worker collapse regardless
+of whether a final row happens to recover P-25.
+
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
@@ -86,7 +94,7 @@ does not make that claim, so the privacy check is judged from the public package
    ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 23 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 24 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
      `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
      rule).

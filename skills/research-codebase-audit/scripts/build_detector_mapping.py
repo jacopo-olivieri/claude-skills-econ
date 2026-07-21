@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 import check_manifests as mf
+import check_argument_contracts as ac
 import cv_scan
 import definition_use as du
 
@@ -21,10 +22,14 @@ MAPPING_COLS = [
 ]
 DECISION_COLS = ["Channel", "Source ID", "Error ID", "Mapping Kind"]
 MAPPING_KINDS = {"new_candidate", "existing_row", "reviewed_not_divergent"}
-MARKERS = ["<!-- GENERATED:DU -->", "<!-- GENERATED:MF -->", "<!-- CONDUCTOR:CV -->"]
+MARKERS = [
+    "<!-- GENERATED:DU -->", "<!-- GENERATED:MF -->", "<!-- CONDUCTOR:CV -->",
+    "<!-- GENERATED:AC -->",
+]
 DU_ZERO = "No standard DU rows: the definition/use detector emitted zero standard candidates."
 MF_ZERO = "No standard MF rows: the manifest detector emitted zero standard candidates."
 CV_ZERO = "No channel-mapped CV rows: no conventions were consolidated for this run."
+AC_ZERO = "No channel-mapped AC rows: the argument-contract checker emitted zero findings."
 RANGE_RE = re.compile(r"^Declared detector Error-ID range:\s*(E-\d{4})[–-](E-\d{4})\s*$", re.M)
 ERROR_COLS = [
     "Error ID", "Error Type", "Code/Data Source", "Code Location", "Status",
@@ -82,14 +87,15 @@ def _in_range(error_id, declared):
 def parse_raw_sources(audit):
     du_path = audit / "_run" / "definition_use_bundles.md"
     mf_path = audit / "_run" / "manifest_check.md"
-    for path in (du_path, mf_path):
+    ac_path = audit / "_run" / "argument_contracts.md"
+    for path in (du_path, mf_path, ac_path):
         if not path.is_file():
             raise MappingError(f"missing raw detector artifact: {path}")
     try:
         du_artifact = du.parse_artifact(du_path.read_text(encoding="utf-8"))
     except du.DefinitionUseFormatError as exc:
         raise MappingError(f"{du_path}: {exc}") from exc
-    sources = {"DU": {}, "MF": {}}
+    sources = {"DU": {}, "MF": {}, "AC": {}}
     for row in du_artifact.standard_rows:
         source_id = row["Bundle ID"]
         witness_id = row["Witness ID"]
@@ -147,6 +153,24 @@ def parse_raw_sources(audit):
                 raise MappingError(
                     f"MF source {source_id} declares {expected} witnesses but has {actual}"
                 )
+    try:
+        ac_artifact = ac.parse_artifact(ac_path.read_text(encoding="utf-8"))
+    except ac.ArgumentContractError as exc:
+        raise MappingError(f"{ac_path}: {exc}") from exc
+    calls = {row.source_id: row for row in ac_artifact.call_sites}
+    for finding in ac_artifact.findings:
+        call = calls[finding.source_id]
+        source = sources["AC"].setdefault(finding.source_id, {
+            "caller": call.site_anchor.rsplit(":", 1)[0],
+            "callee": (call.resolved_callee
+                       if call.resolution in {"direct", "macro_direct", "audited_root_alias"}
+                       else None),
+            "witnesses": [],
+        })
+        source["witnesses"].append({
+            "witness_id": finding.witness_id,
+            "anchor": finding.site_anchor,
+        })
     return sources
 
 
@@ -160,13 +184,17 @@ def parse_decisions(path):
     for row in rows:
         channel, source_id = row["Channel"], row["Source ID"]
         key = (channel, source_id)
-        if channel not in {"DU", "MF", "CV"}:
+        if channel not in {"DU", "MF", "CV", "AC"}:
             raise MappingError(f"decision names unsupported channel {channel}")
         if key in decisions:
             raise MappingError(f"duplicate decision for {source_id}")
         if row["Mapping Kind"] not in MAPPING_KINDS:
             raise MappingError(f"decision for {source_id} has invalid Mapping Kind {row['Mapping Kind']}")
         kind = row["Mapping Kind"]
+        if channel == "AC" and kind != "new_candidate":
+            raise MappingError(
+                f"AC decision for {source_id} must use Mapping Kind new_candidate"
+            )
         if kind == "reviewed_not_divergent":
             if channel != "CV":
                 raise MappingError(
@@ -351,7 +379,7 @@ def _expected_rows(sources, decisions, declared, register, snapshot,
         raise MappingError(f"decision names unknown detector source {source_id}")
     for channel, source_id in sorted(source_keys - set(decisions)):
         raise MappingError(f"unmapped detector source {source_id}")
-    rows = {"DU": [], "MF": [], "CV": []}
+    rows = {"DU": [], "MF": [], "CV": [], "AC": []}
     for key in sorted(decisions):
         channel, source_id = key
         decision = decisions[key]
@@ -377,7 +405,27 @@ def _expected_rows(sources, decisions, declared, register, snapshot,
                 raise MappingError(f"new_candidate {source_id} collides with pre-b3d row {error_id}")
             if enforce_candidate and target.get("Status") != "candidate":
                 raise MappingError(f"new_candidate {source_id} maps to {error_id}, which is not candidate")
-        witnesses = source["witnesses"] if channel == "CV" else source
+        if channel == "AC":
+            if target.get("Error Type") != "missing_input_or_output":
+                raise MappingError(
+                    f"AC candidate {source_id} maps to {error_id} with Error Type "
+                    f"{target.get('Error Type')!r}, expected missing_input_or_output"
+                )
+            required_paths = [source["caller"]]
+            if source.get("callee"):
+                required_paths.append(source["callee"])
+            cell = target.get("Code/Data Source", "")
+            missing_paths = [
+                path for path in required_paths
+                if not re.search(
+                    rf"(?<![\w./-]){re.escape(path)}(?=[:;,\s`]|$)", cell)
+            ]
+            if missing_paths:
+                raise MappingError(
+                    f"AC candidate {source_id} Code/Data Source omits "
+                    + ", ".join(missing_paths)
+                )
+        witnesses = source["witnesses"] if channel in {"CV", "AC"} else source
         for witness in witnesses:
             rows[channel].append({
                 "Channel": channel, "Source ID": source_id,
@@ -404,6 +452,7 @@ def render_mapping(display_range, rows):
     lines += _render_section(MARKERS[0], rows["DU"], DU_ZERO)
     lines += _render_section(MARKERS[1], rows["MF"], MF_ZERO)
     lines += _render_section(MARKERS[2], rows.get("CV", []), CV_ZERO)
+    lines += _render_section(MARKERS[3], rows.get("AC", []), AC_ZERO)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -417,7 +466,9 @@ def parse_mapping_text(text):
         raise MappingError("detector mapping markers are out of order")
     declared, display = _parse_range(text, "detector mapping")
     rows = []
-    for index, (marker, zero) in enumerate(zip(MARKERS, (DU_ZERO, MF_ZERO, CV_ZERO))):
+    zeros = (DU_ZERO, MF_ZERO, CV_ZERO, AC_ZERO)
+    channels = ("DU", "MF", "CV", "AC")
+    for index, (marker, zero) in enumerate(zip(MARKERS, zeros)):
         start = positions[index] + len(marker)
         end = positions[index + 1] if index + 1 < len(positions) else len(text)
         section = text[start:end]
@@ -433,7 +484,7 @@ def parse_mapping_text(text):
             if len(raw) != len(MAPPING_COLS):
                 raise MappingError(f"{marker} contains a malformed mapping row")
             row = dict(zip(MAPPING_COLS, [_norm(cell) for cell in raw]))
-            expected_channel = ("DU", "MF", "CV")[index]
+            expected_channel = channels[index]
             if row["Channel"] != expected_channel:
                 raise MappingError(
                     f"{marker} contains row for channel {row['Channel']}, expected {expected_channel}"
@@ -447,8 +498,11 @@ def parse_mapping_text(text):
                     raise MappingError(
                         "reviewed_not_divergent mapping rows are CV-only and require Error ID —"
                     )
-            elif not re.fullmatch(r"E-\d{4}", row["Error ID"]):
-                raise MappingError(f"{marker} contains invalid Error ID {row['Error ID']}")
+            else:
+                if expected_channel == "AC" and row["Mapping Kind"] != "new_candidate":
+                    raise MappingError("AC mapping rows require Mapping Kind new_candidate")
+                if not re.fullmatch(r"E-\d{4}", row["Error ID"]):
+                    raise MappingError(f"{marker} contains invalid Error ID {row['Error ID']}")
             rows.append(row)
     keys = [(row["Channel"], row["Source ID"], row["Witness ID"]) for row in rows]
     if len(keys) != len(set(keys)):
@@ -506,6 +560,9 @@ def _reproducibility_check(package_root, audit):
             ([sys.executable, str(Path(__file__).with_name("check_manifests.py")),
               str(package_root), "--audit-dir", str(audit), "-o", str(temp / "manifest_check.md")],
              audit / "_run/manifest_check.md"),
+            ([sys.executable, str(Path(__file__).with_name("check_argument_contracts.py")),
+              str(package_root), "--audit-dir", str(audit), "-o", str(temp / "argument_contracts.md")],
+             audit / "_run/argument_contracts.md"),
         ]
         for command, recorded in commands:
             result = subprocess.run(command, cwd=package_root, capture_output=True, text=True)
@@ -538,14 +595,18 @@ def check(package_root, audit, output):
     declared, artifact_display, actual_rows = load_mapping(output)
     if artifact_display != display:
         raise MappingError("detector mapping declared range disagrees with decisions table")
-    expected_rows = expected["DU"] + expected["MF"] + expected["CV"]
+    expected_rows = expected["DU"] + expected["MF"] + expected["CV"] + expected["AC"]
     key = lambda row: tuple(row[column] for column in MAPPING_COLS)
     if sorted(map(key, actual_rows)) != sorted(map(key, expected_rows)):
         raise MappingError("detector mapping rows do not exactly close the current detector decisions")
     actual_text = Path(output).read_text(encoding="utf-8")
     expected_text = render_mapping(display, expected)
-    if actual_text[actual_text.index(MARKERS[2]):] != expected_text[expected_text.index(MARKERS[2]):]:
+    cv_actual = actual_text[actual_text.index(MARKERS[2]):actual_text.index(MARKERS[3])]
+    cv_expected = expected_text[expected_text.index(MARKERS[2]):expected_text.index(MARKERS[3])]
+    if cv_actual != cv_expected:
         raise MappingError("emitted CV section differs byte-for-byte from frozen cv_scan inputs")
+    if actual_text[actual_text.index(MARKERS[3]):] != expected_text[expected_text.index(MARKERS[3]):]:
+        raise MappingError("emitted AC section differs byte-for-byte from argument-contract inputs")
     _reproducibility_check(package_root, audit)
 
 

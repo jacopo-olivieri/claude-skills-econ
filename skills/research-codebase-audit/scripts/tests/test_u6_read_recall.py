@@ -403,6 +403,7 @@ def detector_chain(tmp_path):
     a.write("_run/definition_use_bundles.md", rb.definition_use_artifact([]))
     checked = rb.run_script("check_manifests.py", root, "--audit-dir", a.audit)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+    rb.emit_argument_contracts(a)
     sources = dm.parse_raw_sources(a.audit)
     source = next(iter(sources["MF"]))
     anchor = sources["MF"][source][0]["anchor"]

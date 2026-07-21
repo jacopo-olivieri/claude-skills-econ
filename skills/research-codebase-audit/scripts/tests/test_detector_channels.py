@@ -64,6 +64,7 @@ def _detector_tree(tmp_path, initialize=False):
     a.write_register("_run/snapshots/code_b3d/code_error_register.md", rb.ERROR_COLS, [])
     assert rb.run_script("emit_definition_use_bundles.py", root, "--audit-dir", a.audit).returncode == 0
     assert rb.run_script("check_manifests.py", root, "--audit-dir", a.audit).returncode == 0
+    rb.emit_argument_contracts(a)
     sources = dm.parse_raw_sources(a.audit)
     keys = [(channel, source) for channel in ("DU", "MF") for source in sources[channel]]
     rows, decisions = [], []
@@ -286,8 +287,9 @@ def test_mapping_good_emits_fixed_sections_and_expands_witnesses(tmp_path):
     root, a, keys = _detector_tree(tmp_path)
     _complete_mapping(root, a)
     text = (a.audit / "_run/detector_mapping.md").read_text(encoding="utf-8")
-    assert [text.count(marker) for marker in dm.MARKERS] == [1, 1, 1]
-    assert text.index(dm.MARKERS[0]) < text.index(dm.MARKERS[1]) < text.index(dm.MARKERS[2])
+    assert [text.count(marker) for marker in dm.MARKERS] == [1, 1, 1, 1]
+    assert [text.index(marker) for marker in dm.MARKERS] == sorted(
+        text.index(marker) for marker in dm.MARKERS)
     assert dm.CV_ZERO in text
     _declared, _display, rows = dm.load_mapping(a.audit / "_run/detector_mapping.md")
     assert {(row["Channel"], row["Source ID"]) for row in rows} == set(keys)
@@ -305,6 +307,7 @@ def test_mapping_explicit_zero_is_exact_and_missing_raw_is_not_zero(tmp_path):
             + rb.md_table(dm.DECISION_COLS, []))
     assert rb.run_script("emit_definition_use_bundles.py", root, "--audit-dir", a.audit).returncode == 0
     assert rb.run_script("check_manifests.py", root, "--audit-dir", a.audit).returncode == 0
+    rb.emit_argument_contracts(a)
     _complete_mapping(root, a)
     text = (a.audit / "_run/detector_mapping.md").read_text()
     assert dm.DU_ZERO in text and dm.MF_ZERO in text and dm.CV_ZERO in text
@@ -477,7 +480,8 @@ def test_code_b3d_registration_and_missing_obligation_refuses(tmp_path, monkeypa
     assert cs.FULL_STAGES.index("code_b3d") == cs.FULL_STAGES.index("code_b3") + 1
     assert cs.CODE_ONLY_STAGES.index("code_b3d") == cs.CODE_ONLY_STAGES.index("code_b3") + 1
     table = cs.load_obligations()
-    assert [item["type"] for item in table["code_b3d"]] == ["artifact", "artifact", "artifact", "validate"]
+    assert [item["type"] for item in table["code_b3d"]] == [
+        "artifact", "artifact", "artifact", "artifact", "validate"]
     root, _a, _keys = _detector_tree(tmp_path, initialize=True)
     monkeypatch.setattr(cs, "load_obligations", lambda: {})
     with pytest.raises(cs.CertificationError, match="no entry"):

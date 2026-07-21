@@ -71,8 +71,9 @@ claims artifact exists; any conventions, CV scan, or CV decision is refused.
 
 1. Start `code_b3d`, then snapshot `code_error_register.md` to
    `audit/_run/snapshots/code_b3d/`. Run
-   `emit_definition_use_bundles.py <package_root> --audit-dir audit` and
-   `check_manifests.py <package_root> --audit-dir audit`; both deterministic artifacts are
+   `emit_definition_use_bundles.py <package_root> --audit-dir audit`,
+   `check_manifests.py <package_root> --audit-dir audit`, and
+   `check_argument_contracts.py <package_root> --audit-dir audit`; all three deterministic artifacts are
    required even when their standard-row count is zero.
 2. In replication mode, if `conventions.md` has rows, dispatch one
    `prompts/conventions-scan-worker.md` worker (role: `b3d_conventions_scan`) after the detectors
@@ -84,20 +85,23 @@ claims artifact exists; any conventions, CV scan, or CV decision is refused.
    `audit/_run/snapshots/code_b3d/cv_scan.md`, then run
    `build_detector_mapping.py <package_root> --audit-dir audit --list-cv-sources`. Use that
    read-only table as the sole source of CV IDs when writing decisions.
-4. Record one conductor decision per standard DU/MF source and per convention in
+4. Record one conductor decision per standard DU/MF/AC source and per convention in
    `audit/_run/detector_mapping_decisions.md`, under
    `| Channel | Source ID | Error ID | Mapping Kind |`, plus one
    `Declared detector Error-ID range: E-NNNN–E-NNNN` line. DU/MF and divergent CV sources use
-   `new_candidate` or `existing_row`; a not_divergent CV source uses
+   `new_candidate` or `existing_row`; every AC source uses `new_candidate`; a not_divergent CV source uses
    `reviewed_not_divergent` with Error ID exactly `—`. Advisory DU rows are not decided.
 5. Copy the canonical code-error register to `_staging/` and append one typed `candidate` row
-   for each `new_candidate` decision, using only the declared detector range. Run
+   for each `new_candidate` decision, using only the declared detector range. An AC row uses
+   `missing_input_or_output`; its `Code/Data Source` names the caller and resolved callee
+   (caller only for `unresolved_callee`) so the existing `detector` second-read reason schedules
+   both files. Run
    `build_detector_mapping.py <package_root> --audit-dir audit`; it validates the staged
    register, raw artifacts, frozen CV scan, decisions, and pre-b3d snapshot before atomically
    writing `audit/_run/detector_mapping.md`. On success atomically rename the staged register
    over canon, then finish `code_b3d`. Certification re-runs `build_detector_mapping.py --check`:
-   DU/MF are rediscovered for reproducibility, while CV is checked against the frozen scan and
-   its emitted section byte-for-byte. A missing required artifact is never zero.
+   DU/MF/AC are rediscovered for reproducibility, while CV is checked against the frozen scan;
+   the generated CV and AC sections reproduce byte-for-byte. A missing required artifact is never zero.
 
 ## b3b — Second-read recall sweep (conductor-planned, adds candidates)
 
@@ -174,7 +178,7 @@ Conventions are scanned and mapped at b3d; b4 performs no shared-conventions gre
 Detector-minted candidates already exist as ordinary canonical `candidate` rows before this plan
 is built, so the ordinary every-candidate inventory rule includes them. The b4-code lint also
 reads `audit/_run/detector_mapping.md`: every mapped Error ID must occur in the inventory, and its
-`Likely Evidence` must name every mapped detector source ID — DU, MF, or divergent CV.
+`Likely Evidence` must name every mapped detector source ID — DU, MF, AC, or divergent CV.
 `reviewed_not_divergent` CV rows need no inventory row. The detector mapping table does not
 live in `code_error_recheck_plan.md`.
 

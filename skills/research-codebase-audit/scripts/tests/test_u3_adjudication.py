@@ -537,6 +537,7 @@ def test_b3d_emission_converse_refuses_staging_corruption(tmp_path, kind):
     a.write("_run/manifest_check.md",
             "# Manifest\n\nNo candidate findings: every recognized manifest parsed clean.\n"
             "No standard MF rows: no manifest candidates were emitted.\n")
+    rb.emit_argument_contracts(a)
     a.write("_run/detector_mapping_decisions.md",
             "Declared detector Error-ID range: E-7000–E-7099\n\n"
             + rb.md_table(dm.DECISION_COLS, []))
@@ -658,6 +659,7 @@ def test_tier1_b3d_converse_check_has_teeth(tmp_path, monkeypatch):
     a.write("_run/manifest_check.md",
             "# Manifest\n\nNo candidate findings: every recognized manifest parsed clean.\n"
             "No standard MF rows: no manifest candidates were emitted.\n")
+    rb.emit_argument_contracts(a)
     a.write("_run/detector_mapping_decisions.md",
             "Declared detector Error-ID range: E-7000–E-7099\n\n"
             + rb.md_table(dm.DECISION_COLS, []))
@@ -669,7 +671,7 @@ def test_tier1_b3d_converse_check_has_teeth(tmp_path, monkeypatch):
         dm.validate_inputs(root, a.audit)
     monkeypatch.setattr(dm, "_validate_staging_converse", lambda *_args: None)
     _display, rows = dm.validate_inputs(root, a.audit)
-    assert rows == {"DU": [], "MF": [], "CV": []}
+    assert rows == {"DU": [], "MF": [], "CV": [], "AC": []}
 
 
 def _completed_b3d_b6_run(tmp_path, verdict="not_error"):
@@ -688,6 +690,7 @@ def _completed_b3d_b6_run(tmp_path, verdict="not_error"):
                          "--audit-dir", a.audit).returncode == 0
     assert rb.run_script("check_manifests.py", root,
                          "--audit-dir", a.audit).returncode == 0
+    rb.emit_argument_contracts(a)
     sources = dm.parse_raw_sources(a.audit)
     source = next(iter(sources["DU"]))
     witness = sources["DU"][source][0]["witness_id"]

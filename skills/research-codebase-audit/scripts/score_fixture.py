@@ -83,6 +83,7 @@ from pathlib import Path
 
 import definition_use as du
 import build_detector_mapping as detector_mapping
+import check_argument_contracts as argument_contracts
 import mechanism_schema as mechanism_schema
 import verify_dismissals as dismissal_verifier
 
@@ -160,6 +161,8 @@ SIGNATURES = {
              ["conflict", "incompat", "duplicate", "two", "mutually"]],
     "P-25": [["calculated"], ["reference"], ["speed"],
              ["overlap", "disjoint", "8", "11", "28", "34"]],
+    "P-26": [["argument"], ["callee", "contract"],
+             ["unread", "never reads", "ignored", "argpos:2"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked
@@ -749,6 +752,77 @@ def check_channel_adjudication(audit, expected):
     return "PASS", "; ".join(notes)
 
 
+def check_argument_contract_channel(audit, expected):
+    """Trace the U8a plant from raw AC output through mapping and final canon."""
+    plants = expected.get("argument_contract_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U8a argument-contract plant"
+    path = audit / "_run/argument_contracts.md"
+    if not path.is_file():
+        return "FAIL", f"argument-contract artifact missing: {path}"
+    try:
+        artifact = argument_contracts.parse_artifact(
+            path.read_text(encoding="utf-8"))
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
+    except (argument_contracts.ArgumentContractError,
+            detector_mapping.MappingError) as exc:
+        return "FAIL", f"U8a artifact is malformed: {exc}"
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    final = {row["Error ID"]: row for row in load_rows(final_path, "Error ID")}
+    receipts = []
+    receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
+    if receipt_path.is_file():
+        headers, rows = _table_with_headers(
+            receipt_path.read_text(encoding="utf-8", errors="replace"),
+            dismissal_verifier.RECEIPT_COLS, exact=True)
+        if rows is not None:
+            receipts = [dict(zip(headers, row)) for row in rows]
+    notes = []
+    for plant in plants:
+        caller = plant["caller"]
+        calls = [row for row in artifact.call_sites
+                 if row.site_anchor.startswith(caller + ":")]
+        findings = [row for row in artifact.findings
+                    if row.site_anchor.startswith(caller + ":")]
+        if len(calls) != 2:
+            return "FAIL", f"{plant['id']} expected two master call sites; found {len(calls)}"
+        if [(row.finding_kind, row.witness_id, row.callee_path)
+                for row in findings] != [(plant["finding_kind"],
+                                           plant["witness_id"],
+                                           plant["callee"])]:
+            return "FAIL", f"{plant['id']} raw artifact does not contain its exact one-flag set"
+        flagged_source = findings[0].source_id
+        control = [row for row in calls if row.resolved_callee == plant["control"]]
+        if len(control) != 1 or control[0].outcome != "consumed":
+            return "FAIL", f"{plant['id']} fully-consuming control is not quiet"
+        mapped = [row for row in mappings
+                  if row["Channel"] == "AC" and row["Source ID"] == flagged_source]
+        if len(mapped) != 1 or mapped[0]["Witness ID"] != plant["witness_id"]:
+            return "FAIL", f"{plant['id']} flagged source lacks exact AC mapping coverage"
+        error_id = mapped[0]["Error ID"]
+        row = final.get(error_id)
+        if row is None:
+            return "FAIL", f"{plant['id']} mapped candidate {error_id} is absent from final canon"
+        if row.get("Status") == "not_error":
+            covered = [receipt for receipt in receipts
+                       if _clean(receipt.get("Channel")) == "AC"
+                       and _clean(receipt.get("Source ID")) == flagged_source
+                       and _clean(receipt.get("Witness ID")) == plant["witness_id"]
+                       and _clean(receipt.get("Accepted (yes/no)")) == "yes"]
+            if not covered:
+                return "FAIL", f"{plant['id']} was dismissed without a verification receipt"
+            return "FAIL", f"{plant['id']} was dismissed instead of surviving as a downgraded issue"
+        if row.get("Status") not in {"confirmed", "confirmation_needed", "blocked"}:
+            return "FAIL", f"{plant['id']} final status {row.get('Status')!r} is not an issue status"
+        if row.get("Error Type") != "missing_input_or_output":
+            return "FAIL", f"{plant['id']} final row has wrong Error Type"
+        notes.append(f"{plant['id']} {flagged_source} -> {error_id} {row.get('Status')}")
+    return "PASS", "; ".join(notes)
+
+
 def check_channel_definition_use(audit):
     """Trace P-21 and D-03 through artifact, b4, ledger, and final register."""
     artifact = audit / "_run" / "definition_use_bundles.md"
@@ -1241,6 +1315,13 @@ def main() -> int:
     print(f"U3b adjudication channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U3b adjudication channel check failed")
+    if "P-26" in expected_ids:
+        status, note = check_argument_contract_channel(audit, expected)
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U8a P-26 plant")
+    print(f"U8a argument-contract channel: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U8a argument-contract channel check failed")
     if lint_mod is not None:
         for label, fn, red in (
             ("U4 anchoring advisory", check_artifact_anchoring,

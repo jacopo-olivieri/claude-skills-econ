@@ -74,6 +74,7 @@ def _base_tree(tmp_path, *, name="package", mode="replication", initialize=False
     mf = rb.run_script("check_manifests.py", root, "--audit-dir", a.audit)
     assert du.returncode == 0, du.stdout + du.stderr
     assert mf.returncode == 0, mf.stdout + mf.stderr
+    rb.emit_argument_contracts(a)
     return root, a
 
 
@@ -479,7 +480,9 @@ def test_verify_run_binds_live_scan_and_cv_section_to_snapshot_bytes(tmp_path):
 
     live.write_bytes((a.audit / "_run/snapshots/code_b3d/cv_scan.md").read_bytes())
     mapping = a.audit / "_run/detector_mapping.md"
-    mapping.write_text(mapping.read_text() + "\n", encoding="utf-8")
+    mapping.write_text(
+        mapping.read_text().replace(dm.MARKERS[3], "\n" + dm.MARKERS[3]),
+        encoding="utf-8")
     with pytest.raises(dm.MappingError, match="CV section differs byte-for-byte"):
         dm.check(root, a.audit, mapping)
 

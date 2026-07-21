@@ -27,6 +27,16 @@
       "receipt_required": true
     }
   ],
+  "argument_contract_plants": [
+    {
+      "id": "P-26",
+      "caller": "sh/ac_master.sh",
+      "callee": "jl/ac_e1201.jl",
+      "control": "py/ac_control.py",
+      "finding_kind": "passed_but_unread",
+      "witness_id": "argpos:2"
+    }
+  ],
   "must_find": [
     {
       "id": "P-01",
@@ -230,6 +240,15 @@
       "mechanism": "The body prose says calculated and reference speeds show substantial overlap and points to Figure A2, while make_figures.py plots calculated speeds 8-11 and reference speeds 28-34 in separate appendix panels — disjoint ranges. U7a CLAIM-HANDOFF TEST: the body sentence and appendix figure must execute under different claims workers; the deterministic printed-reference inventory independently assigns the body assertion even though the caption only labels Panel A and Panel B.",
       "min_severity": 2,
       "failure_class": "cross_span_claim_handoff"
+    },
+    {
+      "id": "P-26",
+      "kind": "code_error",
+      "expected_type": "missing_input_or_output",
+      "where": "sh/ac_master.sh passes two positional arguments through a macroized Julia command to jl/ac_e1201.jl",
+      "mechanism": "The master shell script passes public and private as two positional arguments to the Julia callee through a placeholder-root path and --threads option, but the callee reads only ARGS[1], so argpos:2 is silently ignored. The fully-consuming Python call in the same master script is the zero-flag control.",
+      "min_severity": 1,
+      "failure_class": "argument_contract"
     }
   ],
   "must_not_find": [

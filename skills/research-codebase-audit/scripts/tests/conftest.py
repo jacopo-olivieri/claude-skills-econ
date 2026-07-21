@@ -31,3 +31,5 @@ def pytest_configure(config):
         "markers", "u6: unit U6 — clean-file recall and supplementary lifecycle")
     config.addinivalue_line(
         "markers", "u7: unit U7 — anchor-preserving claim handoffs")
+    config.addinivalue_line(
+        "markers", "u8: unit U8 — severity and argument contracts")

@@ -7,9 +7,12 @@
   "data/village_rain_radius_25km.csv": "193dcec4bc235d976f6070883e273bcec545b0dde5e5dd0fabf2d42a949eba07",
   "do/analysis.do": "54b3dca714bf446a5f1973ce9a806e757c4ff260acb0dc0c4f8f4f9eebeb985b",
   "do/build_panel.do": "c5d0ab3c3ec7dc0ec96aca7a17dda5c1a16d275e30b1ece43e8da3cdde56f29f",
+  "jl/ac_e1201.jl": "7e8ada08a63fa123acdcecb3a4eca76b37a1a72acbe4d943023d9e2f1247b3e4",
   "paper/paper.tex": "9d41825f31e0a58a83a148cefd54f3fdd9405fff78c83cb329c9297ae5313be8",
+  "py/ac_control.py": "6fd8f05fbbe317f83de590dc2530eac1647374b706a2dfb26128a5650b36d5a8",
   "py/build_income.py": "1b79ebd4ce493f92d30df325483c7f8c0da47743488e9188dc77d0cea7ec8e98",
   "py/make_figures.py": "b3d27f98cdf542f36ba1377af2e4fb5c6d1c4f1b2b305f4e6f1cccba34a09e8b",
   "pyproject.toml": "8acf9b88ad8fc50a9674f479be767f6200b7c0353ec73bb7f6d78487d7de2a9e",
-  "requirements-recall.txt": "80091a891f905d1d66395910a56721a18f25974049b9b9368af33287cde18eca"
+  "requirements-recall.txt": "80091a891f905d1d66395910a56721a18f25974049b9b9368af33287cde18eca",
+  "sh/ac_master.sh": "6455760d4211895885c897a1462f6f972e47022ccc55010cea3da762fc32b76d"
 }

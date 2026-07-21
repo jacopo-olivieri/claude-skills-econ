@@ -57,6 +57,16 @@ def run_script(name, *args, cwd=None):
     return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
 
 
+def emit_argument_contracts(auditdir):
+    """Write the current deterministic AC raw artifact for a synthetic tree."""
+    result = run_script(
+        "check_argument_contracts.py", auditdir.root,
+        "--audit-dir", auditdir.audit,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return auditdir.audit / "_run/argument_contracts.md"
+
+
 # --------------------------------------------------------------- md builders
 
 
@@ -365,6 +375,7 @@ def detector_mapping_artifact(mappings=()):
     du_rows = [row for row in rows if row[0] == "DU"]
     mf_rows = [row for row in rows if row[0] == "MF"]
     cv_rows = [row for row in rows if row[0] == "CV"]
+    ac_rows = [row for row in rows if row[0] == "AC"]
     cols = ["Channel", "Source ID", "Witness ID", "Error ID", "Mapping Kind", "Site Anchor"]
     def section(marker, section_rows, zero):
         return marker + "\n\n" + (md_table(cols, section_rows) if section_rows else zero) + "\n"
@@ -376,6 +387,8 @@ def detector_mapping_artifact(mappings=()):
                   "No standard MF rows: the manifest detector emitted zero standard candidates.")
         + section("<!-- CONDUCTOR:CV -->", cv_rows,
                   "No channel-mapped CV rows: no conventions were consolidated for this run.")
+        + section("<!-- GENERATED:AC -->", ac_rows,
+                  "No channel-mapped AC rows: the argument-contract checker emitted zero findings.")
     )
 
 

@@ -182,13 +182,20 @@ reported number is wrong: severity 2's "does not change results" means no report
 changes, and severity 3's "changes a reported number" includes the levels and stated units of
 any quantity the paper reports.
 
-**Downstream-use severities must cite the search that establishes the use.** When a severity
-rests on the finding being *used downstream* — a code error matters because its output feeds a
-reported result, or a claim matters because the quantity is consumed elsewhere — the row must
-cite the specific script, table, or figure where that downstream use occurs, in either direction
-(claim→code or code→claim). An uncited "used downstream" justification cannot lift a severity
-above the finding's on-its-face level; do the search and cite it, or rate the finding on its own
-terms.
+**Severe code rows require a verified terminal token.** Every non-`pii_or_disclosure_risk`
+code row at Severity 3–4 with Status `confirmed` or `confirmation_needed` carries exactly one
+literal token in `Why It Matters`: `output:O-####` or `claim:C-####` in full mode, and
+`artifact:RA-<12 lowercase hex>` in code-errors-only mode. Duplicate literals, multiple tokens,
+cross-mode token kinds, `uses:` prose, and `build-abort:` do not satisfy this rule. Additional
+affected outputs belong in prose, not additional tokens. The b8 rewrite copies the original
+carrier to `Why It Matters Original`; all later gates read that preserved cell.
+
+The token is earned by a typed lineage probe and a conductor-issued receipt, not by prose. The
+b6a/b6b and final lints require a mechanically live token and its composite-key receipt. The
+only special routing is an otherwise valid, receipted C-/O-token whose target later became
+non-live: it crosses b6 unchanged as `target_not_live`, then b7 must reject it for an operator
+ruling. Status `confirmation_needed` is not an escape. Unsupported severity is capped at 2 or,
+in full mode only, takes the late-severity-residual exit defined below.
 
 **Issue-flagging rule** (two register-specific, lintable forms):
 
@@ -314,6 +321,24 @@ review-ladder levels where the review mode allows a probe within budget, a first
 may execute a worker-retyped synthetic reproduction of a fragment — never a repository script,
 never a documented setup command, never the audited package's data. Everything else about
 first-pass execution stays forbidden, and standing check (1) remains static at first pass.
+
+## Reported Artifact Token Inventory — `audit/CODEMAP.md`
+
+Code-errors-only CODEMAPs contain `## Reported Artifact Token Inventory` with exactly:
+
+`Reported Artifact ID | Terminal Kind | Path/Pattern | Declaration Anchor | Writer Site | Availability`
+
+The exact zero form is `No qualifying reported artifacts.` Full mode omits the section or keeps
+that exact empty form; it never carries an RA row. `Terminal Kind` is one of `table`, `figure`,
+`reported_dataset`, `author_export`; `Availability` is `shipped` or
+`generated_unshipped`. Intermediate/runtime/analysis datasets, caches, logs, checkpoints, and
+internal handoffs are ineligible. The declaration anchor resolves to the paper, README, or a
+CODEMAP-declared master deliverable; the writer site resolves to the exact write/export site.
+
+`Reported Artifact ID` is `RA-` plus the first 12 lowercase hex characters of SHA-256 over
+UTF-8/LF `terminal-kind\nnormalized-path-or-pattern\ndeclaration-anchor\nwriter-site\n`.
+The b0 lint recomputes it and rejects duplicate identities, duplicate IDs, hash-prefix
+collisions, material-inventory mismatches, and availability that disagrees with current intake.
 
 ## Claims register — `audit/claims_register.md`
 
@@ -707,6 +732,29 @@ justification for the gap to the pair's line in the summary. Lint enforces listi
 ends: b7 and b8 fail on any linked pair with differing filled severities that is absent from
 the section.
 
+**Severity-token sweep and rulings (full mode).** The b7 summary also contains
+`## Severity-token adjudications` and exactly
+`Token Key | Cited Target | Verdict | Evidence`, one row per token-bearing severe Error ID;
+Token Key is `E-#### <literal token>`, Verdict is `upheld` or `rejected`, and exact zero is
+`none`. A claim token must use the existing reciprocal claim↔error columns; the downstream-claim
+carve-out does not apply. b7 recomputes every target. A non-live token must be `rejected`—an
+`upheld` value is a deterministic certification failure.
+
+The full-mode-only `severity_token_rulings` stage freezes the sorted LF-joined rejected Token
+Key lines; `b7_certification_sha256` is SHA-256 of exactly those UTF-8 bytes. Its authority file
+`audit/_run/severity_token_rulings.json` has schema `severity_token_rulings/v1`, `cycle: main`,
+that digest, and one exact ruling per rejected Error ID with fields `error_id`, `token`,
+`b7_verdict`, `ruling`, `resulting_status`, `resulting_severity`, `rationale`, and
+`decision_identity`. `uphold` retains the pre-stage Status/Severity 3–4 and requires a currently
+live target; `cap` retains Status and sets Severity 1–2; `hold` sets
+`confirmation_needed`/Severity 1–2. With zero rejected keys, the exact extra fields are
+`skip_reason: zero_rejected_severity_tokens` and `rulings: []`.
+
+The certifier freezes the pre-stage register and ruling artifact, applies only Status/Severity,
+and verifies all other fields—including rejected token prose—unchanged. Missing coverage blocks
+the rulings stage, b8, and close-run. On the single post-bC b7 rerun, cap/hold keys may disappear,
+but any newly rejected key is a hard failure; the rulings stage never reruns.
+
 ## Recheck vocabulary
 
 Recheck workers judge existing rows only — **no new IDs at recheck**. Every assigned ID gets
@@ -829,6 +877,61 @@ Code errors:
 | `blocked` | `blocked` | kept |
 | `deferred` | `blocked` (note: deferred under ladder/off-limits) | kept |
 
+### Severity-token evidence and receipts
+
+At code-b5 dispatch in full mode, the conductor snapshots the latest lint-green
+`claims_register.md` and `output_register.md` under
+`audit/_run/snapshots/code_b5_dispatch/`. The code recheck plan records the exact line
+`Severity-token dispatch input head: claims:<sha256>;output:<sha256>`. Dispatch follows a green
+claims-b3 merge; if that input is unavailable, affected rows take a legal cap/residual exit.
+
+Each severe-token proof is one exact typed table row in its recheck shard (or, at bC, appended
+to `plans/late_observation_corrections.md`):
+
+`Record Type | Error ID | Token | Obligation Digest | Mechanism | Witness IDs | Error Location | Flawed Identifier | Cited Target | Lineage JSON | Probe Path | Probe Output SHA256 | Verdict | Derived From Receipt ID`
+
+`Record Type` is `token_verification`, `Verdict` is `verified`, and the mechanism is the
+canonical decoded five-field mechanism under `EMPTY_PROJECTION`. The obligation digest is
+SHA-256 over the documented `severity-token-obligation/v1` canonical JSON binding Error ID,
+literal token, decoded mechanism, sorted exact witness set, error location, and flawed
+identifier. `Lineage JSON` is an ordered array of exact `{anchor,carries}` objects. Every
+`path:line` hop resolves and textually contains what it carries; the first hop is the error
+location/flawed identifier and the endpoint is the output producer, claim source location, or
+the RA writer plus declaration anchors. The persisted shard-local probe must rerun green with
+the recorded output digest.
+
+Only `verify_dismissals.py --tokens` issues receipts. Homes are
+`audit/_run/code_b6a/token_receipts.md`, `audit/_run/code_b6b/token_receipts.md`, and
+`audit/_run/bC/token_receipts.md`. Serialization is UTF-8/LF: first line
+`Schema: token-receipts/v1`, then exactly
+`Receipt ID | Error ID | Token | Obligation Digest | Probe Path | Probe Output SHA256 | Verdict`,
+sorted by Receipt ID; zero is exactly `No token receipts.` in place of the table. Receipt ID is
+`TR-` plus the first 12 lowercase hex characters of SHA-256 over UTF-8
+`token-receipt/v1\0<Error ID>\0<literal token>\0<obligation digest>`. The lints rerun the probe,
+recompute IDs and exact receipt sets, and reject worker-authored or forged coverage.
+Gate activation is derived from register contents: the moment any non-exempt severity-3/4
+row at a final status exists, the b6a/b6b/b8/b9/bC lints, the boundary assembler, and
+close-run require the token artifacts — a missing receipts file is a failure, never a
+silent fallback to the pre-token behavior.
+
+### Late-severity residuals (full mode only)
+
+`audit/_run/late_severity_residuals.md` is b6b-certified with exact columns:
+
+`Error ID | Target Kind | Target ID | Dispatch Input Head | Target Introduction Head | Supplementary Outcome | Supplementary Evidence IDs`
+
+Header-only is the zero-row form. Residual rows cover only currently severe
+`confirmation_needed` rows, never `confirmed`, RA, split-only, or `target_not_live` rows.
+`Target Kind` is `claim` or `output`; outcomes are `exhausted_attempt`,
+`exhausted_post_plan`, or `unavailable_blocked`. The target must be terminal, absent from the
+digest-pinned dispatch inputs, introduced by the named certified snapshot, and either attempted
+by the exact b5s obligation, first introduced after that opportunity, or blocked by the
+certified b5s blocker evidence. `exhausted_post_plan` is refused when the introduction stage
+was provably an input to the b6a plan derivation (any stage at or before `code_b6a` in the
+canonical order, the wall-clock-parallel claims recheck wave excepted). At b6b and final gates every currently eligible severe row is
+covered exactly once by receipt XOR residual. This closure is one-way: receipts retained after
+a later cap/hold remain legal.
+
 ## Supplementary-wave contract
 
 There is exactly one supplementary cycle: b6a → b5s → b6b. It reuses the b5 ledger/footer
@@ -854,14 +957,27 @@ b6b still mints no rows. The dismissal artifact analogously uses
 `No supplementary dismissal receipts were required.` Stage snapshots always use
 `audit/_run/snapshots/<stage-key>/`.
 
-Each supplementary plan retains the b4 inventory table `ID | Reason | Likely Evidence`, cluster
-table `Cluster ID | Cluster Name | Assigned IDs | Shard File`, and verdict-vocabulary pointer.
+The claims supplementary plan retains the b4 inventory table
+`ID | Reason | Likely Evidence`. The code plan instead uses the sanctioned token-obligation
+schema `Error ID | Reasons | Parent Error ID | Obligation Digest | Witness IDs | Required Products`.
+`Reasons` is the canonical sorted subset of `discovery`, `late_token`, `split_token`; one worker
+assignment satisfies the union for an Error ID. That union is exactly accepted code discoveries,
+terminal targets minted after main dispatch while b5s can still run, and every severe b6a split
+descendant without its own post-split proof. Both plans retain the cluster table
+`Cluster ID | Cluster Name | Assigned IDs | Shard File` and verdict-vocabulary pointer.
 Each accepted fresh discovery range is one line
 `Declared supplementary discovery range: C-####–C-####` (or O/E). Range capacity equals the
 accepted discovery count; split descendants remain in their previously declared coordinator
 range. The plan inventory exactly covers new C/E rows; output discoveries are never inventory.
-When inventory is empty, include the exact line `No supplementary recheck inventory.` with empty
-inventory/cluster tables and dispatch no shard. The plan itself certifies this zero-work case.
+When inventory is empty, include the exact line `No supplementary recheck inventory.` with an
+empty schema table/cluster table and dispatch no shard. Code b5s may take this path only when
+the full discovery/late/split union is empty.
+
+Splits exist only at b6a. Every severe descendant, including the branch retaining the parent
+ID, gets a receipt under its post-split obligation digest; a parent receipt never inherits.
+A reused probe is rerun and may name `Derived From Receipt ID`. Any descendant still uncovered
+at b6b is capped to Severity 1–2 by the merge coordinator before atomic promotion; b6b mints no
+rows, and its read-only lint refuses parent-only, wrong-digest, or uncovered severe state.
 
 Every b6a summary carries exact lines `Splits declared: <n>`, `Merges declared: <n>`, and
 `Discoveries declared: C=<n>; O=<n>; E=<n>`. Main b5 and supplementary b5s shards both end in
@@ -915,6 +1031,13 @@ of the UTF-8 preimage `register + NUL + row_id + NUL + field + NUL + old_value`.
 register row → plan row → LO disposition; registers gain no LO-provenance column. A BC ID refers
 to one LO ID, an output correction includes a claims edit under the same BC ID, and no field
 outside reciprocal C↔O links is patchable.
+
+A bC `new_row` code-error mint at Severity 3–4 is legal only when its payload already contains
+exactly one mode-qualifying token, the typed `token_verification` table is appended to this bC
+plan, and the production verifier has written its matching live-target receipt to
+`audit/_run/bC/token_receipts.md`. A non-live citation refuses the mint. Otherwise the new row
+must be capped to Severity 1–2. In full mode the ordinary post-bC b7 replay must uphold every
+bC severe mint; no bC-qualified rulings stage exists.
 
 ## Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`)
 

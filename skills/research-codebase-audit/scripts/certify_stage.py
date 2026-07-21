@@ -22,6 +22,8 @@ import build_detector_mapping as detector_mapping
 import dispatch_tracking
 import lint_registers as registers
 import paper_sources
+import severity_token_rulings
+import severity_tokens
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -34,7 +36,8 @@ FULL_STAGES = (
     "claims_b4", "claims_b5", "claims_b6a", "claims_b5s", "claims_b6b",
     "code_b1", "code_b2", "code_b3", "code_b3d", "code_b3b", "code_b4", "code_b5",
     "code_b6a", "code_b5s", "code_b6b",
-    "bC", "claims_adjudication_lineage", "b7", "b8", "b9",
+    "bC", "claims_adjudication_lineage", "b7", "severity_token_rulings",
+    "b8", "b9",
 )
 CODE_ONLY_STAGES = (
     "b0",
@@ -67,6 +70,8 @@ VALIDATORS = {
     "lint:b5s-code": "b5s-code",
     "lint:b6b-code": "b6b-code",
     "lint:bC": "bC",
+    "lint:b7": "b7",
+    "lint:severity-token-rulings": "severity_token_rulings",
     "lint:b8": "b8",
     "lint:b9": "b9",
 }
@@ -320,6 +325,16 @@ def start_stage(package_root, stage):
             f"stage {stage!r} is {status!r}; start permits only pending -> running "
             "or blocked -> running"
         )
+    if stage == "severity_token_rulings":
+        b7 = manifest.get("stages", {}).get("b7", {})
+        if not isinstance(b7, dict) or b7.get("status") != "done":
+            raise CertificationError(
+                "severity_token_rulings requires a certified done b7 stage")
+        try:
+            severity_token_rulings.snapshot_stage(
+                package_root, package_root / "audit", manifest)
+        except severity_token_rulings.RulingsError as exc:
+            raise CertificationError(f"cannot freeze b7 rejected worklist: {exc}") from exc
     if status == "blocked":
         entry["retries"] = int(entry.get("retries", 0)) + 1
     entry["status"] = "running"
@@ -475,10 +490,17 @@ def resolve_stage_obligations(package_root, manifest, stage, table=None):
             continue
         condition = obligation.get("when")
         if condition is not None:
-            if condition != "paper_source_set":
+            if condition == "paper_source_set":
+                if not manifest.get("paper_source_set"):
+                    continue
+            elif condition == "replication":
+                if manifest.get("mode") != "replication":
+                    continue
+            elif condition == "code_errors_only":
+                if manifest.get("mode") != "code_errors_only":
+                    continue
+            else:
                 failures.append(f"stage {stage!r} has unknown obligation condition {condition!r}")
-                continue
-            if not manifest.get("paper_source_set"):
                 continue
         obligation_type = obligation.get("type")
         if obligation_type == "artifact":
@@ -534,6 +556,13 @@ def finish_stage(package_root, stage, outcome, reason=None):
         entry["reason"] = " ".join(reason.split())
         write_manifest_atomic(package_root, manifest)
         return
+    if stage == "severity_token_rulings":
+        try:
+            severity_token_rulings.apply_rulings(
+                package_root, package_root / "audit", manifest)
+        except severity_token_rulings.RulingsError as exc:
+            raise CertificationError(
+                f"severity_token_rulings refused with zero promotion: {exc}") from exc
     failures = resolve_stage_obligations(package_root, manifest, stage)
     if failures:
         raise CertificationError(
@@ -755,7 +784,34 @@ def close_run(package_root):
     require_canonical_identity(package_root, manifest)
     _refuse_pending_late_observations(package_root)
     _refuse_pending_handoff_obligations(package_root, manifest)
+    _refuse_pending_severity_token_rulings(package_root, manifest)
     remove_running_marker(package_root)
+
+
+def _refuse_pending_severity_token_rulings(package_root, manifest):
+    """U8b completion gate: rejected severity tokens need operator rulings."""
+    if manifest.get("mode") != "replication":
+        return
+    audit = package_root / "audit"
+    severe_rows = severity_tokens._load_register_error_rows(audit)
+    activated = (
+        (audit / "_run/code_b6b/token_receipts.md").is_file()
+        or (audit / "_run/snapshots/severity_token_rulings/b7_rejected_worklist.json").is_file()
+        or severity_tokens.gate_required(severe_rows.values())
+    )
+    if not activated:
+        return
+    stages = manifest.get("stages", {})
+    entry = stages.get("severity_token_rulings") if isinstance(stages, dict) else None
+    if not isinstance(entry, dict) or entry.get("status") != "done":
+        raise CertificationError(
+            "close-run refused: severity_token_rulings is not done")
+    failures = resolve_stage_obligations(
+        package_root, manifest, "severity_token_rulings")
+    if failures:
+        raise CertificationError(
+            "close-run refused: pending severity-token ruling(s): "
+            + " | ".join(failures))
 
 
 def _refuse_pending_handoff_obligations(package_root, manifest):

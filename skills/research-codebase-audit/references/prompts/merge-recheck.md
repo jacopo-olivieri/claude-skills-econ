@@ -56,8 +56,14 @@ to `{SUMMARY_FILE}`.
    `Blocked Check` column from the ledger (what stayed checkable from visible material and the
    result) — it is required non-empty on every `blocked` claim.
    For a mechanically mapped code-error row, never write `not_error`: leave the staged row at its
-   non-dismissal state for the conductor's boundary assembler. Apply `confirmation_needed`
-   proposals of severity 3–4 at severity 2. Derive a mapped `duplicate_of:<ID>` only after the
+   non-dismissal state for the conductor's boundary assembler. A code proposal at Severity 3–4
+   may remain severe only with its exact qualifying token-verification obligation. At b6a, put
+   every accepted discovery, late-token opportunity, and severe split descendant lacking its
+   own receipt into the one six-column supplementary plan; parent receipts never inherit. At
+   b6b, cap every still-uncovered descendant to Severity 1–2 before atomic promotion; preserve a
+   severe `confirmation_needed` row only when it has its own receipt or the exact certified
+   late-severity residual. Never use a residual for split-only or `target_not_live`. Derive a
+   mapped `duplicate_of:<ID>` only after the
    guarded-duplicate legs in the contract pass; otherwise keep the row `confirmed` or
    `confirmation_needed`.
 3. Follow the row-lifecycle rules in `{CONTRACT_PATH}`: never delete; demotions follow

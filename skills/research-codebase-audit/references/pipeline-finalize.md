@@ -4,10 +4,10 @@ Runs after both streams (or the only stream) reach `done`/`blocked` at b6b.
 
 ## Mode skip rules
 
-| Mode | b7 cross-link | b8 rewrite | b9 export |
-| --- | --- | --- | --- |
-| Full replication | yes | both registers | Overview + Paper Claims + Code Errors + both late-observation sheets |
-| Code-errors-only | **skip** (no claims register) | code register only | Overview + Code Errors + both late-observation sheets |
+| Mode | b7 cross-link | severity-token rulings | b8 rewrite | b9 export |
+| --- | --- | --- | --- | --- |
+| Full replication | yes | yes | both registers | Overview + Paper Claims + Code Errors + both late-observation sheets |
+| Code-errors-only | **skip** (no claims register) | **skip by stage-tuple omission** | code register only | Overview + Code Errors + both late-observation sheets |
 
 A stream that ended with blocked stages still finalizes: blocked rows carry their status into
 the export; blocked *stages* are listed in the final report, and cross-link runs on whatever
@@ -44,7 +44,9 @@ close-run refusal.
    every link pairing a `confirmed` claim with a `confirmed` code error, a
    `## Escalated mapped claims` section for every link pairing a `confirmed` code error with a
    `mapped` claim it contradicts, and a `## Severity divergences` section for every link whose
-   two rows carry filled, differing severities. Before dispatch, compute the
+   two rows carry filled, differing severities. It also writes `## Severity-token adjudications`
+   with one exact `upheld`/`rejected` row per token-bearing severe Error ID, or exact `none`.
+   Claim tokens use the ordinary reciprocal claim↔error columns. Before dispatch, compute the
    confirmed-claim↔confirmed-error code-location overlaps and pass the pair list in the
    dispatch as the floor of the worker's step-2 overlap enumeration; the worker adjudicates
    every overlap candidate individually, and no sibling's judgment call clears another row
@@ -58,7 +60,9 @@ close-run refusal.
    resolves both ways (C-x lists E-y ⟺ E-y lists C-x); summary exists; every
    confirmed-claim↔confirmed-error link is listed under `## Status conflicts`; every
    mapped-claim↔confirmed-error contradiction is listed under `## Escalated mapped claims`;
-   every divergent-severity link is listed under `## Severity divergences`. Atomic rename.
+   every divergent-severity link is listed under `## Severity divergences`; and the severity
+   token table exactly covers the severe token set. A recomputed-non-live citation must be
+   rejected. Atomic rename.
 4. **Conditional claims recheck.** Inspect the union of `## Status conflicts`,
    `## Severity divergences`, and `## Escalated mapped claims`. If it is non-empty, dispatch the
    existing `recheck-cluster-worker.md` exactly once (role: `b7_claim_recheck`) over exactly the
@@ -97,6 +101,19 @@ close-run refusal.
    changed rows).
 8. After promotion, certify with `certify_stage.py finish --stage b7 --outcome done`.
 
+## severity_token_rulings — rejected-token decisions (full replication only)
+
+Start this stage immediately after certified b7. The certifier freezes the certified b7
+rejected-token worklist and code register and derives `b7_certification_sha256`. The trusted
+operator writes `audit/_run/severity_token_rulings.json` in the exact schema and closed
+uphold/cap/hold matrix from `registers.md`; no worker or conductor invents a default decision.
+With no rejected tokens, write the exact `zero_rejected_severity_tokens` skip form.
+
+Finish the stage. The certifier snapshots the authority artifact, atomically applies only
+Status/Severity, and reruns `lint_registers.py --stage severity_token_rulings`. Missing coverage
+or a doctored/non-live uphold produces zero promotion. Do not start b8 until this stage is
+`done`; close-run independently enforces the same fail-closed tail.
+
 ## b8 — Author-facing rewrite
 
 1. Snapshot to `audit/_run/snapshots/b8/`.
@@ -105,7 +122,8 @@ close-run refusal.
    pass: it renames technical fields to `*_Original` and writes author-facing
    versions, armed with the five contrastive gold examples and the jargon ban carried verbatim
    in the skeleton.
-3. `lint_registers.py --stage b8`: counts/IDs/statuses/paths byte-identical; `*_Original`
+3. `lint_registers.py --stage b8`: first refuses unless the activated full-mode rulings stage
+   is `done`; then counts/IDs/statuses/paths byte-identical; `*_Original`
    columns preserve prior text; blankness pairing both directions; no `Notes` columns; any
    linked pair with differing severities listed under `## Severity divergences`.
 4. **Promote by copy, not move**: copy the staging registers over canon — each register
@@ -148,22 +166,33 @@ stage is pending or absent, an H/X state is not final-passable, a disposition
 is raw, lineage equivalence was refused, or a `blocked_fallback` lacks an exact
 operator decision in `audit/_run/handoff_blocked_decisions.json`. On a blocked
 stage every worklist item lacking a valid verdict must itself be
-`blocked_fallback`.
+`blocked_fallback`. It also refuses an activated full-mode run unless
+`severity_token_rulings` is `done` with exact frozen-worklist coverage.
 
 ## Operator-approved bC correction cycle
 
 Enter `bC` only after explicit operator approval of one or more Phase-4 late observations.
 Write `audit/plans/late_observation_corrections.md` using the exact plan serialization in
 `registers.md`, snapshot the applicable canonical registers **and each present
-`late_observations_<stream>.md` artifact** under `audit/_run/snapshots/bC/`, apply the declared
-rows/patches and disposition transitions through staging and atomic promotion, then run
-`lint_registers.py --stage bC` and certify `bC`. The lint compares canonical registers against
+`late_observations_<stream>.md` artifact** under `audit/_run/snapshots/bC/`, and apply the
+declared rows/patches and disposition transitions to staging. Run the production token verifier
+before promotion as
+`scripts/verify_dismissals.py <package-root> --audit-dir audit --tokens --token-stage bC`; the
+typed token record for every severe code mint is appended to this plan and receipts live at
+`audit/_run/bC/token_receipts.md`. Then atomically promote, run
+`lint_registers.py --stage bC`, and certify `bC`.
+The lint compares canonical registers against
 the snapshot and plan, requires late-observation evidence bytes to remain unchanged, and checks
 each old → new disposition against the monotone matrix; it accepts no row-carried LO provenance
 and no undeclared cell edit.
 
-In full-replication mode, no lineage rerun is required: bC patches only reciprocal link cells
-on existing rows and mints new rows no ledger entry cites. Rerun b7 in replay-plus-extension mode for new-row links, then rerun
+Every bC severity-3/4 code mint must already carry exactly one receipted, live token; cap it to
+Severity 1–2 otherwise, and refuse a non-live citation. In full-replication mode, no claims
+lineage-rulings rerun is required: bC patches only reciprocal link cells on existing rows and
+mints new rows no claims ledger entry cites. Rerun b7 in replay-plus-extension mode for new-row
+links and require every bC token to be upheld. Cap/hold keys from the frozen main-cycle worklist
+may disappear; any new rejected key is a hard failure. Never rerun `severity_token_rulings`.
+Then rerun
 b8 **scoped to the new rows only** and rerun b9. In code-errors-only mode b7 remains skipped;
 rerun b8 scoped to the new rows only, then b9. A correction that adds an output includes its
 companion claims edit in the same BC-ID group. Never create another supplementary wave.

@@ -12,6 +12,7 @@ import build_detector_mapping as detector_mapping
 import lint_registers as registers
 import mechanism_schema as mechanisms
 import verify_dismissals as verifier
+import severity_tokens
 
 
 CODE_LEDGER_COLS = verifier.CODE_LEDGER_COLS
@@ -214,6 +215,48 @@ def assemble(audit, register_path, supplementary=False):
     ledgers, outcomes, records = load_inputs(audit, supplementary)
     receipts = load_receipts(audit, supplementary)
     register = _register(register_path)
+    token_authorized = set()
+    token_home = "code_b6b" if supplementary else "code_b6a"
+    token_receipts = audit / f"_run/{token_home}/token_receipts.md"
+    # Severe-eligible rows make the gate mandatory even when no token
+    # artifact was ever written: a conductor that omits the token workflow
+    # must fail here, never fall back to the pre-U8 boundary.
+    if token_receipts.is_file() or severity_tokens.gate_required(register.values()):
+        try:
+            manifest = __import__("json").loads(
+                (audit / "_run/manifest.json").read_text(encoding="utf-8"))
+            classifications, token_failures = severity_tokens.gate_rows(
+                audit.parent, audit, manifest, list(register.values()), token_home)
+            allowed_uncovered = set()
+            tokenless_ok = set()
+            if not supplementary:
+                plan = audit / "plans/code_error_supplementary_recheck_plan.md"
+                if plan.is_file():
+                    allowed_uncovered = {
+                        row["Error ID"] for row in severity_tokens.rows_for_columns(
+                            plan, severity_tokens.SUPPLEMENTARY_TOKEN_COLS)
+                        if set(part.strip() for part in row["Reasons"].split(","))
+                        & {"late_token", "split_token"}
+                    }
+            else:
+                residual = audit / "_run/late_severity_residuals.md"
+                if residual.is_file():
+                    tokenless_ok = {
+                        row["Error ID"] for row in severity_tokens.rows_for_columns(
+                            residual, severity_tokens.RESIDUAL_COLS)
+                    }
+            remaining = severity_tokens.excuse_uncovered_failures(
+                audit.parent, audit, manifest, list(register.values()),
+                token_failures, allowed_uncovered, tokenless_ok)
+            if remaining:
+                raise BoundaryError("severity-token gate: " + " | ".join(remaining))
+            token_authorized = {
+                eid for eid, state in classifications.items()
+                if state in {"live", "target_not_live"}
+            } | allowed_uncovered | tokenless_ok
+        except (OSError, __import__("json").JSONDecodeError,
+                severity_tokens.SeverityTokenError) as exc:
+            raise BoundaryError(f"cannot resolve severity-token boundary: {exc}") from exc
     ledgers_by_id = _ledger_by_id(ledgers)
     lineage, split_originals = ({}, set()) if supplementary else load_lineage(audit, mappings)
     mapped_ids = {row["Error ID"] for row in mappings} | set(lineage.values())
@@ -242,7 +285,8 @@ def assemble(audit, register_path, supplementary=False):
             canonical_by_group.setdefault(effective, set()).add(canonical.sidecar)
     dispositions = {}
     for error_id, (ledger_path, ledger) in group_ledgers.items():
-        expected = registers.expected_code_disposition(ledger)
+        expected = registers.expected_code_disposition(
+            ledger, severe_authorized=error_id in token_authorized)
         if expected is None:
             raise BoundaryError(
                 f"{ledger_path}: mapped Error ID {error_id} has invalid code verdict "

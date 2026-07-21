@@ -85,6 +85,7 @@ import definition_use as du
 import build_detector_mapping as detector_mapping
 import check_argument_contracts as argument_contracts
 import mechanism_schema as mechanism_schema
+import severity_tokens
 import verify_dismissals as dismissal_verifier
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -163,6 +164,13 @@ SIGNATURES = {
              ["overlap", "disjoint", "8", "11", "28", "34"]],
     "P-26": [["argument"], ["callee", "contract"],
              ["unread", "never reads", "ignored", "argpos:2"]],
+    "P-27": [["income_pc", "income per member", "income per household member",
+              "per-capita income", "per capita income"],
+             ["age_head", "age of head", "head age", "head's age"]],
+    "P-28": [["wage_pc"],
+             ["age_head", "age of head", "head age", "head's age"]],
+    "P-29": [["crop_pc"],
+             ["age_head", "age of head", "head age", "head's age"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked
@@ -823,6 +831,72 @@ def check_argument_contract_channel(audit, expected):
     return "PASS", "; ".join(notes)
 
 
+def check_severity_token_plants(audit, expected):
+    """U8b severity plants: receipted token on arm (a), band caps on (b)/(c).
+
+    Artifact-layer assertions in the ``adjudication_contract_plants`` style:
+    arm (a) must close confirmed at its exact severity carrying exactly one
+    mode-qualifying token whose target resolves to a reported output row and
+    whose verifier receipt exists; arms (b)/(c) assert the severity band
+    REGARDLESS of status — a ``confirmation_needed`` row above the band still
+    fails the plant."""
+    plants = expected.get("severity_token_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U8b severity-token plants"
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    rows = load_rows(final_path, "Error ID")
+    receipts = {}
+    for stage in ("code_b6b", "code_b6a"):
+        if (audit / f"_run/{stage}/token_receipts.md").is_file():
+            parsed, failures = severity_tokens.load_receipts(audit, stage)
+            if failures:
+                return "FAIL", f"{stage} token receipts are malformed: {failures[0]}"
+            for key, receipt in parsed.items():
+                receipts.setdefault(key, receipt)
+    output_rows = []
+    output_path = audit / "output_register.md"
+    if output_path.is_file():
+        output_rows = load_rows(output_path, "Output ID")
+    notes = []
+    for item in plants:
+        pid = item["id"]
+        matched = [d for d in rows if sig_match(row_text(d), SIGNATURES[pid])]
+        if len(matched) != 1:
+            return "FAIL", f"{pid} matches {len(matched)} register rows (need exactly one)"
+        d = matched[0]
+        sev, status = severity(d), (d.get("Status") or "").strip()
+        if "max_severity" in item and sev > int(item["max_severity"]):
+            return "FAIL", (f"{pid} arm ({item.get('arm', '?')}) severity {sev} exceeds "
+                            f"its band <= {item['max_severity']} (status={status!r} — "
+                            "the band binds regardless of status)")
+        if "exact_severity" in item and sev != int(item["exact_severity"]):
+            return "FAIL", f"{pid} final severity is {sev}, expected {item['exact_severity']}"
+        if "final_status" in item and status != item["final_status"]:
+            return "FAIL", f"{pid} final status is {status!r}, expected {item['final_status']}"
+        if item.get("receipt_required"):
+            carrier = severity_tokens.why_text(d)
+            found = severity_tokens.literal_tokens(carrier)
+            kind = item.get("token_kind", "output")
+            if len(found) != 1 or not found[0].startswith(kind + ":"):
+                return "FAIL", (f"{pid} carrier must hold exactly one {kind}: token "
+                                f"(found {found})")
+            token = found[0]
+            target = token.split(":", 1)[1]
+            target_row = next((r for r in output_rows
+                               if (r.get("Output ID") or "").strip() == target), None)
+            if kind == "output" and (target_row is None or not (
+                    target_row.get("Paper Location") or "").strip(" -—")):
+                return "FAIL", f"{pid} token target {target} does not resolve to a reported output row"
+            covered = [key for key in receipts
+                       if key[0] == d.get("Error ID") and key[1] == token]
+            if len(covered) != 1:
+                return "FAIL", f"{pid} lacks exactly one verifier token receipt for {token}"
+        notes.append(f"{pid} {d.get('Error ID')} {status} sev={sev}")
+    return "PASS", "; ".join(notes)
+
+
 def check_channel_definition_use(audit):
     """Trace P-21 and D-03 through artifact, b4, ledger, and final register."""
     artifact = audit / "_run" / "definition_use_bundles.md"
@@ -1322,6 +1396,14 @@ def main() -> int:
     print(f"U8a argument-contract channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U8a argument-contract channel check failed")
+    if {"P-27", "P-28", "P-29"} <= expected_ids:
+        status, note = check_severity_token_plants(audit, expected)
+    else:
+        status, note = ("NOT COVERED",
+                        "answer key does not request the U8b severity plants")
+    print(f"U8b severity-token plants: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U8b severity-token plant check failed")
     if lint_mod is not None:
         for label, fn, red in (
             ("U4 anchoring advisory", check_artifact_anchoring,

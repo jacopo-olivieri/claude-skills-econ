@@ -94,7 +94,15 @@ code, output, or artifact locations only when needed to decide whether a link is
    (`C-xxxx (sev a) <-> E-xxxx (sev b) — one-line note on the apparent reason`). Do NOT
    change any severity yourself; the conductor resolves each listed pair (align or
    justify). Omit the section if there are none.
-9. The summary lists the links added, grouped by ID, with brief notes only for non-obvious
+9. **Severity-token adjudications**: add `## Severity-token adjudications` with exactly one row
+   per non-exempt Severity-3/4 code row at Status `confirmed` or `confirmation_needed`, using
+   `Token Key | Cited Target | Verdict | Evidence`. Token Key is `E-#### <literal token>`;
+   Verdict is `upheld` only when the terminal tie still anchors, otherwise `rejected`; Evidence
+   is an exact path:line or declared link. Recompute target liveness now. A non-live C-/O-ID must
+   be `rejected` with its tombstone/surgery lineage cited; never uphold it. A `claim:` token also
+   requires the ordinary reciprocal claim↔error link—there is no downstream-claim carve-out for
+   token citations. When the eligible set is empty, write exactly `none` and no table.
+10. The summary lists the links added, grouped by ID, with brief notes only for non-obvious
    links.
 
 ## CONSTRAINTS
@@ -114,5 +122,5 @@ code, output, or artifact locations only when needed to decide whether a link is
 
 Updated link fields in the two staging files + `audit/register_cross_link_summary.md`, then
 report: claims linked, errors linked, links added by ID, status conflicts (if any), escalated
-mapped claims (if any), severity divergences (if any).
+mapped claims (if any), severity divergences (if any), and severity-token adjudications.
 ```

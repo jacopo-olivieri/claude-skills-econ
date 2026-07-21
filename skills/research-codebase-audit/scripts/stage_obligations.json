@@ -124,7 +124,16 @@
   ],
   "b7": [
     {"type": "artifact", "pattern": "claims_register.md"},
-    {"type": "artifact", "pattern": "code_error_register.md"}
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "register_cross_link_summary.md"},
+    {"type": "validate", "validator": "lint:b7"}
+  ],
+  "severity_token_rulings": [
+    {"type": "artifact", "pattern": "_run/severity_token_rulings.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/b7_rejected_worklist.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/code_error_register.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/severity_token_rulings.json"},
+    {"type": "validate", "validator": "lint:severity-token-rulings"}
   ],
   "b8": [
     {"type": "artifact", "pattern": "_staging/*.md"},

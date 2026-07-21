@@ -21,6 +21,7 @@ Reference files (all paths relative to this skill's folder):
   `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py`,
   `scripts/check_argument_contracts.py` (all conductor-invoked at
   certified `b3d`; see `references/pipeline-code-errors.md`), `scripts/verify_dismissals.py`,
+  `scripts/severity_tokens.py`, `scripts/severity_token_rulings.py`,
   `scripts/assemble_boundary.py`, and `scripts/certify_stage.py` (the only writer of stage status;
   its typed evidence table is `scripts/stage_obligations.json`).
 
@@ -37,7 +38,8 @@ Invariants you never break:
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
   are stream-qualified: `b0`, `b1-claims`…`b5-claims`, `b1-code`…`b5-code`, the second-read
-  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
+  sweep `b3b-claims`/`b3b-code`, `b7`, `severity_token_rulings`, `b8`, `b9`;
+  worker-shard checks add `--shard <path>` —
   `b2`, `b5`, `b5s`, and `b3b` are the shard-lintable stages; the supplementary boundaries are
   `b6a-<stream>`, `b5s-<stream>`, and `b6b-<stream>`, and the approved correction stage is `bC`;
   `b3b` lints a second-read shard with
@@ -137,7 +139,8 @@ edit those blocks by hand.
 emission `code_b3d`, the
 second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4),
 `claims_adjudication` after claims b3b, `claims_adjudication_lineage` after bC,
-then `b7`, `b8`, `b9` (finalize keys
+then `b7`, `severity_token_rulings`, `b8`, `b9` (the rulings key exists only in full mode;
+finalize keys
 exist only where the mode runs them), plus optional operator-approved `bC`. Worker shard outcomes are recorded only with
 `certify_stage.py set-shard`; the stage itself is certified separately.
 
@@ -181,7 +184,8 @@ Completion: manifest written and every field above resolved with the user.
    `audit_sha256`; the three singular paper fields remain pinned to the root entry only for
    compatibility. Unsupported inclusion syntax fails intake with its source line.
 4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`; role: `codemap`): produces
-   `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, and a **preconditions
+   `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, the mode-governed
+   **Reported Artifact Token Inventory**, and a **preconditions
    score** (README present? unique output↔script mapping? documented data sources?). Low
    scores are recorded as degraded-confidence `warnings` in the manifest — they surface in the
    export; they never stop the run.
@@ -209,6 +213,7 @@ each stream:
 | optional `bC` late-observation correction | `bC` | `references/pipeline-finalize.md` |
 | `claims_adjudication_lineage` final carrier verdicts | `claims_adjudication.py --check` | `references/pipeline-finalize.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
+| `severity_token_rulings` rejected-token operator decisions | `severity_token_rulings` | `references/pipeline-finalize.md` |
 | `b8` author-facing rewrite | `b8` | `references/pipeline-finalize.md` |
 | `b9` Excel export (`scripts/export_xlsx.py`, never an LLM) | `b9` | `references/pipeline-finalize.md` |
 
@@ -246,6 +251,9 @@ Run `certify_stage.py close-run` once. `close-run` is the completion-report gate
 while any late-observation disposition is still `pending`, so a run that collected late
 observations closes only after the first Phase-4 disposition batch (registers.md § late
 observations) has replaced every pending state.
+In full-replication runs whose severity-token lifecycle is active, it also refuses until
+`severity_token_rulings` is certified `done` and its frozen rejected worklist has exact ruling
+coverage.
 In full-replication runs with a paper source set, it also refuses while either reserved U7
 adjudication stage is absent/nonterminal or any H/X ledger entry is non-final. U7a
 intentionally leaves that tail pending; U7b supplies its only legal terminalizer. A

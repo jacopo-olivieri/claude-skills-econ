@@ -37,6 +37,26 @@
       "witness_id": "argpos:2"
     }
   ],
+  "severity_token_plants": [
+    {
+      "id": "P-27",
+      "arm": "a",
+      "final_status": "confirmed",
+      "exact_severity": 3,
+      "token_kind": "output",
+      "receipt_required": true
+    },
+    {
+      "id": "P-28",
+      "arm": "b",
+      "max_severity": 2
+    },
+    {
+      "id": "P-29",
+      "arm": "c",
+      "max_severity": 2
+    }
+  ],
   "must_find": [
     {
       "id": "P-01",
@@ -249,6 +269,33 @@
       "mechanism": "The master shell script passes public and private as two positional arguments to the Julia callee through a placeholder-root path and --threads option, but the callee reads only ARGS[1], so argpos:2 is silently ignored. The fully-consuming Python call in the same master script is the zero-flag control.",
       "min_severity": 1,
       "failure_class": "argument_contract"
+    },
+    {
+      "id": "P-27",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py income_pc derivation vs paper Sec. 3 ('dividing total household income by household size')",
+      "mechanism": "The paper defines per-member income as total income divided by household size, but income_pc divides by age_head (the adjacent head-age column) instead of hhsize. The wrong derived variable is consumed downstream by py/make_tab2.py, which writes the reported Table 2 means, so the reported quantity is wrong. U8b SEVERITY-TOKEN ARM (a): must end confirmed at severity 3 carrying exactly one receipted output: token that resolves to the Table 2 output row.",
+      "min_severity": 3,
+      "failure_class": "severity_token"
+    },
+    {
+      "id": "P-28",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py wage_pc derivation",
+      "mechanism": "wage_pc is derived with the same wrong denominator (age_head instead of hhsize) but is never read again: it is not saved to the output CSV, not aggregated, and feeds nothing. U8b SEVERITY-TOKEN ARM (b): same mechanism family as P-27 with no downstream consumption, so the final severity must stay at or below 2 regardless of status.",
+      "min_severity": 1,
+      "failure_class": "severity_token"
+    },
+    {
+      "id": "P-29",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py crop_pc derivation and village aggregation",
+      "mechanism": "crop_pc is derived with the same wrong denominator (age_head instead of hhsize) and consumed two lines later by a village-level groupby mean that is only printed to the console — its descendants never reach any saved output or reported quantity (the E-0304 local-consumption shape). U8b SEVERITY-TOKEN ARM (c): the final severity must stay at or below 2 regardless of status.",
+      "min_severity": 1,
+      "failure_class": "severity_token"
     }
   ],
   "must_not_find": [

@@ -9,7 +9,8 @@ Usage:
 
 Stages: b0, b1-claims, b1-code, b2-claims, b2-code, b3-claims, b3-code,
         b4-claims, b4-code, b5-claims, b5-code, b6a-claims, b6a-code,
-        b5s-claims, b5s-code, b6b-claims, b6b-code, bC, b7, b8, b9
+        b5s-claims, b5s-code, b6b-claims, b6b-code, bC, b7,
+        severity_token_rulings, b8, b9
 (b2/b5 lint one worker shard, passed with --shard; b3b-claims/b3b-code lint a
 second-read shard with --shard, or the second-read merge without it).
 """
@@ -25,6 +26,8 @@ from pathlib import Path
 import definition_use as du
 import build_detector_mapping as detector_mapping
 import mechanism_schema as mechanism
+import severity_tokens
+import severity_token_rulings
 from anchor_resolver import AnchorError, contains as anchor_contains, resolve_quote
 from paper_sources import PaperSourceError, validate_source_set
 
@@ -352,7 +355,7 @@ def parse_field_patches(lint, path, row):
     return patches
 
 
-def expected_code_disposition(ledger):
+def expected_code_disposition(ledger, severe_authorized=False):
     """Final (status, severity) a mapped code ledger row's verdict requires.
 
     Shared by the b6 merge lint and ``assemble_boundary.py --check`` so both
@@ -366,8 +369,8 @@ def expected_code_disposition(ledger):
     if verdict == "not_error":
         return "not_error", ""
     if verdict == "confirmation_needed":
-        capped = (str(min(int(proposed), 2))
-                  if proposed in {"1", "2", "3", "4"} else proposed)
+        capped = (proposed if severe_authorized else str(min(int(proposed), 2))) \
+            if proposed in {"1", "2", "3", "4"} else proposed
         return "confirmation_needed", capped
     if verdict in {"blocked", "deferred"}:
         return "blocked", (ledger.get("Current Severity") or "").strip()
@@ -1287,6 +1290,188 @@ def reconcile_footer_dispositions(lint, audit, allocations, stream,
 # --------------------------------------------------------------- stage checks
 
 
+def _token_register_rows(lint, path):
+    loaded = load_register(lint, path, ERROR_COLS, allow_extra=True)
+    if loaded is None:
+        return []
+    headers, rows = loaded
+    return [dict(zip(headers, row)) for row in rows if not is_example_row(row)]
+
+
+def _token_dispatch_contract(lint, audit, manifest, plan):
+    """Builder-declared U8b digest/snapshot wire for code-b5 dispatch."""
+    if (manifest or {}).get("mode", "replication") != "replication":
+        return
+    stages = (manifest or {}).get("stages", {})
+    # Historical unit fixtures do not model initialized production stages.
+    if not isinstance(stages, dict) or "code_b4" not in stages:
+        return
+    claims_b3 = stages.get("claims_b3") if isinstance(stages, dict) else None
+    if isinstance(claims_b3, dict) and claims_b3.get("status") != "done":
+        lint.fail(f"{plan}: code recheck dispatch requires lint-green claims_b3")
+    try:
+        head = severity_tokens.dispatch_head(audit)
+    except severity_tokens.SeverityTokenError as exc:
+        lint.fail(str(exc))
+        return
+    text = read_text(lint, plan) or ""
+    expected = f"Severity-token dispatch input head: {head}"
+    if not re.search(rf"(?m)^{re.escape(expected)}$", text):
+        lint.fail(f"{plan}: missing exact digest-pinned line '{expected}'")
+
+
+def _token_receipt_gate(lint, audit, manifest, rows, stage,
+                        allowed_uncovered=(), tokenless_ok=()):
+    classifications, failures = severity_tokens.gate_rows(
+        audit.parent, audit, manifest, rows, stage)
+    for failure in severity_tokens.excuse_uncovered_failures(
+            audit.parent, audit, manifest, rows, failures,
+            allowed_uncovered, tokenless_ok):
+        lint.fail(f"severity-token gate: {failure}")
+    return classifications
+
+
+def _residual_rows(lint, audit, required=False):
+    path = audit / "_run/late_severity_residuals.md"
+    if not path.is_file():
+        if required:
+            lint.fail(f"missing or empty file: {path}")
+        return []
+    text = read_text(lint, path)
+    if text is None:
+        return []
+    rows = tables_by_cols(
+        lint, path, text, severity_tokens.RESIDUAL_COLS,
+        "late severity residuals", required=True)
+    check_unique(lint, path, [row["Error ID"] for row in rows], "residual Error ID")
+    try:
+        wanted_dispatch = severity_tokens.dispatch_head(audit)
+    except severity_tokens.SeverityTokenError as exc:
+        lint.fail(str(exc))
+        wanted_dispatch = None
+    for row in rows:
+        eid = row["Error ID"]
+        if row["Target Kind"] not in {"claim", "output"}:
+            lint.fail(f"{path}: {eid} residual Target Kind must be claim/output")
+        if not re.fullmatch(r"[CO]-\d{4}", row["Target ID"]):
+            lint.fail(f"{path}: {eid} residual has malformed Target ID")
+        if row["Target Kind"][0].upper() != row["Target ID"][0]:
+            lint.fail(f"{path}: {eid} residual Target Kind/ID disagree")
+        if wanted_dispatch and row["Dispatch Input Head"] != wanted_dispatch:
+            lint.fail(f"{path}: {eid} residual dispatch head disagrees with pinned inputs")
+        if row["Supplementary Outcome"] not in severity_tokens.RESIDUAL_OUTCOMES:
+            lint.fail(f"{path}: {eid} invalid Supplementary Outcome")
+        if blank_cell(row["Target Introduction Head"]) or blank_cell(
+                row["Supplementary Evidence IDs"]):
+            lint.fail(f"{path}: {eid} residual requires introduction head and evidence IDs")
+        # The target must have been absent from the bytes actually dispatched.
+        filename = ("claims_register.md" if row["Target Kind"] == "claim"
+                    else "output_register.md")
+        dispatch_file = audit / "_run/snapshots/code_b5_dispatch" / filename
+        target_col = "Claim ID" if row["Target Kind"] == "claim" else "Output ID"
+        cols = CLAIMS_COLS if row["Target Kind"] == "claim" else OUTPUT_COLS
+        loaded = load_register(lint, dispatch_file, cols)
+        if loaded and row["Target ID"] in col(loaded[1], cols, target_col):
+            lint.fail(f"{path}: {eid} target existed in the dispatch-time register")
+        live = load_register(lint, audit / filename, cols, allow_extra=True)
+        live_by_id = ({dict(zip(live[0], raw))[target_col]:
+                       dict(zip(live[0], raw)) for raw in live[1]} if live else {})
+        target = live_by_id.get(row["Target ID"])
+        if target is None or str(target.get("Status", "")).startswith("duplicate_of:"):
+            lint.fail(f"{path}: {eid} residual target is not live")
+        elif row["Target Kind"] == "claim" and target.get("Used in Text") != "TRUE":
+            lint.fail(f"{path}: {eid} residual claim target is not terminally used in text")
+        elif row["Target Kind"] == "output" and blank_cell(target.get("Paper Location", "")):
+            lint.fail(f"{path}: {eid} residual output target lacks a paper location")
+        intro = re.fullmatch(r"([a-zA-Z0-9_]+):([0-9a-f]{64})",
+                             row["Target Introduction Head"])
+        intro_stage = None
+        if not intro:
+            lint.fail(f"{path}: {eid} Target Introduction Head must be stage:sha256")
+        else:
+            intro_stage, digest = intro.groups()
+            snapshot = audit / "_run/snapshots" / intro_stage / filename
+            stages = (json.loads((audit / "_run/manifest.json").read_text(encoding="utf-8"))
+                      .get("stages", {}))
+            if stages.get(intro_stage, {}).get("status") != "done":
+                lint.fail(f"{path}: {eid} introduction stage {intro_stage} is not certified done")
+            elif not snapshot.is_file() or severity_tokens.sha256_file(snapshot) != digest:
+                lint.fail(f"{path}: {eid} introduction head does not bind its stage snapshot")
+            else:
+                introduced = load_register(lint, snapshot, cols, allow_extra=True)
+                if introduced and row["Target ID"] not in col(
+                        introduced[1], introduced[0], target_col):
+                    lint.fail(f"{path}: {eid} target is absent from its claimed introduction head")
+        if row["Supplementary Outcome"] == "exhausted_post_plan" and intro_stage:
+            # A target whose introduction stage was provably an input to the
+            # b6a union derivation cannot claim it appeared only after the
+            # certified b5s plan input.  The claims recheck wave (claims_b4
+            # onward) runs wall-clock-parallel to the code wave, so those
+            # stages are not provably prior inputs and stay eligible.
+            import certify_stage as _certify
+            order = list(_certify.FULL_STAGES)
+            parallel_claims = {
+                "claims_b4", "claims_b5", "claims_b6a", "claims_b5s",
+                "claims_b6b",
+            }
+            if intro_stage not in order:
+                lint.fail(f"{path}: {eid} exhausted_post_plan names unknown stage {intro_stage}")
+            elif (intro_stage not in parallel_claims
+                    and order.index(intro_stage) <= order.index("code_b6a")):
+                lint.fail(
+                    f"{path}: {eid} exhausted_post_plan target was already an input "
+                    "to the b6a plan derivation")
+        if row["Supplementary Outcome"] == "unavailable_blocked":
+            entry = (json.loads((audit / "_run/manifest.json").read_text(encoding="utf-8"))
+                     .get("stages", {}).get("code_b5s", {}))
+            if entry.get("status") != "blocked" or blank_cell(entry.get("reason", "")):
+                lint.fail(f"{path}: {eid} unavailable_blocked lacks exact code_b5s blocker evidence")
+        elif row["Supplementary Outcome"] == "exhausted_attempt":
+            plan = audit / "plans/code_error_supplementary_recheck_plan.md"
+            try:
+                plan_rows = severity_tokens.rows_for_columns(
+                    plan, severity_tokens.SUPPLEMENTARY_TOKEN_COLS)
+            except severity_tokens.SeverityTokenError as exc:
+                lint.fail(str(exc))
+                plan_rows = []
+            if not any(item["Error ID"] == eid and "late_token" in {
+                    part.strip() for part in item["Reasons"].split(",")}
+                       for item in plan_rows):
+                lint.fail(f"{path}: {eid} exhausted_attempt was not attempted by b5s")
+    return rows
+
+
+def _final_token_partition(lint, audit, manifest, rows, stage="code_b6b"):
+    mode = (manifest or {}).get("mode", "replication")
+    residuals = (_residual_rows(lint, audit, required=True)
+                 if mode == "replication" else [])
+    residual_by_id = {row["Error ID"]: row for row in residuals}
+    # Validated residual coverage is a legal tokenless exit, so the receipt
+    # gate must not fail those rows; the XOR below still enforces
+    # exactly-once coverage.
+    classifications = _token_receipt_gate(
+        lint, audit, manifest, rows, stage, tokenless_ok=residual_by_id)
+    eligible = {row["Error ID"]: row for row in rows
+                if severity_tokens.severe_eligible(row)}
+    for eid, row in sorted(eligible.items()):
+        receipted = classifications.get(eid) in {"live", "target_not_live"}
+        residual = eid in residual_by_id
+        if receipted == residual:
+            lint.fail(f"severity-token partition: {eid} must be covered by receipt XOR residual")
+        if residual:
+            if row["Status"] != "confirmation_needed":
+                lint.fail(f"severity-token partition: confirmed row {eid} cannot use a residual")
+            token, _problem = severity_tokens.row_token_state(row, mode)
+            if token:
+                state, _target = severity_tokens.resolve_target(
+                    audit.parent, audit, manifest, token)
+                if state == "target_not_live":
+                    lint.fail(f"severity-token partition: target_not_live row {eid} cannot use a residual")
+    for eid in sorted(set(residual_by_id) - set(eligible)):
+        lint.fail(f"severity-token partition: residual {eid} is not a currently eligible severe row")
+    return classifications
+
+
 def stage_b0(lint, audit, manifest):
     for f, cols in [
         ("claims_register.md", CLAIMS_COLS),
@@ -1310,6 +1495,10 @@ def stage_b0(lint, audit, manifest):
             check_unique(lint, audit / "CODEMAP.md", found, f"{letter}- ID")
         if not re.search(r"PRECONDITIONS:\s*\d\s*/\s*5", cm):
             lint.fail(f"{audit / 'CODEMAP.md'}: missing 'PRECONDITIONS: <n>/5' score line")
+        _ra_rows, ra_failures = severity_tokens.validate_ra_inventory(
+            audit.parent, audit, manifest)
+        for failure in ra_failures:
+            lint.fail(failure)
     if manifest and manifest.get("paper_source_set") is not None:
         try:
             validate_source_set(audit.parent, manifest)
@@ -1949,6 +2138,16 @@ def stage_b3(lint, audit, stream, manifest):
             return
         _, e_rows = e
         check_error_rows(lint, e_path, e_rows)
+        mode = (manifest or {}).get("mode", "replication")
+        for raw in e_rows:
+            row = dict(zip(ERROR_COLS, raw))
+            if row.get("Severity") not in {"3", "4"}:
+                continue
+            token, problem = severity_tokens.row_token_state(row, mode)
+            if token is None:
+                lint.warn(
+                    f"severity-token: {row['Error ID']} Severity {row['Severity']} "
+                    f"has no qualifying terminal token ({problem})")
         eids = col(e_rows, ERROR_COLS, "Error ID")
         check_unique(lint, e_path.parent, eids, "Error ID")
         for i in eids:
@@ -2297,11 +2496,26 @@ def parse_recheck_plan(lint, audit, stream, supplementary=False):
     if text is None:
         return None
     inventory, clusters = [], []
+    token_inventory = []
     for headers, rows, _ in parse_tables(text):
+        if supplementary and stream == "code" \
+                and headers == severity_tokens.SUPPLEMENTARY_TOKEN_COLS:
+            token_inventory = []
+            for row in rows:
+                if len(row) != len(headers):
+                    lint.fail(f"{plan}: malformed supplementary token-obligation row")
+                    continue
+                data = dict(zip(headers, row))
+                token_inventory.append({
+                    **data, "ID": data["Error ID"], "Reason": data["Reasons"],
+                    "_token_schema": True,
+                })
         if "Reason" in headers and any(h == "ID" for h in headers):
             inventory = [dict(zip(headers, r)) for r in rows if len(r) == len(headers)]
         if "Cluster ID" in headers and "Assigned IDs" in headers and "Shard File" in headers:
             clusters = [dict(zip(headers, r)) for r in rows if len(r) == len(headers)]
+    if token_inventory:
+        inventory = token_inventory
     if supplementary and not inventory:
         if SUPPLEMENTARY_EMPTY not in text:
             lint.fail(f"{plan}: empty inventory requires exact '{SUPPLEMENTARY_EMPTY}'")
@@ -2707,6 +2921,7 @@ def stage_b4(lint, audit, stream, manifest=None):
     plan, inventory, clusters = parsed
     if stream == "code":
         check_detector_mapping_b4(lint, audit, plan, inventory)
+        _token_dispatch_contract(lint, audit, manifest or {}, plan)
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
@@ -2823,6 +3038,52 @@ def stage_b5(lint, audit, stream, shard, manifest, supplementary=False):
     else:
         _validate_code_adjudication_shard(
             lint, audit, shard, text, rows, assigned, supplementary)
+        record_rows = tables_by_cols(
+            lint, shard, text, severity_tokens.TOKEN_RECORD_COLS,
+            "token_verification records")
+        ledger_by_id = {dict(zip(ledger_cols, row))["ID"]:
+                        dict(zip(ledger_cols, row)) for row in rows}
+        seen_token_keys = set()
+        mode = (manifest or {}).get("mode", "replication")
+        for record in record_rows:
+            eid = record["Error ID"]
+            key = (eid, record["Token"], record["Obligation Digest"])
+            if key in seen_token_keys:
+                lint.fail(f"{shard}: duplicate token_verification key {key}")
+            seen_token_keys.add(key)
+            ledger = ledger_by_id.get(eid)
+            if eid not in assigned or ledger is None:
+                lint.fail(f"{shard}: token_verification names unassigned Error ID {eid}")
+                continue
+            if record["Record Type"] != severity_tokens.TOKEN_RECORD_TYPE:
+                lint.fail(f"{shard}: {eid} Record Type must be token_verification")
+            if record["Verdict"] != severity_tokens.TOKEN_RECORD_VERDICT:
+                lint.fail(f"{shard}: {eid} token_verification verdict must be verified")
+            if not severity_tokens.token_allowed(record["Token"], mode):
+                lint.fail(f"{shard}: {eid} token is not legal in {mode} mode")
+            if (record["Mechanism"] != ledger.get("Accepted Mechanism")
+                    or sorted(list_cell(record["Witness IDs"]))
+                    != sorted(list_cell(ledger.get("Outcome Witness IDs")))):
+                lint.fail(f"{shard}: {eid} token_verification mechanism/witness binding disagrees with ledger")
+            try:
+                wanted = severity_tokens.obligation_digest(
+                    eid, record["Token"], record["Mechanism"],
+                    record["Witness IDs"], record["Error Location"],
+                    record["Flawed Identifier"],
+                )
+                if record["Obligation Digest"] != wanted:
+                    lint.fail(f"{shard}: {eid} token_verification obligation digest mismatch")
+            except severity_tokens.SeverityTokenError as exc:
+                lint.fail(f"{shard}: {eid} invalid token_verification mechanism: {exc}")
+            patches = parse_field_patches(lint, shard, ledger)
+            carrier = patches.get("Why It Matters", "")
+            canonical = load_register(lint, audit / "code_error_register.md", ERROR_COLS)
+            if canonical:
+                current = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                           dict(zip(ERROR_COLS, row)) for row in canonical[1]}
+                carrier = carrier or current.get(eid, {}).get("Why It Matters", "")
+            if record["Token"] not in severity_tokens.literal_tokens(carrier):
+                lint.fail(f"{shard}: {eid} token_verification token is absent from the proposed carrier")
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")
@@ -3148,7 +3409,8 @@ def _previous_ranges(lint, audit, stream):
 
 
 def _validate_supplementary_plan(lint, audit, stream, inventory, clusters,
-                                 new_ids, discovery_ids):
+                                 new_ids, discovery_ids, expected_reasons=None,
+                                 split_parents=None):
     plan = recheck_plan_path(audit, stream, True)
     text = read_text(lint, plan) or ""
     declared = [parse_range(f"{a}–{b}") for a, b in DISCOVERY_RANGE_RE.findall(text)]
@@ -3167,9 +3429,36 @@ def _validate_supplementary_plan(lint, audit, stream, inventory, clusters,
             if not in_ranges(item, spans):
                 lint.fail(f"{plan}: discovery {item} is outside its declared range")
     inv_ids = [row.get("ID", "") for row in inventory]
-    expected_inventory = {item for item in new_ids if item.startswith(("C-", "E-"))}
+    expected_inventory = ({item for item in new_ids if item.startswith(("C-", "E-"))}
+                          if expected_reasons is None else set(expected_reasons))
     if set(inv_ids) != expected_inventory or len(inv_ids) != len(set(inv_ids)):
-        lint.fail(f"{plan}: supplementary inventory must exactly equal new C/E rows; expected={sorted(expected_inventory)}, actual={sorted(inv_ids)}")
+        lint.fail(f"{plan}: supplementary inventory must exactly equal the discovery/token-obligation union; expected={sorted(expected_inventory)}, actual={sorted(inv_ids)}")
+    if expected_reasons is not None:
+        by_id = {row.get("ID", ""): row for row in inventory}
+        for item, reasons in sorted(expected_reasons.items()):
+            row = by_id.get(item, {})
+            if not row.get("_token_schema"):
+                lint.fail(f"{plan}: {item} must use the six-column token-obligation schema")
+                continue
+            actual_reasons = [part.strip() for part in row.get("Reasons", "").split(",")
+                              if part.strip()]
+            wanted_reasons = sorted(reasons)
+            if actual_reasons != wanted_reasons or any(
+                    reason not in severity_tokens.SUPPLEMENTARY_REASONS
+                    for reason in actual_reasons):
+                lint.fail(f"{plan}: {item} Reasons must be canonical {wanted_reasons}")
+            if reasons & {"late_token", "split_token"}:
+                if not re.fullmatch(r"[0-9a-f]{64}", row.get("Obligation Digest", "")):
+                    lint.fail(f"{plan}: {item} token obligation requires a sha256 digest")
+                products = set(list_cell(row.get("Required Products", "")))
+                if not {"token_verification", "token_receipt"}.issubset(products):
+                    lint.fail(f"{plan}: {item} token obligation requires token_verification and token_receipt products")
+            wanted_parent = (split_parents or {}).get(item)
+            actual_parent = severity_tokens.clean(row.get("Parent Error ID", ""))
+            if wanted_parent and actual_parent != wanted_parent:
+                lint.fail(f"{plan}: split_token {item} Parent Error ID must be {wanted_parent}")
+            if not wanted_parent and not blank_cell(actual_parent):
+                lint.fail(f"{plan}: non-split {item} cannot name Parent Error ID")
     assignments = {}
     expected_dir = f"audit/{SUPPLEMENTARY_SHARD_DIRS[stream]}/"
     for cluster in clusters:
@@ -3188,6 +3477,64 @@ def _validate_supplementary_plan(lint, audit, stream, inventory, clusters,
 def _lineage_descendants(lint, summary, text):
     rows = tables_by_cols(lint, summary, text, LINEAGE_COLS, "split lineage")
     return {row["Descendant Error ID"] for row in rows}
+
+
+def _u8_tokens_active(manifest, audit, stage="code_b6a", rows=None):
+    # Activation is derived from register contents, not only from the token
+    # artifacts: a severe-eligible row makes the gate mandatory, so a conductor
+    # that omits the token workflow fails instead of silently reproducing the
+    # pre-U8 behavior.
+    if rows is not None and severity_tokens.gate_required(rows):
+        return True
+    if (audit / f"_run/{stage}/token_receipts.md").is_file():
+        return True
+    plan = audit / "plans/code_error_supplementary_recheck_plan.md"
+    if plan.is_file():
+        try:
+            text = plan.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        header = "| " + " | ".join(severity_tokens.SUPPLEMENTARY_TOKEN_COLS) + " |"
+        return header in text
+    return False
+
+
+def _expected_code_token_obligations(lint, audit, manifest, final_rows,
+                                     discovery_ids, summary, summary_text):
+    """Derive the one supplementary discovery/late/split union (§11)."""
+    reasons = {item: {"discovery"} for item in discovery_ids
+               if item.startswith("E-")}
+    split_parents = {}
+    for row in tables_by_cols(
+            lint, summary, summary_text, LINEAGE_COLS, "split lineage"):
+        split_parents[row["Descendant Error ID"]] = row["Original Error ID"]
+    classifications, _failures = severity_tokens.gate_rows(
+        audit.parent, audit, manifest, final_rows, "code_b6a")
+    dispatch = audit / "_run/snapshots/code_b5_dispatch"
+    dispatched_ids = {"claim": set(), "output": set()}
+    for kind, filename, cols, id_col in (
+            ("claim", "claims_register.md", CLAIMS_COLS, "Claim ID"),
+            ("output", "output_register.md", OUTPUT_COLS, "Output ID")):
+        loaded = load_register(lint, dispatch / filename, cols)
+        if loaded:
+            dispatched_ids[kind] = set(col(loaded[1], cols, id_col))
+    mode = (manifest or {}).get("mode", "replication")
+    for row in final_rows:
+        if not severity_tokens.severe_eligible(row):
+            continue
+        eid = row["Error ID"]
+        if classifications.get(eid) in {"live", "target_not_live"}:
+            continue
+        if eid in split_parents:
+            reasons.setdefault(eid, set()).add("split_token")
+        token, problem = severity_tokens.row_token_state(row, mode)
+        if token and not problem and token.startswith(("claim:", "output:")):
+            kind, target = severity_tokens.token_target(token)
+            state, _target_row = severity_tokens.resolve_target(
+                audit.parent, audit, manifest, token)
+            if state == "live" and target not in dispatched_ids[kind]:
+                reasons.setdefault(eid, set()).add("late_token")
+    return reasons, split_parents
 
 
 def _output_discovery_lifecycle(lint, summary, text, rows, discovery_ids):
@@ -3362,8 +3709,20 @@ def stage_b6a(lint, audit, stream, manifest):
                      for letter in "COE"}
     if declared_counts != actual_counts:
         lint.fail(f"{summary}: discovery counts {declared_counts} disagree with rows {actual_counts}")
+    expected_reasons = split_parents = None
+    if stream == "code":
+        error_rows = [dict(zip(ERROR_COLS, row))
+                      for row in final_rows_by_file.get("code_error_register.md", [])]
+        if _u8_tokens_active(manifest, audit, "code_b6a", rows=error_rows):
+            expected_reasons, split_parents = _expected_code_token_obligations(
+                lint, audit, manifest, error_rows, discovery_ids, summary, text)
+            _token_receipt_gate(
+                lint, audit, manifest, error_rows, "code_b6a",
+                allowed_uncovered=expected_reasons,
+            )
     _validate_supplementary_plan(
-        lint, audit, stream, supp_inventory, supp_clusters, new_ids, discovery_ids)
+        lint, audit, stream, supp_inventory, supp_clusters, new_ids, discovery_ids,
+        expected_reasons, split_parents)
     footer_ids = _reconcile_recheck_footers(
         lint, audit, stream, main_clusters, manifest, f"{stream}_b5", summary,
         allowed_candidates=discovery_ids)
@@ -3615,6 +3974,15 @@ def stage_b6b(lint, audit, stream, manifest):
         # Every register: a duplicate_of must name a present, terminal row
         # (the 241ce5e recheck-merge guarantee, restored at b6b).
         _check_duplicate_chains(lint, final_path, final_rows, cols, id_col)
+    token_classifications = {}
+    residual_ids = set()
+    if stream == "code":
+        error_rows = [row for row in final_by_all.values()
+                      if str(row.get("Error ID", "")).startswith("E-")]
+        if _u8_tokens_active(manifest, audit, "code_b6b", rows=error_rows):
+            token_classifications = _final_token_partition(
+                lint, audit, manifest, error_rows, "code_b6b")
+            residual_ids = {row["Error ID"] for row in _residual_rows(lint, audit)}
     ledgers = _all_recheck_ledgers(lint, audit, stream, True)
     by_id = {}
     for path, row in ledgers:
@@ -3631,7 +3999,13 @@ def stage_b6b(lint, audit, stream, manifest):
             lint.fail(f"{plan}: supplementary ID {item} vanished before b6b")
             continue
         if stream == "code":
-            expected = expected_code_disposition(ledger)
+            expected = expected_code_disposition(
+                ledger,
+                severe_authorized=(
+                    token_classifications.get(item) in {"live", "target_not_live"}
+                    or item in residual_ids
+                ),
+            )
             if expected is None or (final.get("Status"), final.get("Severity")) != expected:
                 lint.fail(f"{path}: supplementary ID {item} final disposition disagrees with its ledger")
         elif not _claim_disposition_allowed(ledger, final):
@@ -3830,6 +4204,7 @@ def stage_bC(lint, audit, manifest):
             row["Register"] in {"claims", "output"} for row in plan_rows):
         lint.fail(f"{plan_path}: code-errors-only bC cannot edit claims/output registers")
     new_ids = set()
+    bc_new_code_rows = []
     touched_by_bc = {}
     for register, (filename, base_cols, id_col) in register_contracts.items():
         if mode == "code_errors_only" and register != "code_error":
@@ -3859,6 +4234,8 @@ def stage_bC(lint, audit, manifest):
         if actual_new != set(new_plans):
             lint.fail(f"{final_path}: new-row delta disagrees with bC plan; expected={sorted(new_plans)}, actual={sorted(actual_new)}")
         new_ids.update(actual_new)
+        if register == "code_error":
+            bc_new_code_rows.extend(final_by_id[row_id] for row_id in actual_new)
         for row_id in actual_new:
             row = new_plans[row_id]
             if row["Old Value SHA256"] not in {"", "-", "—"}:
@@ -3917,6 +4294,23 @@ def stage_bC(lint, audit, manifest):
     for bc_id, registers in touched_by_bc.items():
         if "output" in registers and "claims" not in registers:
             lint.fail(f"{plan_path}: output correction {bc_id} requires a companion claims edit")
+    # Any non-exempt severe mint activates the bC token gate regardless of its
+    # status, so a mint left at a non-final status cannot dodge the check.
+    severe_mints = [
+        row for row in bc_new_code_rows
+        if row.get("Error Type") != "pii_or_disclosure_risk"
+        and row.get("Severity") in {"3", "4"}
+    ]
+    if severe_mints or _u8_tokens_active(manifest, audit, "bC"):
+        for row in severe_mints:
+            if row.get("Status") not in {"confirmed", "confirmation_needed"}:
+                lint.fail(
+                    f"{plan_path}: severe bC mint {row.get('Error ID')} must be a token-governed final status")
+        classifications = _token_receipt_gate(
+            lint, audit, manifest, bc_new_code_rows, "bC")
+        for eid, state in classifications.items():
+            if state == "target_not_live":
+                lint.fail(f"{plan_path}: severe bC mint {eid} cites a non-live target")
     if mode != "code_errors_only":
         claims = load_register(lint, audit / "claims_register.md", CLAIMS_COLS, allow_extra=True)
         outputs = load_register(lint, audit / "output_register.md", OUTPUT_COLS, allow_extra=True)
@@ -4046,10 +4440,6 @@ def overlapping_confirmed_pairs(claim_rows, error_rows, claim_cols=None, error_c
     return pairs
 
 
-# NOTE (U6/U7 open question): the "downstream-use severities must cite a search" rule is NOT
-# mechanized here. Detecting that a severity "rests on downstream use" requires interpreting free
-# text (Issue/Error Description), which is not cleanly lintable; it stays review guidance
-# (registers.md severity rubric), not a lint check.
 def escalated_mapped_links(claim_rows, error_rows, claim_cols=None, error_cols=None):
     """Links pairing a `mapped` claim with a `confirmed` code error (escalated mapped claims).
     The cross-linker only links a claim to an error that breaks what it asserts, so a
@@ -4111,7 +4501,7 @@ def check_pairs_listed(lint, summary, section, pairs, stage, reason):
             )
 
 
-def stage_b7(lint, audit):
+def stage_b7(lint, audit, manifest=None):
     snap = audit / "_run" / "snapshots" / "b7"
     staging = audit / "_staging"
     # Replay mode: load staging with allow_extra=True so a post-b8 re-run (staging carries the
@@ -4167,6 +4557,19 @@ def stage_b7(lint, audit):
             f"'## Status conflicts' — adjudicate against the b7 status-conflict rule "
             f"(registers.md, Cross-link consistency); overlap alone is not proof of conflict"
         )
+    if (_u8_tokens_active(manifest or {}, audit, "code_b6b")
+            or "## Severity-token adjudications" in (summary or "")):
+        _rejected, severity_failures = severity_token_rulings.validate_b7(
+            audit.parent, audit, manifest or {})
+        for failure in severity_failures:
+            lint.fail(f"b7 severity-token sweep: {failure}")
+
+
+def stage_severity_token_rulings(lint, audit, manifest):
+    _decisions, failures = severity_token_rulings.validate_rulings(
+        audit.parent, audit, manifest, require_applied=True)
+    for failure in failures:
+        lint.fail(f"severity-token rulings: {failure}")
 
 
 REWRITE_PAIRS = {
@@ -4182,6 +4585,16 @@ def stage_b8(lint, audit, manifest):
     snap = audit / "_run" / "snapshots" / "b8"
     staging = audit / "_staging"
     mode = (manifest or {}).get("mode", "replication")
+    stages = (manifest or {}).get("stages", {})
+    rulings_entry = stages.get("severity_token_rulings") if isinstance(stages, dict) else None
+    staging_error_rows = list(severity_tokens._load_register_error_rows(
+        audit, prefer_staging=True).values())
+    if (mode == "replication"
+            and _u8_tokens_active(manifest, audit, "code_b6b",
+                                  rows=staging_error_rows)
+            and (not isinstance(rulings_entry, dict)
+                 or rulings_entry.get("status") != "done")):
+        lint.fail("b8 refuses while severity_token_rulings is not done")
     files = ["code_error_register.md"] if mode == "code_errors_only" else ["claims_register.md", "code_error_register.md"]
     if mode != "code_errors_only":
         # the rewrite never touches the output register, but `listed` must be gone by now
@@ -4232,6 +4645,11 @@ def stage_b8(lint, audit, manifest):
                     lint.fail(f"{staging / f}: {i} '{orig_col}' does not preserve prior text")
                 if bool(row.get(new_col, "")) != bool(orig_val):
                     lint.fail(f"{staging / f}: {i} blankness pairing violated for '{new_col}'")
+        if f == "code_error_register.md":
+            st_dicts = [dict(zip(st_headers, row)) for row in st_rows]
+            if _u8_tokens_active(manifest, audit, "code_b6b", rows=st_dicts):
+                _final_token_partition(lint, audit, manifest, st_dicts,
+                                       "code_b6b")
     if mode != "code_errors_only":
         st_c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS, allow_extra=True)
         st_e = load_register(lint, staging / "code_error_register.md", ERROR_COLS, allow_extra=True)
@@ -4297,6 +4715,13 @@ def stage_b9(lint, audit, manifest):
         return
     wb = load_workbook(wb_path, read_only=True)
     mode = (manifest or {}).get("mode", "replication")
+    b9_error_rows = list(severity_tokens._load_register_error_rows(audit).values())
+    if _u8_tokens_active(manifest, audit, "code_b6b", rows=b9_error_rows):
+        _final_token_partition(
+            lint, audit, manifest,
+            _token_register_rows(lint, audit / "code_error_register.md"),
+            "code_b6b",
+        )
     expect = {
         "Overview", "Code Errors", "Late observations (unverified)",
         "Late observation coverage",
@@ -4473,7 +4898,7 @@ STAGES = (
     + [f"b{n}-{s}" for n in range(4, 6) for s in ("claims", "code")]
     + [f"{stage}-{stream}" for stage in ("b6a", "b5s", "b6b")
        for stream in ("claims", "code")]
-    + ["bC", "b7", "b8", "b9"]
+    + ["bC", "b7", "severity_token_rulings", "b8", "b9"]
 )
 
 
@@ -4522,7 +4947,9 @@ def main() -> int:
     elif stage == "bC":
         stage_bC(lint, audit, manifest)
     elif stage == "b7":
-        stage_b7(lint, audit)
+        stage_b7(lint, audit, manifest)
+    elif stage == "severity_token_rulings":
+        stage_severity_token_rulings(lint, audit, manifest)
     elif stage == "b8":
         stage_b8(lint, audit, manifest)
     elif stage == "b9":

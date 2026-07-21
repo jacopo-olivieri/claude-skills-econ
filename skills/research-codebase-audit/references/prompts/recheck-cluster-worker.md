@@ -171,4 +171,21 @@ channel-typed table. Persist every DU/CV dismissal probe beside the shard and na
 inline, reading no other file and no package data — because the verifier re-runs exactly that
 one file hermetically. A verification record is a claim, not a receipt: never fabricate or
 write a Receipt ID.
+
+For each code-error disposition that proposes Severity 3–4 with Status `confirmed` or
+`confirmation_needed` (except `pii_or_disclosure_risk`), establish one terminal tie under the
+severity-token contract. Put exactly one mode-qualifying literal token in the proposed
+`Why It Matters` patch. In full mode use `output:O-####` or `claim:C-####` resolved against the
+digest-pinned dispatch registers supplied with this cluster; in code-errors-only use
+`artifact:RA-<12 lowercase hex>` from CODEMAP. Additional affected outputs stay prose.
+
+Append one exact `### Token verification records` table with columns
+`Record Type | Error ID | Token | Obligation Digest | Mechanism | Witness IDs | Error Location | Flawed Identifier | Cited Target | Lineage JSON | Probe Path | Probe Output SHA256 | Verdict | Derived From Receipt ID`.
+Use `token_verification`/`verified`; bind the obligation digest to the accepted decoded
+five-field mechanism, exact sorted witness set, error location, and flawed identifier. Persist a
+self-contained probe beside the shard. `Lineage JSON` is an ordered `{anchor,carries}` chain:
+every hop resolves and textually contains what it carries, starts at the flawed definition, and
+ends at the cited output producer/claim location or both RA writer and declaration anchors.
+Leave `Derived From Receipt ID` blank/`—` except when supplementary split work reruns a parent
+probe. You write the record and probe only; the conductor-run verifier alone writes receipts.
 ```

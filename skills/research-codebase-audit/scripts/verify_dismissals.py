@@ -14,6 +14,7 @@ from pathlib import Path
 import build_detector_mapping as detector_mapping
 import check_manifests as manifests
 import lint_registers as registers
+import severity_tokens
 
 
 CODE_LEDGER_COLS = registers.LEDGER_COLS + [
@@ -267,20 +268,50 @@ def main():
     parser.add_argument("package_root", type=Path)
     parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--supplementary", action="store_true")
+    parser.add_argument(
+        "--tokens", action="store_true",
+        help="verify token_verification records and write token-receipts/v1",
+    )
+    parser.add_argument(
+        "--token-stage", choices=("code_b6a", "code_b6b", "bC"),
+        help="token receipt home (default follows --supplementary)",
+    )
     args = parser.parse_args()
     root = args.package_root.expanduser().resolve()
     audit = (args.audit_dir or root / "audit").expanduser().resolve()
-    output = audit / ("_run/code_b6b/dismissal_receipts.md"
-                      if args.supplementary
-                      else "_run/code_b6a/dismissal_receipts.md")
+    if args.token_stage and not args.tokens:
+        parser.error("--token-stage requires --tokens")
+    if args.tokens:
+        token_stage = args.token_stage or (
+            "code_b6b" if args.supplementary else "code_b6a")
+        output = severity_tokens.receipt_path(audit, token_stage)
+    else:
+        output = audit / ("_run/code_b6b/dismissal_receipts.md"
+                          if args.supplementary
+                          else "_run/code_b6a/dismissal_receipts.md")
     try:
-        receipts = verify(root, audit, args.supplementary)
-        _write_atomic(output, render(receipts, args.supplementary))
+        if args.tokens:
+            manifest_path = audit / "_run/manifest.json"
+            try:
+                manifest = __import__("json").loads(
+                    manifest_path.read_text(encoding="utf-8"))
+            except (__import__("json").JSONDecodeError, OSError) as exc:
+                raise VerificationError(f"cannot read token verifier manifest: {exc}") from exc
+            receipts, failures = severity_tokens.verify_token_records(
+                root, audit, manifest, token_stage, prefer_staging=True)
+            if failures:
+                raise VerificationError(" | ".join(failures))
+            severity_tokens.write_atomic(
+                output, severity_tokens.render_receipts(receipts))
+        else:
+            receipts = verify(root, audit, args.supplementary)
+            _write_atomic(output, render(receipts, args.supplementary))
     except (VerificationError, detector_mapping.MappingError,
             manifests.OracleError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"wrote {len(receipts)} dismissal receipt(s): {output}")
+    kind = "token" if args.tokens else "dismissal"
+    print(f"wrote {len(receipts)} {kind} receipt(s): {output}")
     return 0
 
 

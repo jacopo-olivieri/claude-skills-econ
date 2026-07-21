@@ -182,6 +182,13 @@ reads `audit/_run/detector_mapping.md`: every mapped Error ID must occur in the 
 `reviewed_not_divergent` CV rows need no inventory row. The detector mapping table does not
 live in `code_error_recheck_plan.md`.
 
+In full mode, build this plan only after `claims_b3` has certified lint-green. Then run
+`scripts/severity_tokens.py pin-dispatch-inputs <package-root> --audit-dir audit`; it snapshots
+the exact claims/output bytes supplied to code recheck and appends their builder-declared
+`Severity-token dispatch input head` to the plan. The b4 lint recomputes that head. A blocked
+claims input blocks only token obligations: affected severe rows must later cap or satisfy the
+residual contract.
+
 ## b5 — Recheck cluster workers (parallel)
 
 `prompts/recheck-cluster-worker.md` with stream = code (role: `code_b5_recheck_cluster`) and
@@ -193,6 +200,10 @@ The blocked command writes one conductor fallback ledger row per assigned ID. Af
 terminal, run `scripts/verify_dismissals.py <package-root> --audit-dir audit`; it always writes
 `audit/_run/code_b6a/dismissal_receipts.md`, using the explicit-zero form when no mapped `not_error` is
 proposed. No new IDs; no hunting for unrelated errors.
+For every severity-3/4 obligation the worker also receives the pinned claims/output registers,
+writes one qualifying literal into `Why It Matters`, persists the exact `token_verification`
+record and shard-local lineage probe from `registers.md`, and proposes the corresponding field
+patch. A token record is never authority by itself.
 
 ## b6a — Phase-one merge and supplementary plan
 
@@ -200,16 +211,23 @@ Snapshot → `prompts/merge-recheck.md` (stream = code, role: `code_b6_merge`, `
 `audit/_run/contracts/merge_recheck.md`) → staging +
 `audit/code_error_recheck_summary.md`. Snapshot to `audit/_run/snapshots/code_b6a/`. The summary
 uses the exact split/merge/discovery count lines and footer-disposition grammar in
-`registers.md`. Then run `scripts/assemble_boundary.py <package-root> --audit-dir audit`; its
-stage-qualified outputs are `audit/_run/code_b6a/dismissal_receipts.md` and
-`audit/_run/code_b6a/witness_outcomes.md`. Only the assembler may apply a
-mechanically mapped `not_error`. The lint re-joins every mapping, witness outcome, verification
-record, receipt, split-lineage row, and duplicate on the full channel/source/witness key; it
-requires exactly one disposition and refuses a main-wave heterogeneous aggregate until split.
+`registers.md`. After the coordinator has written the staged register, run
+`scripts/verify_dismissals.py <package-root> --audit-dir audit --tokens`; this independently
+reruns token probes and atomically writes `_run/code_b6a/token_receipts.md` (including its exact
+zero form). Then run `scripts/assemble_boundary.py <package-root> --audit-dir audit`; its
+stage-qualified output is `audit/_run/code_b6a/witness_outcomes.md`. Only the assembler may
+apply a mechanically mapped `not_error`. The lint re-joins every mapping, witness outcome,
+verification record, dismissal receipt, token receipt, split-lineage row, and duplicate on the
+full key. It requires exactly one disposition and refuses a main-wave heterogeneous aggregate
+until split. An otherwise valid receipted C-/O-token whose
+target is no longer live routes as `target_not_live`; every other token defect fails the stage.
 
-The coordinator also writes `audit/plans/code_error_supplementary_recheck_plan.md`. Its inventory
-is exactly every new E-ID (discovery or split descendant); output rows never enter code inventory.
-Discovery ranges, paths, exact zero-work text, and count lines follow `registers.md`. Atomically
+The coordinator also writes `audit/plans/code_error_supplementary_recheck_plan.md` using the
+six-column token-obligation inventory in `registers.md`. It is the exact union of accepted code
+discoveries, late terminal-token opportunities, and severe b6a descendants lacking their own
+post-split receipt. Split receipts never inherit, including on the parent-ID branch. Output rows
+never enter code inventory. Discovery ranges, paths, exact zero-work text, and count lines follow
+`registers.md`. Atomically
 promote, run `lint_registers.py --stage b6a-code`, then certify `code_b6a`. Certification reads
 canon, stage snapshots, shards, and stage-qualified evidence only — never `_staging`.
 
@@ -223,19 +241,29 @@ footer, never the register. An empty plan dispatches nobody; the unsharded b5s l
 exact empty-inventory artifact and `finish --stage code_b5s --outcome done` certifies it without
 a dummy shard or alternate contract. After non-empty terminal shards, run
 `scripts/verify_dismissals.py <package-root> --audit-dir audit --supplementary`; it projects
-detector witnesses through b6a split lineage and writes the stage-qualified b6b receipt surface
-(or its exact zero form).
+detector witnesses through b6a split lineage and writes the stage-qualified b6b dismissal
+receipt surface (or its exact zero form).
 
 ## b6b — Final supplementary merge
 
 Snapshot to `audit/_run/snapshots/code_b6b/`. Dispatch the same merge coordinator (role:
 `code_b6_merge`) over the supplementary plan and shards. It mutates assigned rows but mints no
 rows, writes `audit/code_error_supplementary_recheck_summary.md`,
-`audit/late_observations_code.md`, and `audit/_run/code_b6b/witness_outcomes.md`. Footer
-candidates become LO rows joined by
-`path#OBS-####` or explicit dismissals. Atomically promote, run `lint_registers.py --stage
-b6b-code`, then run `scripts/assemble_boundary.py <package-root> --audit-dir audit
+`audit/late_observations_code.md`, `audit/_run/late_severity_residuals.md`, and
+`audit/_run/code_b6b/witness_outcomes.md`. Footer
+candidates become LO rows joined by `path#OBS-####` or explicit dismissals. Before promotion run
+`scripts/verify_dismissals.py <package-root> --audit-dir audit --supplementary --tokens`; it
+reruns every main/supplementary token record against staging and writes
+`_run/code_b6b/token_receipts.md`. A reused parent probe may produce a descendant receipt only
+after the verifier confirms the descendant's own digest, witness subset, mechanism, and
+endpoints. Then run `scripts/assemble_boundary.py <package-root> --audit-dir audit
 --supplementary`; it writes the exact explicit-zero witness artifact when no mapped split
 descendant exists and otherwise reuses the canonical witness/receipt boundary under the b6b
-homes. Certify `code_b6b`. This final lint enforces supplementary ledger closure,
-detector materiality reassessment, and unconditional `MIXED` refusal. There is no second wave.
+homes. Atomically promote, run `lint_registers.py --stage b6b-code`, and certify `code_b6b`.
+This final lint enforces supplementary ledger closure,
+detector materiality reassessment, unconditional `MIXED` refusal, no row mint/delete, and the
+one-way receipt-XOR-residual partition over every currently eligible severe row. Before atomic
+promotion the coordinator must cap any uncovered split descendant to Severity 1–2; the lint and
+certifier are read-only and refuse if it did not. A residual is available only for the pinned,
+late-terminal, `confirmation_needed` cases in `registers.md`, never for a split by itself or
+`target_not_live`. There is no second wave.

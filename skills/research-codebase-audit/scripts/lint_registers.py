@@ -1331,6 +1331,34 @@ def _token_receipt_gate(lint, audit, manifest, rows, stage,
     return classifications
 
 
+def _first_residual_introduction(
+        lint, audit, stages, filename, cols, target_col, target_id, intro_stage):
+    """Return the earliest comparable done snapshot containing a target."""
+    import certify_stage as _certify
+    order = list(_certify.FULL_STAGES)
+    claims_wave = {
+        "claims_b4", "claims_b5", "claims_b6a", "claims_b5s", "claims_b6b",
+    }
+    containing = []
+    for candidate_stage in order:
+        if stages.get(candidate_stage, {}).get("status") != "done":
+            continue
+        candidate_path = audit / "_run/snapshots" / candidate_stage / filename
+        if not candidate_path.is_file():
+            continue
+        candidate = load_register(lint, candidate_path, cols, allow_extra=True)
+        if candidate and target_id in col(candidate[1], candidate[0], target_col):
+            containing.append(candidate_stage)
+
+    def comparable(candidate_stage):
+        pair = {candidate_stage, intro_stage}
+        return not (
+            "code_b6a" in pair and any(item in claims_wave for item in pair)
+        )
+
+    return next((item for item in containing if comparable(item)), None)
+
+
 def _residual_rows(lint, audit, required=False):
     path = audit / "_run/late_severity_residuals.md"
     if not path.is_file():
@@ -1402,6 +1430,19 @@ def _residual_rows(lint, audit, required=False):
                 if introduced and row["Target ID"] not in col(
                         introduced[1], introduced[0], target_col):
                     lint.fail(f"{path}: {eid} target is absent from its claimed introduction head")
+                elif introduced:
+                    # The named snapshot must be the first certified snapshot
+                    # containing the target.  Claims b4–b6b run as a wave beside
+                    # code_b6a, so only that cross-stream pair is unordered;
+                    # claims-wave stages remain ordered among themselves.
+                    earliest = _first_residual_introduction(
+                        lint, audit, stages, filename, cols, target_col,
+                        row["Target ID"], intro_stage)
+                    if earliest != intro_stage:
+                        lint.fail(
+                            f"{path}: {eid} introduction stage {intro_stage} is not "
+                            f"the first done snapshot containing {row['Target ID']}; "
+                            f"earliest is {earliest or 'absent'}")
         if row["Supplementary Outcome"] == "exhausted_post_plan" and intro_stage:
             # A target whose introduction stage was provably an input to the
             # b6a union derivation cannot claim it appeared only after the
@@ -3486,7 +3527,9 @@ def _u8_tokens_active(manifest, audit, stage="code_b6a", rows=None):
     # pre-U8 behavior.
     if rows is not None and severity_tokens.gate_required(rows):
         return True
-    if (audit / f"_run/{stage}/token_receipts.md").is_file():
+    stages = (stage,) if isinstance(stage, str) else tuple(stage)
+    if any((audit / f"_run/{item}/token_receipts.md").is_file()
+           for item in stages):
         return True
     plan = audit / "plans/code_error_supplementary_recheck_plan.md"
     if plan.is_file():
@@ -4557,7 +4600,10 @@ def stage_b7(lint, audit, manifest=None):
             f"'## Status conflicts' — adjudicate against the b7 status-conflict rule "
             f"(registers.md, Cross-link consistency); overlap alone is not proof of conflict"
         )
-    if (_u8_tokens_active(manifest or {}, audit, "code_b6b")
+    b7_error_rows = list(severity_tokens._load_register_error_rows(
+        audit, prefer_staging=True).values())
+    if (_u8_tokens_active(manifest or {}, audit, FINAL_TOKEN_RECEIPT_HOMES,
+                          rows=b7_error_rows)
             or "## Severity-token adjudications" in (summary or "")):
         _rejected, severity_failures = severity_token_rulings.validate_b7(
             audit.parent, audit, manifest or {})
@@ -4579,6 +4625,7 @@ REWRITE_PAIRS = {
         ("Why It Matters", "Why It Matters Original"),
     ],
 }
+FINAL_TOKEN_RECEIPT_HOMES = ("code_b6b", "bC")
 
 
 def stage_b8(lint, audit, manifest):
@@ -4590,7 +4637,7 @@ def stage_b8(lint, audit, manifest):
     staging_error_rows = list(severity_tokens._load_register_error_rows(
         audit, prefer_staging=True).values())
     if (mode == "replication"
-            and _u8_tokens_active(manifest, audit, "code_b6b",
+            and _u8_tokens_active(manifest, audit, FINAL_TOKEN_RECEIPT_HOMES,
                                   rows=staging_error_rows)
             and (not isinstance(rulings_entry, dict)
                  or rulings_entry.get("status") != "done")):
@@ -4647,9 +4694,10 @@ def stage_b8(lint, audit, manifest):
                     lint.fail(f"{staging / f}: {i} blankness pairing violated for '{new_col}'")
         if f == "code_error_register.md":
             st_dicts = [dict(zip(st_headers, row)) for row in st_rows]
-            if _u8_tokens_active(manifest, audit, "code_b6b", rows=st_dicts):
+            if _u8_tokens_active(
+                    manifest, audit, FINAL_TOKEN_RECEIPT_HOMES, rows=st_dicts):
                 _final_token_partition(lint, audit, manifest, st_dicts,
-                                       "code_b6b")
+                                       FINAL_TOKEN_RECEIPT_HOMES)
     if mode != "code_errors_only":
         st_c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS, allow_extra=True)
         st_e = load_register(lint, staging / "code_error_register.md", ERROR_COLS, allow_extra=True)
@@ -4716,11 +4764,12 @@ def stage_b9(lint, audit, manifest):
     wb = load_workbook(wb_path, read_only=True)
     mode = (manifest or {}).get("mode", "replication")
     b9_error_rows = list(severity_tokens._load_register_error_rows(audit).values())
-    if _u8_tokens_active(manifest, audit, "code_b6b", rows=b9_error_rows):
+    if _u8_tokens_active(
+            manifest, audit, FINAL_TOKEN_RECEIPT_HOMES, rows=b9_error_rows):
         _final_token_partition(
             lint, audit, manifest,
             _token_register_rows(lint, audit / "code_error_register.md"),
-            "code_b6b",
+            FINAL_TOKEN_RECEIPT_HOMES,
         )
     expect = {
         "Overview", "Code Errors", "Late observations (unverified)",

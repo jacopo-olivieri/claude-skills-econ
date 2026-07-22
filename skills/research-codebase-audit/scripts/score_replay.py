@@ -18,6 +18,11 @@ repo-relative source path and a U1-canonical mechanism using
 and unexpected candidate IDs within the declared scenario files count toward
 the same false-positive ceiling.
 
+A candidate scenario may opt into ``status_family: post_merge``.  Its sheet
+then pins ``expected_status`` (``confirmed`` or ``confirmation_needed``) for
+each target while retaining candidate mode's path, mechanism, anchor,
+severity, and false-positive checks.
+
 Candidate sheets may also declare ``expected_claim_obligations`` for the U7
 S-706 dual-accept contract.  Each target scores when the worker emits either a
 claim row whose Paper Quote contains the target assertion, a terminal covered
@@ -32,7 +37,9 @@ the ordinary false-positive ceiling.
 The CLI reads root configuration from ``--data-root`` or
 ``RCA_REPLAY_DATA_ROOT``.  ``score`` handles one run directory; ``spread``
 scores every ``run-NNN`` directory for the scenario and presents all scores
-side by side without aggregating them into a pass/fail batch.
+side by side without aggregating them into a pass/fail batch; ``campaign``
+validates the recorded U9 acceptance campaign without computing an operator
+adjudication.
 """
 
 from __future__ import annotations
@@ -66,6 +73,12 @@ TERMINAL_DISPOSITIONS = {
     "confirmed_error", "not_error", "duplicate", "confirmation_needed",
     "blocked", "deferred",
 }
+FROZEN_CAMPAIGN_LABELS = tuple(f"S-70{index}" for index in range(1, 9))
+CAMPAIGN_STATUSES = {
+    "pending", "accepted", "accepted_with_note", "rejected", "downgraded",
+}
+SPREAD_ADJUDICATIONS = CAMPAIGN_STATUSES - {"downgraded"}
+NOTE_REQUIRED_STATUSES = {"accepted_with_note", "rejected", "downgraded"}
 
 
 class ScoreRefusal(RuntimeError):
@@ -120,7 +133,7 @@ def load_scenario(path):
     return Path(path).expanduser().resolve(), value
 
 
-def load_sheet(path, scoring_mode="b5"):
+def load_sheet(path, scoring_mode="b5", status_family="candidate"):
     value = _load_json(path, "answer sheet")
     if value.get("format_version") != FORMAT_VERSION:
         raise ScoreFormatError("answer sheet format_version must be 1")
@@ -130,7 +143,7 @@ def load_sheet(path, scoring_mode="b5"):
     if not isinstance(ceiling, int) or ceiling < 0:
         raise ScoreFormatError("answer sheet false_positive_ceiling must be nonnegative")
     if scoring_mode == "candidate":
-        return _load_candidate_sheet(value)
+        return _load_candidate_sheet(value, status_family=status_family)
     if scoring_mode == "adjudication":
         return _load_adjudication_sheet(value)
     if scoring_mode != "b5":
@@ -177,7 +190,10 @@ def load_sheet(path, scoring_mode="b5"):
     return value
 
 
-def _load_candidate_sheet(value):
+def _load_candidate_sheet(value, status_family="candidate"):
+    if status_family not in {"candidate", "post_merge"}:
+        raise ScoreFormatError(
+            f"candidate scenario has invalid status_family {status_family!r}")
     expected = value.get("expected_candidates")
     obligations = value.get("expected_claim_obligations", [])
     if not isinstance(expected, list) or not isinstance(obligations, list) \
@@ -208,8 +224,15 @@ def _load_candidate_sheet(value):
             raise ScoreFormatError(f"expected candidate {row['key']} has invalid register")
         if row["path"] not in files:
             raise ScoreFormatError(f"expected candidate {row['key']} path is outside scenario_files")
-        if row["status_family"] != "candidate":
-            raise ScoreFormatError(f"expected candidate {row['key']} status_family must be candidate")
+        if row["status_family"] != status_family:
+            raise ScoreFormatError(
+                f"expected candidate {row['key']} status_family must be {status_family}")
+        if status_family == "post_merge":
+            if row.get("expected_status") not in {"confirmed", "confirmation_needed"}:
+                raise ScoreFormatError(
+                    f"expected candidate {row['key']} post_merge expected_status must be "
+                    "confirmed or confirmation_needed"
+                )
         if not isinstance(row["benchmark_severity"], int) or not 1 <= row["benchmark_severity"] <= 4:
             raise ScoreFormatError(f"expected candidate {row['key']} has invalid benchmark severity")
         if not isinstance(row["anchors"], list) or not all(
@@ -488,9 +511,16 @@ def score_claim_obligations(sheet, sandbox, claims, handoffs, coverage):
     return recoveries, matched
 
 
-def score_candidates(sheet, rows, obligation_recoveries=None):
+def _project_obligation_matches(matched):
+    """Project only claim-row routes into candidate-register identities."""
+    return {("claims", row_id) for route, row_id in (matched or set())
+            if route == "claim_row"}
+
+
+def score_candidates(sheet, rows, obligation_recoveries=None,
+                     obligation_matches=None):
     recoveries = []
-    matched_ids = set()
+    matched_ids = _project_obligation_matches(obligation_matches)
     for expected in sheet["expected_candidates"]:
         matches = [row for row in rows if (
             row["register"] == expected["register"]
@@ -507,10 +537,20 @@ def score_candidates(sheet, rows, obligation_recoveries=None):
             problems.append(f"expected one candidate row, found {len(matches)}")
         else:
             row = matches[0]
-            valid_status = (row["status"] == "candidate" if row["register"] == "code_errors"
-                            else row["status"] in {"inconsistent", "unclear"})
+            if expected["status_family"] == "post_merge":
+                valid_status = row["status"] == expected["expected_status"]
+                status_problem = (
+                    f"status {row['status']!r} != expected post-merge status "
+                    f"{expected['expected_status']!r}"
+                )
+            else:
+                valid_status = (
+                    row["status"] == "candidate" if row["register"] == "code_errors"
+                    else row["status"] in {"inconsistent", "unclear"}
+                )
+                status_problem = f"status {row['status']!r} is outside candidate family"
             if not valid_status:
-                problems.append(f"status {row['status']!r} is outside candidate family")
+                problems.append(status_problem)
             if row["severity"] is None or abs(
                     row["severity"] - expected["benchmark_severity"]) > 1:
                 problems.append(
@@ -725,13 +765,15 @@ def score_run(scenario_path, scenario, sheet_path, sheet, run_dir):
         try:
             candidates, output_paths = _load_candidate_tables(sandbox, sheet)
             obligation_recoveries = []
+            obligation_matches = set()
             if sheet.get("expected_claim_obligations"):
                 claim_rows, handoff_rows, x_rows, obligation_paths = (
                     _load_claim_obligation_outputs(sandbox, sheet))
-                obligation_recoveries, _matched = score_claim_obligations(
+                obligation_recoveries, obligation_matches = score_claim_obligations(
                     sheet, sandbox, claim_rows, handoff_rows, x_rows)
                 output_paths = sorted(set(output_paths + obligation_paths))
-            content = score_candidates(sheet, candidates, obligation_recoveries)
+            content = score_candidates(
+                sheet, candidates, obligation_recoveries, obligation_matches)
         except ScoreFormatError as exc:
             output_paths = _glob_files(
                 sandbox, sheet.get("output_contract", {}).get("candidate_paths", []))
@@ -822,6 +864,238 @@ def _registry_label(data_root, scenario_id):
     return label
 
 
+def _campaign_relative_path(data_root, raw, label):
+    if not isinstance(raw, str) or not raw:
+        raise ScoreRefusal(f"{label} must be a non-empty repo-relative path")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ScoreRefusal(f"{label} must be a repo-relative path")
+    resolved = (Path(data_root) / relative).resolve()
+    if not resolved.is_relative_to(Path(data_root).resolve()):
+        raise ScoreRefusal(f"{label} escapes replay data root")
+    return resolved
+
+
+def _campaign_report_path(data_root, raw, label):
+    if not isinstance(raw, str) or not raw:
+        raise ScoreRefusal(f"{label} must name a score report")
+    candidate = Path(raw).expanduser()
+    resolved = candidate.resolve() if candidate.is_absolute() else (
+        Path(data_root) / candidate).resolve()
+    if not resolved.is_relative_to(Path(data_root).resolve()):
+        raise ScoreRefusal(f"{label} escapes replay data root")
+    return resolved
+
+
+def _benchmark_anchor_digest(data_root):
+    anchor = _load_json(
+        Path(data_root) / "manifests/floods_expected.sha256.json",
+        "benchmark digest anchor", refusal=True)
+    digest = anchor.get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ScoreRefusal("benchmark digest anchor has no valid sha256")
+    return digest
+
+
+def validate_campaign(data_root):
+    """Validate the U9 acceptance registry; never derive an adjudication."""
+    data_root = Path(data_root).resolve()
+    campaign_path = data_root / "acceptance/campaign.json"
+    campaign = _load_json(campaign_path, "campaign registry", refusal=True)
+    required_top = {
+        "campaign_commit", "mechanism_schema_version", "benchmark_sha256",
+        "fixture_rescore", "scenarios",
+    }
+    if set(campaign) != required_top:
+        raise ScoreRefusal(
+            "campaign registry top-level fields differ: "
+            f"missing={sorted(required_top - set(campaign))}, "
+            f"extra={sorted(set(campaign) - required_top)}"
+        )
+    campaign_commit = campaign["campaign_commit"]
+    fixture_value = campaign.get("fixture_rescore")
+    record_values = campaign.get("scenarios")
+    pending_declared = (
+        isinstance(fixture_value, dict)
+        and fixture_value.get("status") == "pending"
+    ) or (
+        isinstance(record_values, list)
+        and any(isinstance(record, dict) and record.get("status") == "pending"
+                for record in record_values)
+    )
+    if (not isinstance(campaign_commit, str)
+            or (campaign_commit != "" or not pending_declared)
+            and not re.fullmatch(r"[0-9a-f]{40}", campaign_commit)):
+        raise ScoreRefusal("campaign_commit must be a 40-character lowercase git commit")
+    if campaign["mechanism_schema_version"] != mechanism.MECHANISM_SCHEMA_VERSION:
+        raise ScoreRefusal(
+            "campaign mechanism_schema_version mismatch: "
+            f"registry={campaign['mechanism_schema_version']!r}, "
+            f"current={mechanism.MECHANISM_SCHEMA_VERSION!r}"
+        )
+    benchmark_digest = _benchmark_anchor_digest(data_root)
+    if campaign["benchmark_sha256"] != benchmark_digest:
+        raise ScoreRefusal(
+            "campaign benchmark_sha256 disagrees with the pinned benchmark anchor")
+
+    fixture = campaign["fixture_rescore"]
+    if not isinstance(fixture, dict) or set(fixture) != {"status", "scorecard", "note"}:
+        raise ScoreRefusal(
+            "fixture_rescore must contain exactly status, scorecard, and note")
+    if fixture["status"] != "accepted":
+        raise ScoreRefusal(
+            f"fixture_rescore status must be accepted, got {fixture['status']!r}")
+    scorecard = fixture["scorecard"]
+    if not isinstance(scorecard, str) or not Path(scorecard).is_absolute():
+        raise ScoreRefusal("fixture_rescore scorecard must be an absolute path")
+    if not Path(scorecard).is_file():
+        raise ScoreRefusal(f"fixture_rescore scorecard does not exist: {scorecard}")
+    if not isinstance(fixture["note"], str):
+        raise ScoreRefusal("fixture_rescore note must be a string")
+
+    records = campaign["scenarios"]
+    if not isinstance(records, list):
+        raise ScoreRefusal("campaign scenarios must be a list")
+    required_record = {
+        "scenario_label", "scenario_stem", "answer_sheet_sha256", "status",
+        "spread_report", "code_commit", "adjudicated_on", "note",
+    }
+    if not all(isinstance(record, dict) for record in records):
+        raise ScoreRefusal("campaign scenarios must contain only records")
+    labels = [record.get("scenario_label") for record in records]
+    if not all(isinstance(label, str) for label in labels):
+        raise ScoreRefusal("every campaign record requires a string scenario_label")
+    if len(records) != len(FROZEN_CAMPAIGN_LABELS) or sorted(labels) != sorted(
+            FROZEN_CAMPAIGN_LABELS):
+        missing = sorted(set(FROZEN_CAMPAIGN_LABELS) - set(labels))
+        duplicates = sorted(label for label in set(labels) if labels.count(label) > 1)
+        extra = sorted(set(labels) - set(FROZEN_CAMPAIGN_LABELS))
+        raise ScoreRefusal(
+            "campaign must contain every frozen scenario exactly once; "
+            f"missing={missing}, duplicates={duplicates}, extra={extra}")
+
+    scenario_registry = _load_json(
+        data_root / "registry.json", "scenario registry", refusal=True)
+    summaries = []
+    seen_stems = set()
+    for record in sorted(records, key=lambda item: item["scenario_label"]):
+        label = record["scenario_label"]
+        if set(record) != required_record:
+            raise ScoreRefusal(
+                f"campaign record {label} fields differ: "
+                f"missing={sorted(required_record - set(record))}, "
+                f"extra={sorted(set(record) - required_record)}")
+        stem = record["scenario_stem"]
+        if not isinstance(stem, str) or not stem or stem in seen_stems:
+            raise ScoreRefusal(f"campaign record {label} has invalid or duplicate scenario_stem")
+        seen_stems.add(stem)
+        if scenario_registry.get(stem) != label:
+            raise ScoreRefusal(
+                f"campaign record {label} stem {stem!r} disagrees with scenario registry")
+        status = record["status"]
+        if status not in CAMPAIGN_STATUSES:
+            raise ScoreRefusal(f"campaign record {label} has invalid status {status!r}")
+        note = record["note"]
+        if not isinstance(note, str):
+            raise ScoreRefusal(f"campaign record {label} note must be a string")
+        if status in NOTE_REQUIRED_STATUSES and not note.strip():
+            raise ScoreRefusal(f"campaign record {label} status {status} requires a note")
+        if status not in NOTE_REQUIRED_STATUSES and note:
+            raise ScoreRefusal(f"campaign record {label} status {status} requires an empty note")
+        adjudicated_on = record["adjudicated_on"]
+        if status != "pending" and (not isinstance(adjudicated_on, str)
+                                     or not adjudicated_on.strip()):
+            raise ScoreRefusal(f"campaign record {label} requires adjudicated_on")
+        if status == "pending":
+            raise ScoreRefusal(f"campaign record {label} is pending")
+        if status == "rejected":
+            raise ScoreRefusal(f"campaign record {label} is rejected")
+        if status == "downgraded":
+            if record["spread_report"] or record["code_commit"]:
+                raise ScoreRefusal(
+                    f"downgraded campaign record {label} must not name spread evidence")
+            summaries.append({"scenario_label": label, "status": status, "runs": []})
+            continue
+
+        if record["code_commit"] != campaign_commit:
+            raise ScoreRefusal(
+                f"campaign record {label} code_commit disagrees with campaign_commit")
+        sheet_digest = record["answer_sheet_sha256"]
+        if not isinstance(sheet_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", sheet_digest):
+            raise ScoreRefusal(f"campaign record {label} has invalid answer_sheet_sha256")
+        scenario_path = data_root / "scenarios" / f"{stem}.json"
+        scenario = _load_json(scenario_path, f"scenario {label}", refusal=True)
+        if scenario.get("format_version") != FORMAT_VERSION:
+            raise ScoreRefusal(f"scenario {label} format_version must be 1")
+        if scenario.get("answer_sheet_sha256") != sheet_digest:
+            raise ScoreRefusal(
+                f"campaign record {label} answer sheet digest disagrees with scenario pin")
+        pinned_runs = scenario.get("runs")
+        if not isinstance(pinned_runs, int) or pinned_runs not in {2, 3}:
+            raise ScoreRefusal(f"scenario {label} has invalid campaign runs pin")
+
+        spread_path = _campaign_relative_path(
+            data_root, record["spread_report"], f"campaign record {label} spread_report")
+        spread = _load_json(spread_path, f"spread report {label}", refusal=True)
+        if spread.get("scenario") != label or spread.get("scenario_id") != stem:
+            raise ScoreRefusal(f"spread report {label} identity disagrees with campaign record")
+        adjudication = spread.get("operator_adjudication")
+        if adjudication not in SPREAD_ADJUDICATIONS:
+            raise ScoreRefusal(
+                f"spread report {label} has invalid operator_adjudication {adjudication!r}")
+        if adjudication != status:
+            raise ScoreRefusal(
+                f"campaign record {label} status {status!r} disagrees with spread "
+                f"operator_adjudication {adjudication!r}")
+        spread_runs = spread.get("runs")
+        if not isinstance(spread_runs, list) or len(spread_runs) != pinned_runs:
+            found = len(spread_runs) if isinstance(spread_runs, list) else "non-list"
+            raise ScoreRefusal(
+                f"spread report {label} expected {pinned_runs} runs, found {found}")
+        run_indexes = [item.get("run_index") for item in spread_runs
+                       if isinstance(item, dict)]
+        if run_indexes != list(range(1, pinned_runs + 1)):
+            raise ScoreRefusal(
+                f"spread report {label} run indexes must be 1..{pinned_runs}")
+        run_summaries = []
+        for item in spread_runs:
+            index = item["run_index"]
+            if set(item) != {"run_index", "status", "report"}:
+                raise ScoreRefusal(
+                    f"spread report {label} run {index} has invalid fields")
+            report_path = _campaign_report_path(
+                data_root, item["report"], f"spread report {label} run {index}")
+            report = _load_json(
+                report_path, f"score report {label} run {index}", refusal=True)
+            if report.get("scenario_id") != stem or report.get("run_index") != index:
+                raise ScoreRefusal(
+                    f"score report {label} run {index} identity disagrees with spread")
+            if report.get("status") != item["status"]:
+                raise ScoreRefusal(
+                    f"score report {label} run {index} status disagrees with spread")
+            identity = report.get("identity")
+            if not isinstance(identity, dict):
+                raise ScoreRefusal(f"score report {label} run {index} lacks identity")
+            if identity.get("code_commit") != campaign_commit:
+                raise ScoreRefusal(
+                    f"score report {label} run {index} pins the wrong code_commit")
+            if identity.get("code_dirty") is not False:
+                raise ScoreRefusal(
+                    f"score report {label} run {index} was not scored from a clean tree")
+            if report.get("sheet_sha256") != sheet_digest:
+                raise ScoreRefusal(
+                    f"score report {label} run {index} sheet_sha256 disagrees with campaign pin")
+            run_summaries.append({"run_index": index, "status": item["status"]})
+        summaries.append({
+            "scenario_label": label, "status": status, "runs": run_summaries,
+        })
+    return {
+        "campaign_commit": campaign_commit,
+        "fixture_rescore": fixture["status"],
+        "scenarios": summaries,
+    }
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path)
@@ -831,6 +1105,7 @@ def build_parser():
     one.add_argument("run_dir", type=Path)
     spread = sub.add_parser("spread")
     spread.add_argument("scenario", type=Path)
+    sub.add_parser("campaign")
     return parser
 
 
@@ -838,6 +1113,17 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         data_root = _configured_data_root(args.data_root)
+        if args.command == "campaign":
+            summary = validate_campaign(data_root)
+            print(
+                f"CAMPAIGN COMPLETE: commit={summary['campaign_commit']} "
+                f"fixture_rescore={summary['fixture_rescore']}")
+            for item in summary["scenarios"]:
+                runs = ", ".join(
+                    f"{run['run_index']:03d}={run['status']}" for run in item["runs"])
+                suffix = f"; runs={runs}" if runs else ""
+                print(f"{item['scenario_label']}: {item['status']}{suffix}")
+            return 0
         scenario_path, scenario = load_scenario(args.scenario)
         sheet_path = (data_root / scenario["answer_sheet"]).resolve()
         if not sheet_path.is_relative_to(data_root):
@@ -856,7 +1142,11 @@ def main(argv=None):
                 "scenario scoring_mode must be b5, candidate, or adjudication, "
                 f"got {scoring_mode!r}"
             )
-        sheet = load_sheet(sheet_path, scoring_mode=scoring_mode)
+        status_family = scenario.get("status_family", "candidate")
+        if scoring_mode != "candidate" and "status_family" in scenario:
+            raise ScoreFormatError("status_family is valid only for candidate scoring mode")
+        sheet = load_sheet(
+            sheet_path, scoring_mode=scoring_mode, status_family=status_family)
         label = _registry_label(data_root, scenario_path.stem)
         result_root = data_root / "results" / label
         if args.command == "score":

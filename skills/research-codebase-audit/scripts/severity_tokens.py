@@ -840,16 +840,41 @@ def gate_rows(package_root, audit, manifest, rows, stage):
     rows are outside the returned mapping.
     """
     mode = (manifest or {}).get("mode", "replication")
-    records, failures = load_token_records(audit, stage)
-    receipts, receipt_failures = load_receipts(audit, stage, records)
-    failures.extend(receipt_failures)
-    verified_rows, verification_failures = verify_token_records(
-        package_root, audit, manifest, stage)
-    failures.extend(verification_failures)
-    verified = {
-        (row["Error ID"], row["Token"], row["Obligation Digest"]): row
-        for row in verified_rows
-    }
+    stages = (stage,) if isinstance(stage, str) else tuple(stage)
+    if not stages or any(item not in {"code_b6a", "code_b6b", "bC"}
+                         for item in stages):
+        raise SeverityTokenError(f"invalid token-receipt stage set {stages!r}")
+    # A union gate reads each existing receipt home.  If none exists, retain
+    # the first home so the ordinary missing-receipt refusal still fires.
+    active_stages = tuple(
+        item for item in stages if receipt_path(audit, item).is_file())
+    if not active_stages:
+        active_stages = stages[:1]
+    failures, receipts, verified = [], {}, {}
+    for item in active_stages:
+        records, record_failures = load_token_records(audit, item)
+        failures.extend(record_failures)
+        home_receipts, receipt_failures = load_receipts(audit, item, records)
+        failures.extend(receipt_failures)
+        verified_rows, verification_failures = verify_token_records(
+            package_root, audit, manifest, item)
+        failures.extend(verification_failures)
+        home_verified = {
+            (row["Error ID"], row["Token"], row["Obligation Digest"]): row
+            for row in verified_rows
+        }
+        for key, receipt in home_receipts.items():
+            if key in receipts:
+                failures.append(
+                    f"token receipt composite key appears in multiple homes: {key}")
+            else:
+                receipts[key] = receipt
+        for key, receipt in home_verified.items():
+            if key in verified:
+                failures.append(
+                    f"re-derived token record appears in multiple homes: {key}")
+            else:
+                verified[key] = receipt
     if set(receipts) != set(verified):
         failures.append(
             "token receipt set disagrees with re-derived verifier records; "

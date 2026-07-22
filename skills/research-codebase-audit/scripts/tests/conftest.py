@@ -33,3 +33,5 @@ def pytest_configure(config):
         "markers", "u7: unit U7 — anchor-preserving claim handoffs")
     config.addinivalue_line(
         "markers", "u8: unit U8 — severity and argument contracts")
+    config.addinivalue_line(
+        "markers", "u9: unit U9 — acceptance campaign contracts")

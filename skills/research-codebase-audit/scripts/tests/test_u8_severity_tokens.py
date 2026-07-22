@@ -509,6 +509,91 @@ def test_completed_tail_verify_run_rederives_token_gate_and_refuses_sabotage(tmp
     assert "token receipt set disagrees" in refused.stderr
 
 
+def _install_bc_receipt_home(root, a):
+    records, failures = tokens.load_token_records(a.audit, "code_b6b")
+    assert failures == [] and len(records) == 1
+    record = next(iter(records.values()))[1]
+    a.write("plans/token_probe.py", (
+        a.audit / "_code_error_recheck/token_probe.py").read_text(encoding="utf-8"))
+    a.write("plans/late_observation_corrections.md", (
+        "# Late-observation corrections\n\n### Token verification records\n\n"
+        + rb.md_table(tokens.TOKEN_RECORD_COLS, [[
+            record[column] for column in tokens.TOKEN_RECORD_COLS
+        ]])
+    ))
+    _issue_receipts(root, a, "bC")
+    (a.audit / "_run/code_b6b/token_receipts.md").unlink()
+
+
+def _export_completed_tail(a):
+    for stream in ("claims", "code"):
+        a.write(f"late_observations_{stream}.md", (
+            f"# Late observations — {stream}\n\nNo late observations.\n\n"
+            "## Dispositions\n\nNo dispositions.\n"))
+    exported = rb.run_script(
+        "export_xlsx.py", "--audit-dir", a.audit, "--mode", "replication",
+        "-o", a.audit / "code_review.xlsx")
+    assert exported.returncode == 0, exported.stdout + exported.stderr
+
+
+@pytest.mark.u9
+def test_bc_receipt_home_union_passes_b8_and_b9_full_mode_clis(tmp_path):
+    root, a = _completed_severity_tail(tmp_path)
+    _install_bc_receipt_home(root, a)
+    b8 = rb.lint(a, "b8")
+    assert b8.returncode == 0, b8.stdout + b8.stderr
+    _export_completed_tail(a)
+    b9 = rb.lint(a, "b9")
+    assert b9.returncode == 0, b9.stdout + b9.stderr
+
+
+@pytest.mark.u9
+def test_receiptless_severe_row_refuses_with_both_final_homes_present(tmp_path):
+    _root, a = _completed_severity_tail(tmp_path)
+    tokens.write_atomic(
+        a.audit / "_run/code_b6b/token_receipts.md", tokens.render_receipts([]))
+    tokens.write_atomic(
+        a.audit / "_run/bC/token_receipts.md", tokens.render_receipts([]))
+    b8 = rb.lint(a, "b8")
+    assert b8.returncode == 1
+    assert "severity-token gate" in b8.stdout
+    _export_completed_tail(a)
+    b9 = rb.lint(a, "b9")
+    assert b9.returncode == 1
+    assert "severity-token gate" in b9.stdout
+
+
+@pytest.mark.u9
+def test_b7_sweep_activates_from_bc_home_and_rows_without_spurious_firing(tmp_path):
+    # Direction 1: a post-bC severe mint whose only receipt home is bC.  The
+    # pre-fix b7 activation looked at the code_b6b home alone (and passed no
+    # rows), so this exact state silently skipped the sweep; now the sweep
+    # must activate and demand adjudication coverage through the b7 CLI.
+    root, a, row, record = _token_fixture(tmp_path)
+    a.write("plans/token_probe.py", (
+        a.audit / "_code_error_recheck/token_probe.py").read_text(encoding="utf-8"))
+    a.write("plans/late_observation_corrections.md", (
+        "# Late-observation corrections\n\n### Token verification records\n\n"
+        + rb.md_table(tokens.TOKEN_RECORD_COLS, [[
+            record[column] for column in tokens.TOKEN_RECORD_COLS
+        ]])
+    ))
+    _issue_receipts(root, a, "bC")
+    a.write_register("_staging/claims_register.md", rb.CLAIMS_COLS, [])
+    a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [row])
+    a.snapshot("b7", ["claims_register.md", "code_error_register.md"])
+    a.write("register_cross_link_summary.md", rb.CROSS_LINK_SUMMARY_STUB)
+    activated = rb.lint(a, "b7")
+    assert activated.returncode == 1, activated.stdout + activated.stderr
+    assert "b7 severity-token sweep" in activated.stdout
+    # Direction 2: no severe rows and no receipts in any home — the widened
+    # activation (union homes + rows) must not fire spuriously.
+    quiet = rb.make_b7(tmp_path / "quiet",
+                       error_rows=[rb.error_row("E-0002", severity="2")])
+    silent = rb.lint(quiet, "b7")
+    assert silent.returncode == 0, silent.stdout + silent.stderr
+
+
 # ---------------------------------------------------------------- F1: derived
 # activation — a severe-eligible row makes the gate mandatory with no token
 # artifact anywhere, so conductor omission fails instead of passing silently.
@@ -697,6 +782,69 @@ def test_exhausted_post_plan_ordering_check_has_both_directions(tmp_path):
     quiet = lint.Lint()
     lint._residual_rows(quiet, a2.audit, required=True)
     assert quiet.errors == [], quiet.errors
+
+
+def _add_residual_snapshot(a, stage):
+    a.write_register(
+        f"_run/snapshots/{stage}/output_register.md", rb.OUTPUT_COLS,
+        [rb.output_row("O-0002")])
+    manifest = json.loads((a.audit / "_run/manifest.json").read_text())
+    manifest["stages"][stage] = {"status": "done", "retries": 0}
+    a.write("_run/manifest.json", json.dumps(manifest, indent=2) + "\n")
+    return f"{stage}:" + tokens.sha256_file(
+        a.audit / f"_run/snapshots/{stage}/output_register.md")
+
+
+def _set_residual_intro(a, intro):
+    rows = tokens.rows_for_columns(
+        a.audit / "_run/late_severity_residuals.md", tokens.RESIDUAL_COLS)
+    rows[0]["Target Introduction Head"] = intro
+    a.write("_run/late_severity_residuals.md", (
+        "# Late severity residuals\n\n" + rb.md_table(
+            tokens.RESIDUAL_COLS, [[row[column] for column in tokens.RESIDUAL_COLS]
+                                   for row in rows])))
+
+
+@pytest.mark.u9
+def test_tier1_residual_firstness_drills_later_refusal_and_earliest_pass_cli(tmp_path):
+    _root, a, _row = _residual_tail(tmp_path)
+    earliest = _add_residual_snapshot(a, "claims_b4")
+    later = rb.lint(a, "b8")
+    assert later.returncode == 1
+    assert "is not the first done snapshot containing O-0002; earliest is claims_b4" in later.stdout
+    _set_residual_intro(a, earliest)
+    first = rb.lint(a, "b8")
+    assert first.returncode == 0, first.stdout + first.stderr
+
+
+@pytest.mark.u9
+def test_residual_firstness_claims_wave_code_b6a_exception(tmp_path):
+    _root, a, _row = _residual_tail(tmp_path)
+    _add_residual_snapshot(a, "claims_b4")
+    code_intro = _add_residual_snapshot(a, "code_b6a")
+    _set_residual_intro(a, code_intro)
+    result = rb.lint(a, "b8")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.u9
+def test_tier1_residual_firstness_test_oracle_notices_disabled_check(
+        tmp_path, monkeypatch):
+    _root, a, _row = _residual_tail(tmp_path)
+    _add_residual_snapshot(a, "claims_b4")
+
+    def negative_oracle():
+        probe = lint.Lint()
+        lint._residual_rows(probe, a.audit, required=True)
+        assert any("is not the first done snapshot" in error for error in probe.errors)
+
+    negative_oracle()
+    monkeypatch.setattr(
+        lint, "_first_residual_introduction",
+        lambda _lint, _audit, _stages, _filename, _cols, _target_col,
+        _target_id, intro_stage: intro_stage)
+    with pytest.raises(AssertionError):
+        negative_oracle()
 
 
 def test_residual_rows_branch_refusals(tmp_path):

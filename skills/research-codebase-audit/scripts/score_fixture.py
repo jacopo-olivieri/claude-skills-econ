@@ -326,6 +326,43 @@ def row_text(d):
     return " | ".join(str(v) for v in d.values()).lower()
 
 
+def is_d03(row):
+    """Match only the D-03 plant, without borrowing Error Type vocabulary."""
+    text = row_text(row).replace("`", "")
+    semantic_text = row_text({
+        key: value for key, value in row.items() if key != "Error Type"
+    }).replace("`", "")
+    at_fixture_site = (
+        row.get("Error Type") == "sample_filter_or_flag_error"
+        and any(
+            re.search(
+                re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)",
+                text,
+            )
+            for site in ("definition", "consumer")
+        )
+    )
+    semantic_anchor = (
+        "baseline_diag_ok" in semantic_text
+        or "do/analysis.do" in semantic_text
+    )
+    semantic_match = (
+        semantic_anchor
+        and any(term in semantic_text for term in ("diagnostic", "diagnostics"))
+        and any(term in semantic_text for term in (
+            "baseline", "wave 1", "wave-1", "wave one", "first wave",
+        ))
+        and any(term in semantic_text for term in (
+            "narrow", "filter", "restrict", "exclude", "drop", "remove",
+        ))
+        and any(term in semantic_text for term in (
+            "sample", "observation", "case", "analytic population",
+            "estimation population",
+        ))
+    )
+    return "baseline_diag_ok" in text or at_fixture_site or semantic_match
+
+
 def sig_match(text, groups):
     return all(any(alt in text for alt in group) for group in groups)
 
@@ -1071,30 +1108,6 @@ def check_channel_definition_use(audit):
                                                    ("Channel", "Source ID", "Witness ID")))
         if receipt_coverage != mapped_witnesses["D-03"]:
             return "FAIL", "D-03 synthetic verification records lack qualifying receipts"
-    def is_d03(row):
-        text = row_text(row).replace("`", "")
-        at_fixture_site = (
-            row.get("Error Type") == "sample_filter_or_flag_error"
-            and any(
-                re.search(re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)", text)
-                for site in ("definition", "consumer")
-            )
-        )
-        semantic_match = (
-            any(term in text for term in ("diagnostic", "diagnostics"))
-            and any(term in text for term in (
-                "baseline", "wave 1", "wave-1", "wave one", "first wave",
-            ))
-            and any(term in text for term in (
-                "narrow", "filter", "restrict", "exclude", "drop", "remove",
-            ))
-            and any(term in text for term in (
-                "sample", "observation", "case", "analytic population",
-                "estimation population",
-            ))
-        )
-        return "baseline_diag_ok" in text or at_fixture_site or semantic_match
-
     issue_rows = [row for row in final_rows
                   if row.get("Status") in {"candidate", "confirmed", "confirmation_needed", "blocked"}
                   and is_d03(row)]

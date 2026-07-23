@@ -49,6 +49,28 @@ def _norm(value):
     return str(value).strip().strip("`").strip()
 
 
+def argument_contract_stamp(finding_kind, witness_id, caller_path, callee_path,
+                            argument_position, site_anchor):
+    """Return the machine-written register sentence for one AC witness.
+
+    Fixed template over artifact fields only; the finding_kind branch is
+    keyed on the checker's closed set, never on fixture expectations.
+    """
+    if finding_kind == "unresolved_callee":
+        return (
+            f"Argument-contract finding `{finding_kind}` for witness "
+            f"`{witness_id}` at `{site_anchor}`: caller `{caller_path}` "
+            f"invokes callee `{callee_path}`, which the argument-contract "
+            "checker cannot resolve."
+        )
+    return (
+        f"Argument-contract finding `{finding_kind}` for witness "
+        f"`{witness_id}` at `{site_anchor}`: callee `{callee_path}` and "
+        f"caller `{caller_path}` disagree about argument position "
+        f"{argument_position}."
+    )
+
+
 def _table(text, columns, label):
     matches = []
     for headers, rows, _line in du.parse_markdown_tables(text):
@@ -170,6 +192,9 @@ def parse_raw_sources(audit):
         source["witnesses"].append({
             "witness_id": finding.witness_id,
             "anchor": finding.site_anchor,
+            "finding_kind": finding.finding_kind,
+            "argument_position": finding.argument_position,
+            "callee_path": finding.callee_path,
         })
     return sources
 
@@ -425,6 +450,24 @@ def _expected_rows(sources, decisions, declared, register, snapshot,
                     f"AC candidate {source_id} Code/Data Source omits "
                     + ", ".join(missing_paths)
                 )
+            description = target.get("Error Description", "")
+            missing_stamps = [
+                stamp
+                for stamp in (
+                    argument_contract_stamp(
+                        witness["finding_kind"], witness["witness_id"],
+                        source["caller"], witness["callee_path"],
+                        witness["argument_position"], witness["anchor"],
+                    )
+                    for witness in source["witnesses"]
+                )
+                if stamp not in description
+            ]
+            if missing_stamps:
+                raise MappingError(
+                    f"AC candidate {source_id} Error Description omits "
+                    f"{len(missing_stamps)} machine-written witness stamp(s)"
+                )
         witnesses = source["witnesses"] if channel in {"CV", "AC"} else source
         for witness in witnesses:
             rows[channel].append({
@@ -433,6 +476,109 @@ def _expected_rows(sources, decisions, declared, register, snapshot,
                 "Mapping Kind": kind, "Site Anchor": witness["anchor"],
             })
     return rows
+
+
+def expected_ac_stamps(audit, mappings):
+    """Map each AC mapping key to its complete artifact-derived stamp."""
+    sources = parse_raw_sources(Path(audit)).get("AC", {})
+    stamps = {}
+    for mapping in mappings:
+        if mapping.get("Channel") != "AC":
+            continue
+        source = sources.get(mapping["Source ID"])
+        if source is None:
+            raise MappingError(
+                f"AC mapping names unknown raw source {mapping['Source ID']}")
+        matches = [
+            witness for witness in source["witnesses"]
+            if witness["witness_id"] == mapping["Witness ID"]
+        ]
+        if len(matches) != 1:
+            raise MappingError(
+                f"AC mapping witness {mapping['Witness ID']} resolves to "
+                f"{len(matches)} raw findings"
+            )
+        witness = matches[0]
+        stamps[(
+            mapping["Channel"], mapping["Source ID"], mapping["Witness ID"],
+        )] = argument_contract_stamp(
+            witness["finding_kind"], witness["witness_id"], source["caller"],
+            witness["callee_path"], witness["argument_position"],
+            witness["anchor"],
+        )
+    return stamps
+
+
+def _stamp_ac_candidates(audit):
+    """Atomically append every AC witness stamp to its staged candidate row."""
+    sources = parse_raw_sources(audit)
+    _declared, _display, decisions = parse_decisions(
+        audit / "_run/detector_mapping_decisions.md")
+    stamps_by_error = {}
+    for (channel, source_id), decision in decisions.items():
+        if channel != "AC":
+            continue
+        source = sources["AC"].get(source_id)
+        if source is None:
+            raise MappingError(f"AC decision names unknown source {source_id}")
+        for witness in source["witnesses"]:
+            stamps_by_error.setdefault(decision["Error ID"], []).append(
+                argument_contract_stamp(
+                    witness["finding_kind"], witness["witness_id"],
+                    source["caller"], witness["callee_path"],
+                    witness["argument_position"], witness["anchor"],
+                )
+            )
+    if not stamps_by_error:
+        return
+
+    path = audit / "_staging/code_error_register.md"
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    header = "| " + " | ".join(ERROR_COLS) + " |"
+    starts = [
+        index for index, line in enumerate(lines)
+        if line.rstrip("\r\n").strip() == header
+    ]
+    if len(starts) != 1:
+        raise MappingError(
+            f"{path}: expected exactly one {' | '.join(ERROR_COLS)} table")
+    changed, found = False, set()
+    for index in range(starts[0] + 2, len(lines)):
+        raw = lines[index]
+        if not raw.lstrip().startswith("|"):
+            break
+        newline = "\n" if raw.endswith("\n") else ""
+        cells = du.split_markdown_row(raw.rstrip("\r\n"))
+        if len(cells) != len(ERROR_COLS):
+            raise MappingError(f"{path}: malformed code-error register row")
+        error_id = _norm(cells[0])
+        stamps = stamps_by_error.get(error_id)
+        if not stamps:
+            continue
+        found.add(error_id)
+        description_index = ERROR_COLS.index("Error Description")
+        description = cells[description_index].rstrip()
+        for stamp in stamps:
+            if stamp not in description:
+                description = f"{description} {stamp}".strip()
+                changed = True
+        cells[description_index] = description
+        lines[index] = "| " + " | ".join(cells) + " |" + newline
+    missing = sorted(set(stamps_by_error) - found)
+    if missing:
+        raise MappingError(
+            f"AC stamp target row(s) absent from staged register: {', '.join(missing)}")
+    if not changed:
+        return
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.writelines(lines)
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
 
 
 def _render_section(marker, rows, zero):
@@ -577,6 +723,7 @@ def _reproducibility_check(package_root, audit):
 
 
 def emit(package_root, audit, output):
+    _stamp_ac_candidates(audit)
     display, rows = validate_inputs(package_root, audit, check=False)
     payload = render_mapping(display, rows)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -164,7 +164,10 @@ For the code-error stream, follow the structured matrix in `{CONTRACT_PATH}`. Un
 `### Witness outcomes`, write exactly `Channel | Source ID | Witness ID | Verdict | Mech Class |
 Mech Object | Mech Relation | Mech Expected | Mech Actual | Proposed Severity | Duplicate Target`
 for `confirmed_error`, `not_error`, and `duplicate` only, keyed by the
-full Channel/Source ID/Witness ID tuple. Percent-escape reserved characters; never emit canonical
+full Channel/Source ID/Witness ID tuple. `Mech Relation` is closed by register class: code errors
+use only `never_fires`, `overwrites`, `wrong_target`, `stale_reference`, `omits`, `adds`,
+`wrong_value`, `mismatches`, `matches`, or `unresolved` (claims use the same list; outputs use
+`maps_to`, `matches`, or `unresolved`). Percent-escape reserved characters; never emit canonical
 mechanism bytes or `MIXED`. Under `### Verification records`, write the exact MF or DU/CV
 channel-typed table. Persist every DU/CV dismissal probe beside the shard and name it in
 `Harness / Input Domain`. A probe must be a single self-contained file — all synthetic inputs

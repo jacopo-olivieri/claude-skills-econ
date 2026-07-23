@@ -1010,8 +1010,8 @@ def test_three_manifest_plants_score_green_end_to_end(tmp_path):
         findings = next(rows for rows in grouped.values()
                         if rows[0]["manifest"] == manifest)
         source_id = findings[0]["source_id"]
-        witness_ids = []
-        for finding in findings:
+        witness_ids, record_ids = [], []
+        for finding_index, finding in enumerate(findings, start=1):
             witness = finding["witness_id"]
             witness_ids.append(witness)
             anchor = f"{manifest}:{finding['line']}" if finding["line"] else manifest
@@ -1029,6 +1029,11 @@ def test_three_manifest_plants_score_green_end_to_end(tmp_path):
                 mech_object=manifest.replace("/", "-"), relation="wrong_value",
                 expected="usable", actual="inventory" if eid == "E-7001" else "accepted",
             ))
+            if finding["rule_slug"] == "conda-malformed-line":
+                record_id = f"VR-{eid[2:]}-{finding_index:02d}"
+                record_ids.append(record_id)
+                mf_records.append(_mf_record(
+                    root / manifest, source_id, witness, record_id))
         verdict = "not_error" if eid == "E-7002" else "confirmed_error"
         severity = "—" if verdict == "not_error" else ("1" if eid == "E-7001" else "2")
         ledger_rows.append(rb.code_ledger_row(
@@ -1037,11 +1042,8 @@ def test_three_manifest_plants_score_green_end_to_end(tmp_path):
             proposed_severity=severity, accepted_type="version_or_dependency_error",
             accepted_mechanism="manifest usability adjudicated with authoritative consumer",
             witness_ids="; ".join(witness_ids),
-            record_ids="VR-LEGAL" if verdict == "not_error" else "—",
+            record_ids="; ".join(record_ids) if record_ids else "—",
         ))
-        if verdict == "not_error":
-            mf_records.append(_mf_record(
-                root / manifest, source_id, witness_ids[0], "VR-LEGAL"))
         inventory.append((eid, "manifest detector", source_id))
         final_status = "confirmed"
         final_severity = "1" if eid in {"E-7001", "E-7002"} else "2"

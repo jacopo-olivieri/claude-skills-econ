@@ -11,6 +11,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import build_detector_mapping as detector_mapping
 import severity_tokens as tokens
 
 
@@ -98,6 +99,117 @@ def _claim_link_failures(audit, error_row, token):
     return [f"{error_row['Error ID']}: claim token {claim_id} is absent"]
 
 
+def _verified_b7_token_records(audit):
+    """Return receipted token records keyed by (Error ID, Token)."""
+    found, failures = {}, []
+    for stage in ("code_b6b", "bC"):
+        if not tokens.receipt_path(audit, stage).is_file():
+            continue
+        records, record_failures = tokens.load_token_records(audit, stage)
+        receipts, receipt_failures = tokens.load_receipts(audit, stage, records)
+        failures.extend(record_failures)
+        failures.extend(receipt_failures)
+        for composite in receipts:
+            item = records.get(composite)
+            if item is None:
+                continue
+            key = composite[:2]
+            if key in found:
+                failures.append(
+                    f"verified token record appears in multiple b7 homes: {key}")
+            else:
+                found[key] = item[1]
+    return found, failures
+
+
+def _resolve_cv_site(package_root, anchor):
+    """Resolve a CV line-or-content anchor to a canonical repo path:line."""
+    value = tokens.clean(anchor)
+    direct = re.fullmatch(r"(.+):(\d+)", value)
+    if direct:
+        path, line, _source = tokens.resolve_anchor(package_root, value)
+        relative = path.relative_to(Path(package_root).resolve()).as_posix()
+        return f"{relative}:{line}"
+    if ":" not in value:
+        raise tokens.SeverityTokenError(
+            f"CV witness anchor has no repo-relative path: {anchor!r}")
+    relative, detail = value.split(":", 1)
+    path = tokens._safe_file(package_root, relative)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    match = re.fullmatch(
+        r"\s*lines?\s+(\d+)(?:\s*[–—-]\s*(\d+))?\s*(?::\s*(.*))?",
+        detail,
+    )
+    if match:
+        start, end = int(match.group(1)), int(match.group(2) or match.group(1))
+        if start < 1 or end < start or end > len(lines):
+            raise tokens.SeverityTokenError(
+                f"CV witness anchor line is outside the file: {anchor}")
+        content = tokens.clean(match.group(3) or "")
+        if content:
+            hits = [
+                number for number in range(start, end + 1)
+                if content in lines[number - 1]
+            ]
+            if len(hits) != 1:
+                raise tokens.SeverityTokenError(
+                    f"CV content anchor resolves to {len(hits)} lines: {anchor}")
+            start = hits[0]
+        resolved = path.relative_to(Path(package_root).resolve()).as_posix()
+        return f"{resolved}:{start}"
+    content = tokens.clean(detail)
+    hits = [
+        number for number, line in enumerate(lines, start=1)
+        if content and content in line
+    ]
+    if len(hits) != 1:
+        raise tokens.SeverityTokenError(
+            f"CV content anchor resolves to {len(hits)} lines: {anchor}")
+    resolved = path.relative_to(Path(package_root).resolve()).as_posix()
+    return f"{resolved}:{hits[0]}"
+
+
+def _cv_witness_binding_failure(package_root, audit, record):
+    """Explain a token lineage that omits one of its mapped CV witness sites."""
+    mapping_path = Path(audit) / "_run/detector_mapping.md"
+    if not mapping_path.is_file():
+        # Historical/non-detector fixtures have no mapped CV metadata, so the
+        # content-derived U9c binding is inactive for them.
+        return None
+    try:
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            mapping_path)
+        by_witness = {
+            row["Witness ID"]: row for row in mappings if row["Channel"] == "CV"
+        }
+        effective_ids = tokens.list_cell(record.get("Witness IDs", ""))
+        cv_rows = [by_witness[witness_id] for witness_id in effective_ids
+                   if witness_id in by_witness]
+        if not cv_rows:
+            return None
+        required = {
+            row["Witness ID"]: _resolve_cv_site(package_root, row["Site Anchor"])
+            for row in cv_rows
+        }
+        lineage = json.loads(record["Lineage JSON"])
+        covered = set()
+        for hop in lineage:
+            path, line, _source = tokens.resolve_anchor(
+                package_root, hop["anchor"])
+            relative = path.relative_to(Path(package_root).resolve()).as_posix()
+            covered.add(f"{relative}:{line}")
+    except (OSError, ValueError, detector_mapping.MappingError,
+            tokens.SeverityTokenError) as exc:
+        return f"cannot resolve mapped CV witness-site binding ({exc})"
+    missing = [
+        f"{witness_id}={site}" for witness_id, site in sorted(required.items())
+        if site not in covered
+    ]
+    if missing:
+        return "lineage omits mapped CV witness site(s): " + ", ".join(missing)
+    return None
+
+
 def validate_b7(package_root, audit, manifest):
     """Return ``(rejected rows, failures)`` for the b7 severity section."""
     audit = Path(audit)
@@ -135,6 +247,8 @@ def validate_b7(package_root, audit, manifest):
         failures.append(
             "b7 severity-token adjudications do not exactly cover register tokens; "
             f"expected={sorted(eligible)}, actual={sorted(actual)}")
+    verified_records, record_failures = _verified_b7_token_records(audit)
+    failures.extend(record_failures)
     rejected = []
     for key in sorted(set(actual) & set(eligible)):
         error_row, token = eligible[key]
@@ -149,6 +263,16 @@ def validate_b7(package_root, audit, manifest):
         if state == "invalid":
             failures.append(f"{key}: cited target is invalid for this mode")
         failures.extend(_claim_link_failures(audit, error_row, token))
+        record = verified_records.get((error_row["Error ID"], token))
+        binding_failure = (
+            _cv_witness_binding_failure(package_root, audit, record)
+            if record is not None else None
+        )
+        if binding_failure and adjudication["Verdict"] != "rejected":
+            failures.append(
+                f"{key}: mapped CV witness-site mismatch cannot be upheld "
+                f"({binding_failure})"
+            )
         if adjudication["Verdict"] == "rejected":
             rejected.append(adjudication)
     # On the post-bC b7 rerun, the original frozen rejected set may shrink

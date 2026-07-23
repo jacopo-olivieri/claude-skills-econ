@@ -95,7 +95,9 @@ claims artifact exists; any conventions, CV scan, or CV decision is refused.
    for each `new_candidate` decision, using only the declared detector range. An AC row uses
    `missing_input_or_output`; its `Code/Data Source` names the caller and resolved callee
    (caller only for `unresolved_callee`) so the existing `detector` second-read reason schedules
-   both files. Run
+   both files. The mapping builder writes one artifact-derived argument-contract stamp sentence
+   per AC witness into `Error Description`; recheck workers may append prose but must preserve
+   every complete machine-written sentence. Run
    `build_detector_mapping.py <package_root> --audit-dir audit`; it validates the staged
    register, raw artifacts, frozen CV scan, decisions, and pre-b3d snapshot before atomically
    writing `audit/_run/detector_mapping.md`. On success atomically rename the staged register

@@ -116,10 +116,26 @@ def _mapped_dismissal_obligations(audit, ledgers, supplementary=False):
     ledger_by_id = {}
     for path, row in ledgers:
         ledger_by_id.setdefault(row["ID"], []).append((path, row))
+    manifest_rules = {}
+    manifest_path = audit / "_run/manifest_check.md"
+    if manifest_path.is_file():
+        columns = [
+            "Source ID", "Witness ID", "Site Anchor", "Rule Slug",
+            "Offending Text", "Problem",
+        ]
+        for row in _rows(manifest_path, columns):
+            manifest_rules[("MF", row["Source ID"], row["Witness ID"])] = (
+                row["Rule Slug"])
     obligations = []
     for mapping in mappings:
         dispositions = ledger_by_id.get(mapping["Error ID"], [])
-        if len(dispositions) == 1 and dispositions[0][1]["Verdict"] == "not_error":
+        if len(dispositions) != 1:
+            continue
+        verdict = dispositions[0][1]["Verdict"]
+        key = (mapping["Channel"], mapping["Source ID"], mapping["Witness ID"])
+        if (verdict == "not_error"
+                or (verdict == "confirmed_error"
+                    and manifest_rules.get(key) == "conda-malformed-line")):
             obligations.append((mapping, dispositions[0]))
     return obligations
 

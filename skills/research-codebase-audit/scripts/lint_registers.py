@@ -2643,6 +2643,24 @@ def _all_code_recheck_ledger_rows(lint, audit, supplementary=False):
     return rows
 
 
+def _manifest_rules_by_key(lint, audit):
+    path = audit / "_run/manifest_check.md"
+    text = read_text(lint, path) or ""
+    columns = [
+        "Source ID", "Witness ID", "Site Anchor", "Rule Slug",
+        "Offending Text", "Problem",
+    ]
+    rows = tables_by_cols(
+        lint, path, text, columns, "manifest-check witnesses")
+    result = {}
+    for row in rows:
+        key = ("MF", row["Source ID"], row["Witness ID"])
+        if key in result:
+            lint.fail(f"{path}: duplicate manifest witness {'/'.join(key)}")
+        result[key] = row["Rule Slug"]
+    return result
+
+
 def check_detector_mapping_b6(lint, audit, final_path=None):
     plan = recheck_plan_path(audit, "code")
     mappings = parse_detector_mappings(lint, audit)
@@ -2658,6 +2676,16 @@ def check_detector_mapping_b6(lint, audit, final_path=None):
     ledgers_by_id = {}
     for path, row in ledger_rows:
         ledgers_by_id.setdefault(row.get("ID", ""), []).append((path, row))
+    ac_stamps = {}
+    if any(row["Channel"] == "AC" for row in mappings):
+        try:
+            ac_stamps = detector_mapping.expected_ac_stamps(audit, mappings)
+        except (detector_mapping.MappingError, OSError) as exc:
+            lint.fail(f"argument-contract stamp binding cannot resolve: {exc}")
+    manifest_rules = (
+        _manifest_rules_by_key(lint, audit)
+        if any(row["Channel"] == "MF" for row in mappings) else {}
+    )
     frozen_post_b6a = audit / "_run/snapshots/code_b6b/code_error_register.md"
     final_path = final_path or (
         frozen_post_b6a if frozen_post_b6a.is_file() else audit / "code_error_register.md")
@@ -2773,10 +2801,45 @@ def check_detector_mapping_b6(lint, audit, final_path=None):
 
         keys = {(row["Channel"], row["Source ID"], row["Witness ID"])
                 for row in mapping_rows}
+        final_text = " | ".join(final_row.values())
+        for key in sorted(keys):
+            stamp = ac_stamps.get(key)
+            if stamp is not None and stamp not in final_text:
+                lint.fail(
+                    f"{final_path}: AC-mapped Error ID {eid} stripped the complete "
+                    f"machine-written stamp for witness {key[2]}"
+                )
+        allowed_records = set(list_cell(ledger.get("Verification Record IDs", "")))
+        for key in sorted(keys):
+            if manifest_rules.get(key) != "conda-malformed-line":
+                continue
+            if verdict not in {"not_error", "confirmed_error"}:
+                # verify_dismissals mints pinned-oracle receipts only for
+                # not_error and confirmed_error dispositions; demanding one
+                # for e.g. a duplicate verdict would be unsatisfiable.
+                continue
+            oracle_receipts = [
+                receipt for receipt in receipts
+                if tuple(receipt[field] for field in
+                         ("Channel", "Source ID", "Witness ID")) == key
+                and receipt["Record ID"] in allowed_records
+            ]
+            if len(oracle_receipts) != 1:
+                lint.fail(
+                    f"{receipt_path}: conda-malformed-line witness {'/'.join(key)} "
+                    "requires exactly one pinned-oracle receipt"
+                )
+            elif (verdict == "confirmed_error"
+                  and oracle_receipts[0]["Accepted (yes/no)"] == "yes"):
+                lint.fail(
+                    f"{path}: conda-malformed-line witness {'/'.join(key)} was "
+                    "confirmed_error although the pinned oracle accepts the file; "
+                    "the required disposition is mechanical not_error through the "
+                    "conductor-issued receipt gate"
+                )
         if verdict == "not_error":
             if eid not in assembled:
                 lint.fail(f"{boundary_path}: mapped not_error {eid} is absent from Assembled dismissals")
-            allowed_records = set(list_cell(ledger.get("Verification Record IDs", "")))
             covered = set()
             for receipt in receipts:
                 key = tuple(receipt[field] for field in
@@ -3163,6 +3226,18 @@ def supplementary_detector_mappings(lint, audit):
     return projected
 
 
+def _check_code_relation(lint, shard, key, relation):
+    allowed_relations = mechanism.REGISTER_RELATIONS["code_errors"]
+    if relation in allowed_relations:
+        return True
+    lint.fail(
+        f"{shard}: witness {'/'.join(key)} Mech Relation {relation!r} is "
+        "outside the closed code_errors list: "
+        f"{', '.join(allowed_relations)}"
+    )
+    return False
+
+
 def _validate_code_adjudication_shard(lint, audit, shard, text, rows, assigned,
                                        supplementary=False):
     parsed_tables = parse_tables(text)
@@ -3208,9 +3283,13 @@ def _validate_code_adjudication_shard(lint, audit, shard, text, rows, assigned,
         if key in outcome_by_key:
             lint.fail(f"{shard}: duplicate witness outcome {'/'.join(key)}")
         outcome_by_key[key] = outcome
+        relation_allowed = _check_code_relation(
+            lint, shard, key, outcome["Mech Relation"])
         mapping = mapping_by_key.get(key)
         if mapping is None:
             lint.fail(f"{shard}: witness outcome {'/'.join(key)} is not mechanically mapped")
+            continue
+        if not relation_allowed:
             continue
         try:
             mechanism.canonicalize_mechanism(
@@ -3981,6 +4060,7 @@ def stage_b6b(lint, audit, stream, manifest):
     snap = audit / "_run/snapshots" / SNAP_KEY[f"b6b-{stream}"]
     final_by_all = {}
     final_register_paths = []
+    final_code_register_path = None
     for fname, cols, id_col in register_files(audit, stream):
         # b7/b8 (and later bC) may legally evolve canon after b6b.  Prefer the
         # first immutable pre-stage image that preserves the post-b6b ID set.
@@ -4011,6 +4091,7 @@ def stage_b6b(lint, audit, stream, manifest):
             check_output_rows(lint, final_path, final_rows, final=True)
         else:
             check_error_rows(lint, final_path, final_rows, final=True)
+            final_code_register_path = final_path
             for row in final_rows:
                 if dict(zip(cols, row))["Status"] == "candidate":
                     lint.fail(f"{final_path}: candidate status cannot survive b6b")
@@ -4020,6 +4101,9 @@ def stage_b6b(lint, audit, stream, manifest):
     token_classifications = {}
     residual_ids = set()
     if stream == "code":
+        if final_code_register_path is not None:
+            check_detector_mapping_b6(
+                lint, audit, final_path=final_code_register_path)
         error_rows = [row for row in final_by_all.values()
                       if str(row.get("Error ID", "")).startswith("E-")]
         if _u8_tokens_active(manifest, audit, "code_b6b", rows=error_rows):

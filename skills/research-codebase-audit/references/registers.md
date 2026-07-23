@@ -812,6 +812,9 @@ suspected of duplicating an **unmapped** register row rests `confirmed` (or
 Under `### Witness outcomes`, emit exactly the pre-boundary columns `Channel`, `Source ID`,
 `Witness ID`, `Verdict`, `Mech Class`, `Mech Object`, `Mech Relation`, `Mech Expected`,
 `Mech Actual`, `Proposed Severity`, and `Duplicate Target`.
+`Mech Relation` uses the existing closed list for its register class: code errors and claims use
+`never_fires`, `overwrites`, `wrong_target`, `stale_reference`, `omits`, `adds`, `wrong_value`,
+`mismatches`, `matches`, or `unresolved`; outputs use `maps_to`, `matches`, or `unresolved`.
 Emit rows only for `confirmed_error`, `not_error`, and `duplicate`. Percent-escape reserved cell
 characters with `mechanism_schema.encode_cell`; never write canonical mechanism bytes or
 `MIXED`. Under `### Verification records`, use the MF or DU/CV channel-typed schema defined in
@@ -823,7 +826,7 @@ Manifest adjudication severity guidance:
 | --- | --- |
 | Invalid for the implied consumer with no usable alternative | Apply the ordinary rubric; usually severity ≥ 2 |
 | A usable alternative is positively verified | Keep the issue at severity 1 |
-| The real authoritative tool demonstrably accepts the input | Use `not_error` only through the conductor-issued receipt gate |
+| The real authoritative tool demonstrably accepts the input | The verdict is `not_error`, recorded through the conductor-issued receipt gate |
 
 An `unknown` consumer uses the ordinary rubric. Bound usability checks by the existing per-check
 compute budget.

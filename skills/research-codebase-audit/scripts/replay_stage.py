@@ -71,6 +71,12 @@ IDENTITY_FIELDS = (
     "code_dirty", "requested_effort", "observed_effort",
     "mechanism_schema_version",
 )
+SHARD_LINT_STAGES = {
+    "claims_b2": "b2-claims", "code_b2": "b2-code",
+    "claims_b3b": "b3b-claims", "code_b3b": "b3b-code",
+    "claims_b5": "b5-claims", "code_b5": "b5-code",
+    "claims_b5s": "b5s-claims", "code_b5s": "b5s-code",
+}
 
 
 class ReplayError(RuntimeError):
@@ -478,9 +484,9 @@ def render_worker_prompt(scenario, skill_root):
     return marker + "\n\n" + rendered + "\n"
 
 
-def _persist_prompt(run_dir, prompt):
+def _persist_prompt(run_dir, prompt, name="worker-prompt.md"):
     """Persist the rendered worker prompt beside the record; return its sha256."""
-    path = Path(run_dir) / "worker-prompt.md"
+    path = Path(run_dir) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -493,6 +499,116 @@ def _persist_prompt(run_dir, prompt):
         Path(temp_name).unlink(missing_ok=True)
         raise
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def _persist_text(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def _worker_shard_path(scenario, sandbox):
+    """Resolve the scenario's worker-owned shard without adding new schema."""
+    sandbox = Path(sandbox).resolve()
+    candidates = []
+    owner = scenario.get("owner")
+    if isinstance(owner, str) and owner.startswith("audit/"):
+        candidates.append(owner)
+    candidates.extend(
+        pattern for pattern in scenario.get("promised_outputs", [])
+        if isinstance(pattern, str) and not any(char in pattern for char in "*?[")
+        and pattern.startswith("audit/") and pattern.endswith(".md")
+    )
+    unique = []
+    for raw in candidates:
+        relative = _safe_relative(raw, "worker shard path")
+        path = sandbox.joinpath(*relative.parts).resolve()
+        if path.is_relative_to(sandbox) and path not in unique:
+            unique.append(path)
+    if len(unique) != 1:
+        raise ReplayError(
+            "worker-route shard lint requires exactly one explicit worker-owned "
+            f"Markdown output; found {[str(path) for path in unique]}"
+        )
+    return unique[0]
+
+
+def _run_worker_attempt(scenario, sandbox, run_dir, skill_root, prompt,
+                        model_requested, requested_effort, role, attempt):
+    tracking = [
+        sys.executable, str(Path(skill_root) / "scripts/dispatch_tracking.py"),
+        "record", "--audit-dir", str(Path(sandbox) / "audit"), "--role", role,
+        "--carrier", f"rca-carrier-{requested_effort}",
+        "--stage", scenario["stage"],
+        "--owner", scenario.get("owner", "replay-output"),
+        "--sequence", str(attempt),
+    ]
+    tracked = subprocess.run(
+        tracking, cwd=sandbox, capture_output=True, text=True)
+    if tracked.returncode:
+        raise ReplayError(
+            "production dispatch record failed: "
+            + (tracked.stdout + tracked.stderr).strip()
+        )
+    command = [
+        "claude", "--print", "--output-format", "json",
+        "--no-session-persistence", "--permission-mode", "acceptEdits",
+        "--model", model_requested, "--effort", requested_effort,
+        "--agent", f"rca-carrier-{requested_effort}",
+    ]
+    result = subprocess.run(
+        command, input=prompt, cwd=sandbox, capture_output=True, text=True)
+    if result.stdout.strip():
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            payload = {"unparsed_stdout": result.stdout}
+    else:
+        payload = {}
+    response_name = f"worker-response-attempt-{attempt}.json"
+    atomic_json(Path(run_dir) / response_name, payload)
+    if result.returncode:
+        raise ReplayError(
+            f"worker launch failed ({result.returncode}): {result.stderr.strip()}")
+    return payload, {
+        "attempt": attempt,
+        "argv": command,
+        "cwd": str(sandbox),
+        "returncode": result.returncode,
+        "prompt": f"worker-prompt-attempt-{attempt}.md",
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "response": response_name,
+    }
+
+
+def _run_worker_shard_lint(scenario, sandbox, run_dir, skill_root, attempt):
+    lint_stage = SHARD_LINT_STAGES.get(scenario["stage"])
+    if lint_stage is None:
+        return None
+    shard = _worker_shard_path(scenario, sandbox)
+    command = [
+        sys.executable, str(Path(skill_root) / "scripts/lint_registers.py"),
+        "--stage", lint_stage, "--audit-dir", str(Path(sandbox) / "audit"),
+        "--shard", str(shard),
+    ]
+    result = subprocess.run(
+        command, cwd=sandbox, capture_output=True, text=True)
+    report = result.stdout + result.stderr
+    report_name = f"worker-lint-attempt-{attempt}.txt"
+    _persist_text(Path(run_dir) / report_name, report)
+    return result, {
+        "attempt": attempt, "argv": command, "cwd": str(sandbox),
+        "returncode": result.returncode, "report": report_name,
+    }
 
 
 def _git_identity(repo_root):
@@ -589,38 +705,48 @@ def execute_sandbox(scenario_path, scenario, data_root, archive_root, sandbox,
         if role not in dispatch_tracking.ROLE_KEYS:
             raise ReplayError("worker route requires a production role_key")
         prompt = render_worker_prompt(scenario, skill_root)
-        prompt_sha256 = _persist_prompt(run_dir, prompt)
+        prompt_sha256 = _persist_prompt(
+            run_dir, prompt, "worker-prompt-attempt-1.md")
+        _persist_prompt(run_dir, prompt)
         cli_version = _claude_version()
-        tracking = [
-            sys.executable, str(Path(skill_root) / "scripts/dispatch_tracking.py"), "record",
-            "--audit-dir", str(Path(sandbox) / "audit"), "--role", role,
-            "--carrier", f"rca-carrier-{requested_effort}", "--stage", scenario["stage"],
-            "--owner", scenario.get("owner", "replay-output"), "--sequence", "1",
-        ]
-        tracked = subprocess.run(tracking, cwd=sandbox, capture_output=True, text=True)
-        if tracked.returncode:
-            raise ReplayError(f"production dispatch record failed: {(tracked.stdout + tracked.stderr).strip()}")
-        command = [
-            "claude", "--print", "--output-format", "json", "--no-session-persistence",
-            "--permission-mode", "acceptEdits", "--model", model_requested,
-            "--effort", requested_effort, "--agent", f"rca-carrier-{requested_effort}",
-        ]
-        result = subprocess.run(
-            command, input=prompt, cwd=sandbox, capture_output=True, text=True,
+        payload, attempt_record = _run_worker_attempt(
+            scenario, sandbox, run_dir, skill_root, prompt, model_requested,
+            requested_effort, role, 1,
         )
-        response_path = Path(run_dir) / "worker-response.json"
-        if result.stdout.strip():
-            try:
-                payload = json.loads(result.stdout)
-            except json.JSONDecodeError:
-                payload = {"unparsed_stdout": result.stdout}
-        else:
-            payload = {}
-        atomic_json(response_path, payload)
+        route_records.append(attempt_record)
         model_reported = _reported_model(payload)
-        route_records = [{"argv": command, "cwd": str(sandbox), "returncode": result.returncode}]
-        if result.returncode:
-            raise ReplayError(f"worker launch failed ({result.returncode}): {result.stderr.strip()}")
+        lint_result = (
+            _run_worker_shard_lint(
+                scenario, sandbox, run_dir, skill_root, 1)
+            if scenario["route"] == "worker" else None
+        )
+        if lint_result is not None:
+            first_lint, lint_record = lint_result
+            route_records.append(lint_record)
+            if first_lint.returncode:
+                retry_prompt = (
+                    prompt.rstrip()
+                    + "\n\n## Production shard-lint report — required correction\n\n"
+                    + "The first attempt failed the production shard lint. "
+                    + "Correct the worker-owned shard once using this exact report:\n\n"
+                    + "```text\n" + (first_lint.stdout + first_lint.stderr).rstrip()
+                    + "\n```\n"
+                )
+                _persist_prompt(
+                    run_dir, retry_prompt, "worker-prompt-attempt-2.md")
+                # Keep the record's top-level prompt_sha256 consistent with
+                # worker-prompt.md, which now holds the retry prompt.
+                prompt_sha256 = _persist_prompt(run_dir, retry_prompt)
+                payload, attempt_record = _run_worker_attempt(
+                    scenario, sandbox, run_dir, skill_root, retry_prompt,
+                    model_requested, requested_effort, role, 2,
+                )
+                route_records.append(attempt_record)
+                model_reported = _reported_model(payload)
+                second_lint, lint_record = _run_worker_shard_lint(
+                    scenario, sandbox, run_dir, skill_root, 2)
+                route_records.append(lint_record)
+        atomic_json(Path(run_dir) / "worker-response.json", payload)
         observed_effort = _observed_effort(sandbox)
     promised = _promised_matches(sandbox, scenario["promised_outputs"])
     repo_root = Path(skill_root).parents[1]

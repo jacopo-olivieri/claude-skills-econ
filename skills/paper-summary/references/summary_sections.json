@@ -10,14 +10,14 @@
     },
     {
       "number": 2,
-      "canonical": "Data and Empirical Strategy",
-      "fold_heading": "### 📌 Data and Empirical Strategy %% fold %%",
+      "canonical": "Data and Methods",
+      "fold_heading": "### 📌 Data and Methods %% fold %%",
       "aliases": ["data and methods", "data and empirical strategy", "data and identification", "data", "methods", "empirical strategy", "identification strategy"]
     },
     {
       "number": 3,
-      "canonical": "Results",
-      "fold_heading": "### 🎯 Results %% fold %%",
+      "canonical": "Results: Main Findings",
+      "fold_heading": "### 🎯 Results: Main Findings %% fold %%",
       "aliases": ["results: main findings", "results and discussion", "results", "main findings", "findings"]
     },
     {
@@ -28,8 +28,8 @@
     },
     {
       "number": 5,
-      "canonical": "Comments and Ideas",
-      "fold_heading": "### 🧩 Comments and Ideas %% fold %%",
+      "canonical": "Synthesis of findings",
+      "fold_heading": "### 🧩 Synthesis of findings %% fold %%",
       "aliases": ["synthesis of findings", "synthesis", "comments and ideas", "comments", "conclusion", "discussion"]
     }
   ],

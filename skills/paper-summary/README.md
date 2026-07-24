@@ -1,87 +1,123 @@
 # paper-summary
 
-Summarise an academic economics paper. The skill finds or accepts a PDF, converts the complete paper to Markdown, works through it systematically, and returns a polished five-part set of notes.
+Create a structured summary of an academic economics paper from a PDF. The skill can either locate the paper online or use a PDF supplied by the user. It converts the paper to Markdown and produces concise notes covering:
+
+* the research question and motivation;
+* the data and empirical strategy;
+* the main results;
+* limitations and possible extensions; and
+* critical comments and ideas for further research.
 
 ## Requirements
 
-- A local PDF of the paper, or enough identifying information for the skill to locate an openly available copy.
-- Python 3.10 or later for the workspace helper.
-- A PDF-to-Markdown converter:
-  - [`docling`](https://docling-project.github.io/docling/) is the default and is best for most papers.
-  - [MinerU](https://github.com/opendatalab/MinerU) is useful for theory-heavy papers where equations and tables matter.
-- Optional: internet access when the paper is not already stored locally and an open-access copy must be found.
+To use the skill, you need:
 
-The skill works on any platform where Python and the selected converter are available. The local folders it uses are configured per user, so no personal paths are included in the skill itself.
+- **Access to the paper**, either as:
+  - a local PDF; or
+  - enough bibliographic information to identify it—such as the title, authors, DOI, or publication link—plus internet access to locate an open-access copy.
+- **Python 3.10 or later** to organise the paper files and generated notes.
+- **One PDF-to-Markdown converter**:
+  - [`docling`](https://docling-project.github.io/docling/) is the default and is recommended for most papers.
+  - [MinerU](https://github.com/opendatalab/MinerU) is a useful alternative for theory-heavy papers or when preserving equations and tables is especially important.
 
 ## Setup
 
-### Install the skill
+### 1. Install a PDF-to-Markdown converter
 
-Install `paper-summary` with the skills installer, or link its folder into the skills directory used by Claude Code or Codex.
+Install one of the [supported converters](#requirements), or ask Claude Code or Codex to install one for you.
 
-### Configure your papers directory
+The skill uses `docling` by default. Use MinerU when preserving complex equations or tables is especially important, such as for theory papers.
 
-The skill needs one local folder in which to create paper workspaces. Copy the repository's `config.example.json` to:
+### 2. Configure the papers directory
+
+The skill uses a local directory to find papers and store their converted Markdown and generated notes.
+
+For example:
 
 ```text
-~/.agents/config/paper-skills.json
+~/Documents/papers
 ```
 
-Then set `papers_dir` to a folder on your computer. For example:
+You can ask Claude Code or Codex to configure it:
 
-```json
-{
-  "papers_dir": "~/Documents/papers"
-}
+```text
+/paper-summary Configure the papers directory as ~/Documents/papers.
 ```
 
-The repository's full example also contains optional settings for the separate `paper-summary-obsidian` companion skill. You can leave those out if you only use `paper-summary`. Do not put another person's paths in this file: it is deliberately local to your computer.
+Alternatively, configure it manually:
 
-For each paper, the skill creates a workspace inside `papers_dir` containing the original working text, the converted Markdown, section files, and the final `notes.md`. This keeps the inputs and summary together and allows an interrupted run to resume safely.
+1. Copy [`config.example.json`](../../config.example.json) to:
+
+   ```text
+   ~/.agents/config/paper-skills.json
+   ```
+
+2. Set `papers_dir` to your chosen directory:
+
+   ```json
+   {
+     "papers_dir": "~/Documents/papers"
+   }
+   ```
+
+The skill searches this directory recursively, so you can organise papers into subdirectories.
+
+### Optional: integrate with Zotero
+
+Zotero can manage papers alongside the skill. For Zotero 7, the [ZotMoov plugin](https://github.com/wileyyugioh/zotmoov) can move imported PDFs into a directory you choose while retaining links to them in Zotero.
+
+For the simplest setup, configure ZotMoov and `papers_dir` to use the same directory. You can also place ZotMoov’s directory anywhere inside `papers_dir`, because the skill searches its subdirectories.
 
 ## Use
 
-Invoke the skill explicitly with:
+Invoke the skill explicitly, followed by either a local PDF path or enough information to identify the paper:
 
 ```text
 /paper-summary
 ```
 
-Then give it either a local PDF path or a paper description such as an author, year, and a few title words.
+### Examples
 
-### Provide a paper
+- `/paper-summary Summarise /path/to/paper.pdf`
+- `/paper-summary Summarise Asher and Novosad’s 2020 paper on roads in India`
+- `/paper-summary Summarise this theory paper, converting the PDF with MinerU.`
 
-If you have the PDF, point the skill to it directly. Otherwise, describe the paper. The skill searches your configured papers directory first, then looks for an open-access copy if it cannot find a confident local match. If only a paywalled version is available, it stops and asks you to provide a local PDF rather than working from an incomplete source.
+### Resume an interrupted summary
 
-### Follow the summary workflow
+The skill saves its progress as it works. To resume an interrupted summary, invoke it again and identify the paper:
 
-The skill converts the full paper before analysing it, checks that the conversion is usable, and splits it into meaningful main-text sections. It analyses sections one at a time, building shared notes as it goes. This avoids relying on an isolated abstract or a partial reading of the paper.
+```text
+/paper-summary Resume the summary of Asher and Novosad’s 2020 paper on roads in India.
+```
 
-For short papers, the skill may use one complete-paper pass. For longer papers, it reads the main text sequentially and considers the appendix only when it changes the interpretation, methods, robustness, or caveats.
+The skill retains completed notes and resumes from the first unfinished section.
 
-### Resume a partial summary
+### Output
 
-If the work is interrupted, ask the skill to resume the paper. It records completed sections in the workspace notes and continues from the first unfinished section instead of discarding the work already done.
+Once complete, the skill returns the summary in the chat and saves a copy as `notes.md` in the paper’s workspace.
 
-### Optional Obsidian handoff
+The summary contains five sections:
 
-If you also install the separately distributed `paper-summary-obsidian` skill, you can ask it to save a finished summary into an Obsidian vault. That companion skill formats and saves the completed notes; it does not replace the summarisation workflow.
+1. **Research Question and Motivation**
+2. **Data and Methods**
+3. **Results: Main Findings**
+4. **Limitations and Extensions**
+5. **Synthesis of findings**
 
-## Usage examples
+Within each section, the principal conclusions appear as headline points, followed by supporting evidence and references to the relevant pages or sections of the paper.
 
-- “Summarise `/path/to/paper.pdf` using the paper-summary skill.”
-- “Find and summarise Asher and Novosad’s 2020 paper on roads in India.”
-- “Summarise this paper, but use MinerU because the structural model equations matter.”
-- “Resume the summary of the paper I started yesterday.”
-- “Give me a full five-part summary, with separate evidence and interpretation.”
-- “Summarise this paper and flag any uncertainty caused by a poor PDF conversion.”
+The workspace also retains the converted source text, including `paper.md` and its section files. You can use these files to verify citations, inspect the underlying text, or revisit individual parts of the analysis.
 
-## Output
+## How the skill works
 
-The final result is a polished five-part `notes.md` in the paper's workspace, as well as the full text in the chat. The notes distinguish what the paper directly establishes from interpretation, preserve supporting anchors where useful, and identify important gaps or conversion limitations rather than filling them with guesses.
+The skill follows a five-stage workflow, from locating the paper to producing the final summary.
 
-The workspace also keeps the converted `paper.md` and its section files. These make it possible to inspect the source material, resume a partial run, or revisit one part of the summary later.
+1. **Locates the full PDF.** If you provide a local path, the skill uses that file. Otherwise, it searches `papers_dir` and then looks online for an open-access copy. If it cannot find a complete version of the paper, it asks you to provide the PDF.
 
-## How it works
+2. **Prepares the paper for analysis.** The skill creates a dedicated workspace, converts the PDF to Markdown, checks the extracted text for obvious quality or completeness problems, and splits the main text according to the paper’s top-level section headings.
 
-The skill follows a staged, evidence-first workflow: resolve the paper, verify a usable PDF and conversion, create a workspace, analyse the text in manageable sections, then perform a final consistency and structure pass. It uses a shared notes file between section passes so the final synthesis is based on the whole paper, not on a single context window. The workflow checks for common conversion failures and keeps uncertainty visible when the source text is incomplete or unclear.
+3. **Analyses the main text.** If the extracted text contains fewer than about 6,000 words, the skill analyses the whole paper in one pass. For longer papers, it analyses each top-level section in order. After each section, it adds the findings to `notes.md`, which informs the analysis of the remaining sections.
+
+4. **Consults the appendix where necessary.** The skill reviews appendix material when it is needed to understand the paper’s methods, results, robustness checks, interpretation, or limitations.
+
+5. **Reviews and finalises the summary.** The skill checks the accumulated notes against the full converted paper. It resolves inconsistencies and repetition, checks that the main findings are covered, separates what the paper establishes from additional interpretation, and flags anything it cannot verify. It then organises the notes into the final five-part summary.

@@ -155,17 +155,23 @@ python3 "$SKILL_DIR/scripts/search_stata_docs.py" "xtreg" --pdf xt.pdf --pages 1
 
 Searches are literal and case-insensitive by default. Use `--regex` for regular expressions and `--case-sensitive` when capitalization matters. An all-manual invocation remains available but prints a warning because it is slow.
 
-### 4. Convert a targeted page range with marker
+### 4. Convert targeted pages with Docling
 
-When search context is insufficient, convert only the relevant pages. `--page_range` is zero-based:
+When search context is insufficient, extract only the relevant page or pages to
+temporary PDFs, then convert those small files with Docling. This avoids
+converting an entire manual for a narrow question. `pdfseparate` page numbers
+are one-based:
 
 ```bash
-marker_single "$STATA_DOCS_DIR/d.pdf" \
-  --page_range 120-130 \
-  --output_format markdown \
-  --output_dir /tmp/stata-manual-snippets \
-  --disable_multiprocessing
+pdfseparate -f 121 -l 121 "$STATA_DOCS_DIR/d.pdf" /tmp/stata-manual-page-%d.pdf
+docling /tmp/stata-manual-page-121.pdf \
+  --to md \
+  --no-ocr \
+  --output /tmp/stata-manual-snippets
 ```
+
+For a few adjacent pages, extract them and convert each page separately. Read
+the resulting Markdown files in order.
 
 ### 5. Read known PDF pages
 
@@ -177,7 +183,7 @@ Do not rely on a cached installation table. Check each dependency when needed:
 
 ```bash
 command -v pdfgrep >/dev/null 2>&1 || brew install pdfgrep
-command -v marker_single >/dev/null 2>&1 || uv tool install marker-pdf
+command -v docling >/dev/null 2>&1 || uv tool install docling
 test -x "$STATA_BIN"
 ```
 

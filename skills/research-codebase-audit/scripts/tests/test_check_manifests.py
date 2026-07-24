@@ -115,12 +115,12 @@ def test_valid_toml_parses_clean(tmp_path):
 
 def test_unrecognized_format_skipped_silently(tmp_path):
     res, art = run(tmp_path, {
-        "environment.yml": "this: is: not: valid: yaml: [\n",
+        "environment.json": "this is not a supported manifest\n",
         "Makefile": "all:\n\techo hi\n",
     })
     assert res.returncode == 0, res.stdout + res.stderr
     assert cm.NO_FINDINGS_LINE in art
-    assert "environment.yml" not in art
+    assert "environment.json" not in art
     assert "Makefile" not in art
 
 

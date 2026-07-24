@@ -18,8 +18,12 @@ Reference files (all paths relative to this skill's folder):
   `references/pipeline-finalize.md` — stage-by-stage pipeline instructions and sizing rules.
 - `references/prompts/` — fixed prompt skeletons with slot tables.
 - `scripts/lint_registers.py`, `scripts/blank_tex_comments.py`, `scripts/export_xlsx.py`,
-  `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py` (both conductor-invoked at
-  `b4`; see `references/pipeline-code-errors.md`).
+  `scripts/check_manifests.py`, `scripts/emit_definition_use_bundles.py`,
+  `scripts/check_argument_contracts.py` (all conductor-invoked at
+  certified `b3d`; see `references/pipeline-code-errors.md`), `scripts/verify_dismissals.py`,
+  `scripts/severity_tokens.py`, `scripts/severity_token_rulings.py`,
+  `scripts/assemble_boundary.py`, and `scripts/certify_stage.py` (the only writer of stage status;
+  its typed evidence table is `scripts/stage_obligations.json`).
 
 Invariants you never break:
 
@@ -33,12 +37,16 @@ Invariants you never break:
   `audit/_run/snapshots/<stage-key>/`. Exception: the final b8 promotion copies instead of
   renaming and leaves `_staging/` in place as the frozen b8 state (see pipeline-finalize.md).
 - **Lint gate**: after every stage, run `lint_registers.py --stage <lint-stage>` (lint stages
-  are stream-qualified: `b0`, `b1-claims`…`b6-claims`, `b1-code`…`b6-code`, the second-read
-  sweep `b3b-claims`/`b3b-code`, `b7`, `b8`, `b9`; worker-shard checks add `--shard <path>` —
-  `b2`, `b5`, and `b3b` are the shard-lintable stages, `b3b` linting a second-read shard with
+  are stream-qualified: `b0`, `b1-claims`…`b5-claims`, `b1-code`…`b5-code`, the second-read
+  sweep `b3b-claims`/`b3b-code`, `b7`, `severity_token_rulings`, `b8`, `b9`;
+  worker-shard checks add `--shard <path>` —
+  `b2`, `b5`, `b5s`, and `b3b` are the shard-lintable stages; the supplementary boundaries are
+  `b6a-<stream>`, `b5s-<stream>`, and `b6b-<stream>`, and the approved correction stage is `bC`;
+  `b3b` lints a second-read shard with
   `--shard` and the second-read merge without it). On failure, re-dispatch the producing agent once
-  with the lint report appended to its prompt. On second failure, mark that shard/stage
-  `blocked` in the manifest and continue everything that does not depend on it. **Merges
+  with the lint report appended to its prompt. On second failure, record that shard/stage
+  `blocked` with `certify_stage.py set-shard` or `finish --outcome blocked`, and continue
+  everything that does not depend on it. **Merges
   proceed over the non-blocked shards** and document blocked ones in the merge report.
 - **After intake the run is unsupervised** — no user questions until the export exists.
 
@@ -77,6 +85,10 @@ defaults and let the user correct.
 6. **Known context.** Anything the user already knows: fragile areas, known issues, restricted
    data, quirks (e.g. mirror folders that are import-only).
 7. **Output preferences and worker model tier** (default: inherit the session model).
+8. **Effort exceptions.** Offer the fixed default map: every dispatch role runs at `high`
+   except `b8_rewriter`, which runs at `medium`. Ask only for exceptions: “name any role you
+   want moved.” Legal tiers are `low`, `medium`, `high`, `xhigh`, and `max`. The resulting map is
+   written once at intake and never edited; changing effort later requires a fresh run.
 
 Write `audit/_run/manifest.json`:
 
@@ -91,27 +103,46 @@ Write `audit/_run/manifest.json`:
   "known_context": "…",
   "output_prefs": "…",
   "worker_model": "inherit",
+  "effort_map": {
+    "codemap": "high",
+    "claims_b1_planner": "high", "claims_b2_section": "high",
+    "claims_b3_merge": "high", "claims_b3c_conventions": "high",
+    "claims_b3b_second_read": "high", "claims_b3b_merge": "high",
+    "claims_adjudication": "high", "claims_adjudication_lineage": "high",
+    "claims_b5_recheck_cluster": "high", "claims_b6_merge": "high",
+    "code_b1_planner": "high", "code_b2_chunk": "high", "code_b3_merge": "high",
+    "b3d_conventions_scan": "high", "code_b3b_second_read": "high",
+    "code_b3b_merge": "high", "code_b5_recheck_cluster": "high",
+    "code_b6_merge": "high", "b7_cross_linker": "high",
+    "b7_claim_recheck": "high", "b8_rewriter": "medium"
+  },
   "review_mode_sentence": "…",
-  "paper_source_path": "…", "paper_sha256": "<sha256 of paper_source_path>",
-  "paper_audit_path": "<blanked/converted copy, set at init>",
+  "paper_source_path": "<root .tex or single paper source>",
+  "allocation_override": {
+    "purpose": "fixture | development — OPTIONAL block, fixture/development runs only: omit on production runs; presence makes the run not gate-eligible",
+    "allocation": ["<exact b1 claims allocation objects>"]
+  },
   "git_head": "… | null",
-  "warnings": [],
-  "stages": {
-    "<stage-key>": {
-      "status": "pending|running|done|blocked", "retries": 0,
-      "shards": { "<shard path>": { "status": "pending|done|blocked", "retries": 0 } }
-    }
-  }
+  "warnings": []
 }
 ```
 
-Every manifest write — this initial one and every later status update — goes to a temp file in
-the same directory followed by an atomic rename over `manifest.json`; never edit it in place.
+Write this intake manifest to a temp file in the same directory, then atomically rename it over
+`manifest.json`; never edit it in place. Do not create `stages` or `run_identity` at intake:
+`certify_stage.py init` owns and creates both while preserving every intake field above. After
+initialization, every stage-status or shard-status change goes through `certify_stage.py`; never
+edit those blocks by hand.
 
-Stage keys are stream-qualified: `b0`, `claims_b1`…`claims_b6`, `code_b1`…`code_b6`, the
-second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4), `b7`, `b8`, `b9` (finalize keys
-exist only where the mode runs them). `shards` appears on worker stages only; a worker stage is
-`done` when every shard is `done` or `blocked` and at least one is `done`.
+`init` derives the ordered stage keys from `mode`. They are stream-qualified: `b0`,
+`claims_b1`…`claims_b5`, then `claims_b6a` → `claims_b5s` → `claims_b6b`; claims consolidation
+`claims_b3c`; `code_b1`…`code_b5`, then `code_b6a` → `code_b5s` → `code_b6b`; detector
+emission `code_b3d`, the
+second-read sweep `claims_b3b`/`code_b3b` (between b3 and b4),
+`claims_adjudication` after claims b3b, `claims_adjudication_lineage` after bC,
+then `b7`, `severity_token_rulings`, `b8`, `b9` (the rulings key exists only in full mode;
+finalize keys
+exist only where the mode runs them), plus optional operator-approved `bC`. Worker shard outcomes are recorded only with
+`certify_stage.py set-shard`; the stage itself is certified separately.
 
 `review_mode_sentence` is the single source for the review-mode text every skeleton slot
 receives — compose it once from mode + ladder + budget + off-limits.
@@ -123,12 +154,13 @@ not register semantics pasted into worker contexts.
 
 | Knob | `shallow` | `standard` (default) | `deep` |
 | --- | --- | --- | --- |
-| **Second-read trigger** (U2 sweep after b3) | serious findings only: re-read a file only if it carries a first-pass finding at Severity ≥ 3 | any first-pass finding: re-read a file that carries at least one first-pass finding of any severity | any first-pass finding, **and** the second-read worker runs a second independent pass with a different mandate lens |
+| **Second-read trigger** (recall sweep after code b3d) | every detector-flagged file, plus serious first-pass findings (Severity ≥ 3); no clean sample | every detector-flagged or first-pass-flagged file, plus a deterministic stratified clean-file sample capped at 10 | every detector-flagged or first-pass-flagged file with a second independent pass/different lens, plus a deterministic stratified clean-file sample capped at 15 |
 | **Recheck granularity** (b4–b6) | per-cluster | per-cluster | per-finding: one single-ID cluster per substantive ID (issue-flagged/`unclear` claim; `candidate` or Severity ≥ 3 code row); only sampled clean `confirmed` rows may still be grouped |
 
 Depth never changes *which* techniques are permitted (that is the ladder) — only how much
 redundancy is spent. The trigger is per-file, not per-finding, so a file with five findings is
-re-read once (or twice at `deep`), not five times. A *first-pass finding* is a `candidate` row in
+re-read once (or twice at `deep`), not five times. Detector reason takes precedence over flagged,
+which takes precedence over clean sample. A *first-pass finding* is a `candidate` row in
 the code stream or an issue-flagged (`inconsistent`) claim in the claims stream — b3b runs before
 the recheck, so no row is `confirmed` at that point.
 
@@ -136,23 +168,30 @@ Completion: manifest written and every field above resolved with the user.
 
 ## Phase 2 — Init (boundary B0)
 
+0. Run `scripts/certify_stage.py init --package-root <package-root>`, then
+   `scripts/certify_stage.py start --package-root <package-root> --stage b0`. This records the
+   run identity, creates the mode's pending stage entries, and creates `audit/_run/RUNNING`.
 1. Create `audit/` with empty registers per `references/registers.md`, plus
    `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`,
+   `audit/_recheck_supplementary/`, `audit/_code_error_recheck_supplementary/`,
    `audit/_staging/`, `audit/_run/snapshots/`, and `audit/plans/`.
 2. Run `scripts/build_worker_contracts.py --audit-dir audit` to generate
    `audit/audit_readme.md` and the per-role contracts in `audit/_run/contracts/`. Workers read
    their role contract, never the skill's own references.
-3. If the paper is LaTeX: run `scripts/blank_tex_comments.py` to produce the audit copy —
-   comments blanked, line numbers preserved, so only PDF-visible content is audited. Record it
-   as `paper_audit_path` (`paper_source_path`/`paper_sha256` keep pointing at the source).
-4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`): produces
-   `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, and a **preconditions
+3. `init` resolves the root paper's complete `\input`/`\include` closure and writes one
+   line-preserving, comment-blanked twin per source under `audit/_run/paper_twins/`. It records
+   `paper_source_set` entries with `source_path`, `source_sha256`, `audit_path`, and
+   `audit_sha256`; the three singular paper fields remain pinned to the root entry only for
+   compatibility. Unsupported inclusion syntax fails intake with its source line.
+4. Dispatch the **CODEMAP subagent** (`references/prompts/codemap.md`; role: `codemap`): produces
+   `audit/CODEMAP.md` with `S-/D-/B-` ID tables, materials inventory, the mode-governed
+   **Reported Artifact Token Inventory**, and a **preconditions
    score** (README present? unique output↔script mapping? documented data sources?). Low
    scores are recorded as degraded-confidence `warnings` in the manifest — they surface in the
    export; they never stop the run.
 5. Run `lint_registers.py --stage b0`.
 
-Completion: lint passes; manifest stage `b0 = done`.
+Completion: lint passes; certify with `scripts/certify_stage.py finish --stage b0 --outcome done`.
 
 ## Phase 3 — Conductor loop (autonomous)
 
@@ -163,12 +202,18 @@ each stream:
 | Stage keys | Lint stages | Instructions |
 | --- | --- | --- |
 | `claims_b1`–`claims_b3` (plan → section workers → merge) | `b1-claims`–`b3-claims` | `references/pipeline-claims.md` |
+| `claims_b3c` shared-conventions consolidation | — | `references/pipeline-claims.md` |
 | `claims_b3b` (second-read recall sweep → merge) | `b3b-claims` | `references/pipeline-claims.md` |
-| `claims_b4`–`claims_b6` (recheck plan → cluster workers → merge) | `b4-claims`–`b6-claims` | `references/pipeline-claims.md` |
+| `claims_adjudication` H/X capture verdicts | `claims_adjudication.py --check` | `references/pipeline-claims.md` |
+| `claims_b4`–`claims_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-claims`, `b5-claims`, `b6a-claims`, `b5s-claims`, `b6b-claims` | `references/pipeline-claims.md` |
 | `code_b1`–`code_b3` (plan → chunk workers incl. hygiene → merge) | `b1-code`–`b3-code` | `references/pipeline-code-errors.md` |
+| `code_b3d` DU/MF/AC detector emission, conventions scan, and mapping (replication waits for certified `claims_b3c`) | `build_detector_mapping.py --check` via certification | `references/pipeline-code-errors.md` |
 | `code_b3b` (second-read recall sweep → merge) | `b3b-code` | `references/pipeline-code-errors.md` |
-| `code_b4`–`code_b6` (recheck plan → cluster workers → merge) | `b4-code`–`b6-code` | `references/pipeline-code-errors.md` |
+| `code_b4`–`code_b6b` (recheck → b6a merge → one b5s wave → b6b) | `b4-code`, `b5-code`, `b6a-code`, `b5s-code`, `b6b-code` | `references/pipeline-code-errors.md` |
+| optional `bC` late-observation correction | `bC` | `references/pipeline-finalize.md` |
+| `claims_adjudication_lineage` final carrier verdicts | `claims_adjudication.py --check` | `references/pipeline-finalize.md` |
 | `b7` cross-link | `b7` | `references/pipeline-finalize.md` |
+| `severity_token_rulings` rejected-token operator decisions | `severity_token_rulings` | `references/pipeline-finalize.md` |
 | `b8` author-facing rewrite | `b8` | `references/pipeline-finalize.md` |
 | `b9` Excel export (`scripts/export_xlsx.py`, never an LLM) | `b9` | `references/pipeline-finalize.md` |
 
@@ -176,24 +221,82 @@ Mechanics:
 
 - The two streams are independent — run them in parallel. Within a stream, workers of the same
   stage run in parallel (one subagent per worker/cluster, single fire-and-forget message each).
-- Update the manifest at every transition; a worker is complete only when **its shard exists AND
-  lints** at the stage's boundary.
+- Before a stage does work, run `certify_stage.py start --stage <key>`. After its boundary work,
+  run `certify_stage.py finish --stage <key> --outcome done`; that command re-resolves the
+  stage's evidence and is the only route to `done`. On a terminal retry failure, use
+  `finish --stage <key> --outcome blocked --reason "<text>"`. For worker shards, use
+  `set-shard --stage <key> --shard <path> --status done` only after the shard exists and lints,
+  or `--status blocked --reason "<text>"` after the retry fails. A worker stage may certify
+  `done` once every recorded shard is `done` or `blocked` and at least one is `done`; certification
+  re-lints the `done` shards while preserving blocked shards for degraded-coverage reporting.
+  Never edit `stages` by hand.
 - **Progress ledger.** At each transition, regenerate `audit/_run/progress.md` from the manifest:
   one line per boundary giving its status, shards done/blocked, and last lint result. It is a
   human-readable mirror of the manifest, not a second source of truth — rewrite it whole from the
   manifest each time so an unsupervised run stays legible without reading the pipeline files.
-- Dispatch with the user's `worker_model` if set. Skeletons for judgment-heavy stages (recheck,
-  merge conflicts, claims logic) carry their own thinking cues — do not add more.
+- **Effort-keyed dispatch.** Resolve the dispatch role in the table below, read its tier from the
+  manifest `effort_map`, and dispatch through `rca-carrier-<tier>` while continuing to use the
+  user's `worker_model`; model and effort are orthogonal. Begin every worker prompt with
+  `RCA-DISPATCH role=<role-key> stage=<stage-key>` so the observation hook can recover aggregate
+  stage/role counts. Append the dispatch immediately with `scripts/dispatch_tracking.py record`
+  (role, carrier, stage, shard-or-artifact, and monotone sequence number) to
+  `audit/_run/dispatch_ledger.md`; never rewrite the ledger. Skeleton thinking cues stay as
+  written but are not the effort mechanism, and the conductor adds no ad-hoc thinking cues.
 - Blocked work never stalls the run: merges run over the non-blocked shards (documenting the
   blocked ones), a blocked claims stage does not stop the code stream, and vice versa. Blocked
   stages/shards are reported at the end, not retried in a loop.
 
-Completion: `b9 = done` — `audit/code_review.xlsx` exists and passes the b9 lint.
+Completion: b9 is certified `done`, and `audit/code_review.xlsx` exists and passes the b9 lint.
+Run `certify_stage.py close-run` once. `close-run` is the completion-report gate: it refuses
+while any late-observation disposition is still `pending`, so a run that collected late
+observations closes only after the first Phase-4 disposition batch (registers.md § late
+observations) has replaced every pending state.
+In full-replication runs whose severity-token lifecycle is active, it also refuses until
+`severity_token_rulings` is certified `done` and its frozen rejected worklist has exact ruling
+coverage.
+In full-replication runs with a paper source set, it also refuses while either reserved U7
+adjudication stage is absent/nonterminal or any H/X ledger entry is non-final. U7a
+intentionally leaves that tail pending; U7b supplies its only legal terminalizer. A
+`blocked_fallback` entry is released only by the exact, ID-joined
+`audit/_run/handoff_blocked_decisions.json` operator artifact; the ledger state is never
+rewritten.
+
+**Resolved role-key table.** Every production dispatch site in this file and the three pipeline
+files carries exactly one of these keys; b4 is conductor-computed and has no planner role.
+
+| Role key | Stage / assignment | Default effort |
+| --- | --- | --- |
+| `codemap` | b0 CODEMAP | high |
+| `claims_b1_planner` | claims b1 planner | high |
+| `claims_b2_section` | claims b2 section worker | high |
+| `claims_b3_merge` | claims b3 first merge | high |
+| `claims_b3c_conventions` | claims b3c consolidation | high |
+| `claims_b3b_second_read` | claims b3b second read | high |
+| `claims_b3b_merge` | claims b3b merge | high |
+| `claims_adjudication` | claims H/X capture adjudicator | high |
+| `claims_adjudication_lineage` | claims final-carrier lineage adjudicator | high |
+| `claims_b5_recheck_cluster` | claims b5 recheck cluster | high |
+| `claims_b6_merge` | claims b6a/b6b merge | high |
+| `code_b1_planner` | code b1 planner | high |
+| `code_b2_chunk` | code b2 chunk worker | high |
+| `code_b3_merge` | code b3 first merge | high |
+| `b3d_conventions_scan` | code b3d conventions scan | high |
+| `code_b3b_second_read` | code b3b second read | high |
+| `code_b3b_merge` | code b3b merge | high |
+| `code_b5_recheck_cluster` | code b5 recheck cluster | high |
+| `code_b6_merge` | code b6a/b6b merge | high |
+| `b7_cross_linker` | b7 cross-link | high |
+| `b7_claim_recheck` | b7 conditional claims recheck | high |
+| `b8_rewriter` | b8 rewrite | medium |
 
 ## Phase 4 — Report and follow-up (interactive again)
 
 Report to the user: row counts per register and status, issue-flagged rows by severity,
-blocked/`confirmation_needed` rows, degraded-confidence warnings, and the workbook path.
+blocked/`confirmation_needed` rows, degraded-confidence warnings, and the workbook path. Run
+`scripts/dispatch_tracking.py report --audit-dir audit` and include its per-stage-and-role ledger
+dispatch counts versus observed hook-event counts. Name every mismatch at that granularity as an
+**instrumentation gap for operator judgment**; the ledger and event files are reported only and
+never gate a stage, `verify-run`, or export.
 
 Offer the documented follow-up: **targeted manual QA** — the user picks specific IDs, you run an
 interactive recheck of just those rows (same evidence standards as the recheck stage) and
@@ -204,19 +307,15 @@ user approval.
 
 If `audit/_run/manifest.json` exists at intake, offer to resume:
 
-0. **Replay the last green boundary before trusting the manifest.** Take the most recent boundary
-   the manifest marks `done` whose artifacts exist on disk, and re-run its lint
-   (`lint_registers.py --stage <that boundary>`, with `--shard` for a shard stage). If it **fails**,
-   the recorded `done` is stale: mark that boundary `pending` in the manifest, discard only *its*
-   stale staging files (never another boundary's), and resume from it rather than from a later
-   point. In particular, a `done` b8 must still have `_staging/` populated with the non-empty
-   frozen b8 registers (the b9 lint requires them); if `_staging/` is empty, b8 reruns before
-   export. Only after this replay passes do you choose the resume point below.
-1. Re-hash `paper_source_path` and compare to `paper_sha256`. **If the manuscript changed,
-   warn and offer a scoped register-update pass** (re-run only claims workers whose sections
-   changed) instead of silently continuing.
-2. Resume at the first stage key whose status ≠ `done` (stream order: each stream
+0. Run `scripts/certify_stage.py resume-check --package-root <package-root> --clear-stale-marker`.
+   It replaces the crash-surviving marker, verifies the canonical root,
+   tree fingerprint, and mechanism-schema version, and re-derives every recorded `done`. A tree
+   or schema mismatch requires a fresh audit. For each stale evidence pass it reports, run
+   `certify_stage.py demote --stage <key> --reason "<failed obligation>"`; never hand-demote it.
+   Discard only that boundary's stale staging files, then rerun the same
+   `resume-check --clear-stale-marker` command until all remaining recorded passes verify.
+1. Resume at the first stage key whose status ≠ `done` (stream order: each stream
    independently, then finalize). Within a worker stage, re-dispatch only workers whose shards
    are missing or failing lint — completed shards are never re-run.
-3. Registers are only ever mutated via staging + atomic rename, so a crashed run leaves canon
+2. Registers are only ever mutated via staging + atomic rename, so a crashed run leaves canon
    consistent; stale staging files can be deleted.

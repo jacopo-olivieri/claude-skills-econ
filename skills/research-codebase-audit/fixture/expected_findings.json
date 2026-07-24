@@ -2,6 +2,61 @@
   "fixture": "planted",
   "audited_scope": "fixture/planted/ only — this answer key and fixture/README.md sit outside the repo root handed to the skill and must never be visible to any worker",
   "scoring": "recall = must_find items recovered in the final registers, matched by mechanism (not wording), with severity >= each item's min_severity; expected_type applies when the finding lands in the code-error register — a claims-register row scores as a match with the equivalent claim type (e.g. estimation_specification for P-02/P-03, data_construction or sample_count for P-05/P-08, treatment_definition for P-11) when the mechanism matches; precision check = no decoy flagged; findings beyond must_find are NOT penalized except the decoys; conflict check = every expected_status_conflicts rule satisfied on its own terms (each rule states when it applies); re-score after ANY skeleton edit. Behavior tests added 2026-07-06: P-12 exercises the second-read recall sweep (a second independent error in a file already flagged by P-06 — recovery requires re-reading the flagged file), P-13 exercises cheap-check arithmetic recompute (must be flagged inconsistent, not left mapped), and P-14 exercises the blocked-visible-metadata discipline. P-14 dual-accept: satisfied by an inconsistent claim (severity >= 2) OR by a blocked claim whose Blocked Check records the 1-in-20 vs one-in-ten contradiction (in that branch the severity floor is waived); a silently-blocked row with no such note fails P-14. Failure-class plants added 2026-07-07 (P-15 through P-20, one per new mechanism, each in a domain fresh relative to the Floods package): each carries a failure_class tag the scorer reports per class. P-20 uses the same dual-accept branch logic as P-14 (inconsistent at severity >= 2, OR blocked with a Blocked Check that itself records the 15-km vs 25 km contradiction, severity floor waived). Artifact-layer checks (single-re-score layer per KTD-8, run by the scorer alongside the register score): the U2 parser artifact audit/_run/manifest_check.md must name pyproject.toml as a candidate finding; if the P-19 claim closes confirmed, the U4 anchoring advisory must have warned on its recheck-ledger row; if the P-20 row rests blocked, the U5 filename-parameter advisory must warn on it; the U1 conventions-artifact/b4-candidate check is INFORMATIVE only, never gate-settling (the b3c consolidation and grep are worker-dependent). Definition/use contract plant added 2026-07-08 (P-21, failure_class definition_use_contract): a derived consent_ok release flag whose comment states it covers two consent families (individual and community) is consumed by a `keep if` whose added `& consent == \"individual\"` conjunct silently drops the community family; the narrowed sample feeds the on-path published Table 1, so the severity floor of 2 is honest. Scored as a standard must_find (mechanism signature + qualifying row at severity >= 2), dual-accepted as a code-side sample_filter_or_flag_error or a claim-side data_construction row, and reported under its own definition_use_contract class in the per-class breakdown. D-03 adds a matched-shape detector precision decoy: do/analysis.do defines baseline_diag_ok and applies keep if baseline_diag_ok == 1 & wave == 1 inside preserve/restore for an explicitly baseline-only diagnostic. It must be emitted, mapped, ledger-dispositioned not_error, and absent as an issue row.",
+  "adjudication_contract_plants": [
+    {
+      "id": "P-16",
+      "manifest": "pyproject.toml",
+      "verdict": "confirmed_error",
+      "final_status": "confirmed",
+      "min_severity": 2,
+      "receipt_required": false
+    },
+    {
+      "id": "P-22",
+      "manifest": "conda-inventory/environment.yml",
+      "verdict": "confirmed_error",
+      "final_status": "confirmed",
+      "exact_severity": 1,
+      "receipt_required": false
+    },
+    {
+      "id": "D-04",
+      "manifest": "conda-legal/environment.yml",
+      "verdict": "not_error",
+      "final_status": "not_error",
+      "receipt_required": true
+    }
+  ],
+  "argument_contract_plants": [
+    {
+      "id": "P-26",
+      "caller": "sh/ac_master.sh",
+      "callee": "jl/ac_e1201.jl",
+      "control": "py/ac_control.py",
+      "finding_kind": "passed_but_unread",
+      "witness_id": "argpos:2"
+    }
+  ],
+  "severity_token_plants": [
+    {
+      "id": "P-27",
+      "arm": "a",
+      "final_status": "confirmed",
+      "exact_severity": 3,
+      "token_kind": "output",
+      "receipt_required": true
+    },
+    {
+      "id": "P-28",
+      "arm": "b",
+      "max_severity": 2
+    },
+    {
+      "id": "P-29",
+      "arm": "c",
+      "max_severity": 2
+    }
+  ],
   "must_find": [
     {
       "id": "P-01",
@@ -178,6 +233,69 @@
       "mechanism": "The consent_ok flag's adjacent comment states it covers BOTH consent routes — explicit individual data-sharing consent AND village-level blanket (community) consent, both approved for release — but the estimation-sample filter `keep if consent_ok == 1 & consent == \"individual\"` adds a conjunct that silently drops the community-consent households, so the published Table 1 sample excludes a case family the flag is defined to cover. DEFINITION/USE CONTRACT TEST: the producer-defined coverage (two consent families) is compared against the consumer's effective predicate (individual only); the extra conjunct narrows the covered set with no independently defined eligibility restriction and no companion consumer recovering the community family. The narrowed sample flows to output/panel.dta -> analysis.do -> artifacts/tab1.tex (on-path), so the severity floor of 2 is honest under the author-materiality rubric. Planted in do/build_panel.do, already carrying the unrelated P-05/P-08/P-11/P-17 plants (the shape of the real misses). Fresh domain (survey consent/release flag gating a published table); the excluded family is a substantively distinct case family named in the comment, not a missing-value idiom, so it shares no surface features with the Floods repair guard or with P-15..P-20.",
       "min_severity": 2,
       "failure_class": "definition_use_contract"
+    },
+    {
+      "id": "P-23",
+      "kind": "code_error",
+      "expected_type": "version_or_dependency_error",
+      "where": "requirements-recall.txt line 1",
+      "mechanism": "The requirements manifest uses whitespace between numpy and 2.0.0 instead of a legal version operator, so a real requirements parser rejects the dependency declaration. U6a PLANT A: check_manifests.py must emit it, the detector mapping must carry its candidate row, and the second-read plan must select the file with reason detector.",
+      "min_severity": 1,
+      "failure_class": "clean_file_recall"
+    },
+    {
+      "id": "P-24",
+      "kind": "code_error",
+      "expected_type": "version_or_dependency_error",
+      "where": "requirements-recall.txt lines 2-3",
+      "mechanism": "The same otherwise-clean requirements file pins pandas to two mutually incompatible exact versions, 2.2.2 and 1.5.3. Each line parses alone, so the manifest emitter does not detect this semantic conflict; a whole-file human second read must surface it. U6a PLANT B.",
+      "min_severity": 1,
+      "failure_class": "clean_file_recall"
+    },
+    {
+      "id": "P-25",
+      "kind": "claim",
+      "expected_type": "quantitative_result or interpretation",
+      "where": "paper/paper.tex body prose ('calculated and reference speeds show substantial overlap') vs appendix Figure A2 and py/make_figures.py",
+      "mechanism": "The body prose says calculated and reference speeds show substantial overlap and points to Figure A2, while make_figures.py plots calculated speeds 8-11 and reference speeds 28-34 in separate appendix panels — disjoint ranges. U7a CLAIM-HANDOFF TEST: the body sentence and appendix figure must execute under different claims workers; the deterministic printed-reference inventory independently assigns the body assertion even though the caption only labels Panel A and Panel B.",
+      "min_severity": 2,
+      "failure_class": "cross_span_claim_handoff"
+    },
+    {
+      "id": "P-26",
+      "kind": "code_error",
+      "expected_type": "missing_input_or_output",
+      "where": "sh/ac_master.sh passes two positional arguments through a macroized Julia command to jl/ac_e1201.jl",
+      "mechanism": "The master shell script passes public and private as two positional arguments to the Julia callee through a placeholder-root path and --threads option, but the callee reads only ARGS[1], so argpos:2 is silently ignored. The fully-consuming Python call in the same master script is the zero-flag control.",
+      "min_severity": 1,
+      "failure_class": "argument_contract"
+    },
+    {
+      "id": "P-27",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py income_pc derivation vs paper Sec. 3 ('dividing total household income by household size')",
+      "mechanism": "The paper defines per-member income as total income divided by household size, but income_pc divides by age_head (the adjacent head-age column) instead of hhsize. The wrong derived variable is consumed downstream by py/make_tab2.py, which writes the reported Table 2 means, so the reported quantity is wrong. U8b SEVERITY-TOKEN ARM (a): must end confirmed at severity 3 carrying exactly one receipted output: token that resolves to the Table 2 output row.",
+      "min_severity": 3,
+      "failure_class": "severity_token"
+    },
+    {
+      "id": "P-28",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py wage_pc derivation",
+      "mechanism": "wage_pc is derived with the same wrong denominator (age_head instead of hhsize) but is never read again: it is not saved to the output CSV, not aggregated, and feeds nothing. U8b SEVERITY-TOKEN ARM (b): same mechanism family as P-27 with no downstream consumption, so the final severity must stay at or below 2 regardless of status.",
+      "min_severity": 1,
+      "failure_class": "severity_token"
+    },
+    {
+      "id": "P-29",
+      "kind": "code_error",
+      "expected_type": "aggregation_or_unit_error",
+      "where": "py/build_capita.py crop_pc derivation and village aggregation",
+      "mechanism": "crop_pc is derived with the same wrong denominator (age_head instead of hhsize) and consumed two lines later by a village-level groupby mean that is only printed to the console — its descendants never reach any saved output or reported quantity (the E-0304 local-consumption shape). U8b SEVERITY-TOKEN ARM (c): the final severity must stay at or below 2 regardless of status.",
+      "min_severity": 1,
+      "failure_class": "severity_token"
     }
   ],
   "must_not_find": [

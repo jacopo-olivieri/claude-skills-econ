@@ -5,7 +5,7 @@ Dispatched at b0 (init). One subagent. Skeleton text is invariant; fill slots on
 | Slot | Filled from |
 | --- | --- |
 | `{REVIEW_MODE_SENTENCE}` | manifest `review_mode_sentence` |
-| `{PAPER_PATH}` | manifest `paper_audit_path` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` audit-twin mapping |
 | `{SCOPE_EXCLUSIONS}` | manifest `scope_exclusions` (or "none") |
 | `{KNOWN_CONTEXT}` | manifest `known_context` (or "none") |
 
@@ -16,7 +16,7 @@ Dispatched at b0 (init). One subagent. Skeleton text is invariant; fill slots on
 
 I am reviewing a research codebase/replication package. {REVIEW_MODE_SENTENCE}
 
-The paper source is at `{PAPER_PATH}`.
+The paper source-set mapping is `{PAPER_SOURCE_SET}`.
 
 Out of scope (do not map as reviewable): {SCOPE_EXCLUSIONS}
 
@@ -78,6 +78,17 @@ IDs `D-0001`, …. Types: `raw input`, `external/derived input`, `intermediate d
 | ID | Step/boundary | What happens | Why it matters | Evidence | Follow-up needed |
 IDs `B-0001`, …. Flag confidential data, proprietary software, manual/API steps, external
 derived files, commented-out scripts, missing upstream code, anything untraceable.
+
+[H2] Reported Artifact Token Inventory
+In code-errors-only mode, inventory only author-facing terminal artifacts with exactly
+| Reported Artifact ID | Terminal Kind | Path/Pattern | Declaration Anchor | Writer Site | Availability |.
+Terminal Kind is `table`, `figure`, `reported_dataset`, or `author_export`; Availability is
+`shipped` or `generated_unshipped`. Exclude intermediates, analysis/runtime datasets, caches,
+logs, checkpoints, and internal handoffs. Declaration Anchor is an exact paper/README/master-
+deliverable `path:line`; Writer Site is its exact write/export `path:line`. Derive the ID as
+specified in the register contract. With zero qualifying rows write exactly
+`No qualifying reported artifacts.` In full-replication mode omit this section or write only
+that exact zero form; never emit an RA row.
 
 [H2] Preconditions Score
 Table: | Precondition | Score (yes/partial/no) | Evidence | — for:

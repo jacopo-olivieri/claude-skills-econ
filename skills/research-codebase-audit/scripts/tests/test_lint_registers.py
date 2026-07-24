@@ -78,34 +78,47 @@ def _b3b_manifest_boundary(tmp_path, stream, *, workers,
     if stream == "claims":
         plan = (
             "# Claims second-read plan\n\n"
-            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | Output ID Range | Known Findings |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
+            "| Worker ID | File/Section Scope | Shard File | Claim ID Range | Output ID Range | Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
         )
         if workers:
             plan += (
                 "| W1 | sec 4 | `audit/_work_second_read/w1.md` | "
-                "C-2000–C-2099 | O-2000–O-2099 | C-0142 |\n"
+                "C-2000–C-2099 | O-2000–O-2099 | flagged | C-0142 | — |\n"
             )
         a.write("plans/claims_second_read_plan.md", plan)
         a.write_claims_plan()
         files = ["claims_register.md", "output_register.md"]
         a.write_register("_staging/claims_register.md", rb.CLAIMS_COLS, [])
         a.write_register("_staging/output_register.md", rb.OUTPUT_COLS, [])
+        # post-promotion canon: the b3b lint reads promoted evidence, not staging
+        a.write_register("claims_register.md", rb.CLAIMS_COLS, [])
+        a.write_register("output_register.md", rb.OUTPUT_COLS, [])
         report = {
             name: {"shard_rows": 0, "dedup_removed": 0, "added": 0}
             for name in files
         }
+        report["footer_dispositions"] = []
         report_name = "merge_report_claims_b3b.json"
+        if workers and populated_shards:
+            shard_text = rb.md_table(rb.CLAIMS_COLS, []) + "\n" + rb.md_table(
+                rb.OUTPUT_COLS, [])
+            shard_text += (
+                "\nCoverage: assigned section fully reread.\n\n"
+                "| Entry ID | Kind | Register IDs | Observation | Reason |\n"
+                "| --- | --- | --- | --- | --- |\n"
+            )
+            a.write("_work_second_read/w1.md", shard_text)
     else:
         plan = (
             "# Code-error second-read plan\n\n"
-            "| Worker ID | Script Scope | Shard File | Error ID Range | Known Findings |\n"
-            "| --- | --- | --- | --- | --- |\n"
+            "| Worker ID | Script Scope | Shard File | Error ID Range | Reason | Known Findings | Assigned Handoff IDs |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
         )
         if workers:
             plan += (
                 "| W1 | `py/x.py` | `audit/_code_errors_second_read/w1.md` | "
-                "E-2000–E-2099 | E-0142 |\n"
+                "E-2000–E-2099 | flagged | E-0142 | — |\n"
             )
         a.write("plans/code_error_second_read_plan.md", plan)
         a.write(
@@ -118,12 +131,22 @@ def _b3b_manifest_boundary(tmp_path, stream, *, workers,
         )
         files = ["code_error_register.md"]
         a.write_register("_staging/code_error_register.md", rb.ERROR_COLS, [])
+        a.write_register("code_error_register.md", rb.ERROR_COLS, [])
         report = {
             "code_error_register.md": {
                 "shard_rows": 0, "dedup_removed": 0, "added": 0,
             },
+            "footer_dispositions": [],
         }
         report_name = "merge_report_code_b3b.json"
+        if workers and populated_shards:
+            shard_text = rb.md_table(rb.ERROR_COLS, [])
+            shard_text += (
+                "\n| Script | Outcome |\n| --- | --- |\n| `py/x.py` | clean |\n\n"
+                "| Entry ID | Kind | Register IDs | Observation | Reason |\n"
+                "| --- | --- | --- | --- | --- |\n"
+            )
+            a.write("_code_errors_second_read/w1.md", shard_text)
     a.snapshot(key, files)
     a.write(f"_run/{report_name}", json.dumps(report))
     return a
@@ -419,12 +442,11 @@ def _definition_use_b4(tmp_path, *, bundle_ids=("DU-aaa111",), mappings=None,
     )
 
 
-def test_b4_code_missing_definition_use_artifact_fails(tmp_path):
+def test_b4_code_no_longer_reads_definition_use_artifact(tmp_path):
     a = _definition_use_b4(tmp_path, bundle_ids=(), mappings=[],
                    include_artifact=False)
     res = rb.lint(a, "b4-code")
-    assert res.returncode == 1
-    assert "definition_use_bundles.md" in res.stdout and "missing" in res.stdout
+    assert res.returncode == 0
 
 
 def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
@@ -440,7 +462,7 @@ def test_b4_code_explicit_empty_definition_use_artifact_passes(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
+def test_b4_code_leaves_raw_artifact_validation_to_b3d(tmp_path):
     a = _definition_use_b4(tmp_path)
     path = a.audit / "_run" / "definition_use_bundles.md"
     path.write_text(path.read_text().replace(
@@ -448,8 +470,7 @@ def test_b4_code_reports_malformed_definition_use_artifact(tmp_path):
 
     res = rb.lint(a, "b4-code")
 
-    assert res.returncode == 1
-    assert "Standard candidates count" in res.stdout
+    assert res.returncode == 0
 
 
 def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
@@ -472,9 +493,6 @@ def test_b4_code_accepts_real_zero_bundle_emitter_artifact(tmp_path):
 
 
 @pytest.mark.parametrize("mappings, evidence, token", [
-    ([], "DU-aaa111", "unmapped"),
-    ([('DU-aaa111', 'E-0101', 'new_candidate'),
-      ('DU-aaa111', 'E-0101', 'existing_row')], "DU-aaa111", "mapped 2 times"),
     ([('DU-aaa111', 'E-0999', 'new_candidate')], "DU-aaa111", "absent from the b4 inventory"),
     ([('DU-aaa111', 'E-0101', 'new_candidate')], "static source", "Likely Evidence"),
 ])
@@ -593,7 +611,7 @@ def test_b6_code_requires_ledger_final_status_agreement(tmp_path):
 
 
 @pytest.mark.parametrize("explicit", [True, False])
-def test_b6_code_duplicate_must_name_confirmed_canonical_issue(tmp_path, explicit):
+def test_b6_code_unmapped_target_is_not_a_guarded_derived_duplicate(tmp_path, explicit):
     before = [
         rb.error_row("E-0101", status="candidate", severity="2",
                      etype="sample_filter_or_flag_error"),
@@ -617,11 +635,8 @@ def test_b6_code_duplicate_must_name_confirmed_canonical_issue(tmp_path, explici
         ledger_rows=[ledger],
     )
     res = rb.lint(a, "b6-code")
-    if explicit:
-        assert res.returncode == 0, res.stdout + res.stderr
-    else:
-        assert res.returncode == 1
-        assert "does not explicitly name equivalent canonical issue row" in res.stdout
+    assert res.returncode == 1
+    assert "verdict 'confirmed_error' requires final status 'confirmed'" in res.stdout
 
 
 def test_b6_code_duplicate_rejects_not_error_verdict(tmp_path):
@@ -649,7 +664,8 @@ def test_b6_code_duplicate_rejects_not_error_verdict(tmp_path):
     )
     res = rb.lint(a, "b6-code")
     assert res.returncode == 1
-    assert "duplicate" in res.stdout and "confirmed_error" in res.stdout
+    assert "verdict 'not_error' requires final status 'not_error'" in res.stdout
+    assert "lacks qualifying receipt coverage" in res.stdout
 
 
 # --------------------- U4 identifier-anchoring advisory (b5-claims ledger)

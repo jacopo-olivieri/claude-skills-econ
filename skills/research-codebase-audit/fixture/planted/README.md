@@ -13,13 +13,16 @@
 1. `do/build_panel.do` — builds `output/panel.dta` and `output/panel.csv`.
 2. `do/analysis.do` — estimates the main specification, writes `artifacts/tab1.tex`.
 3. `py/build_income.py` — writes `output/income_check.csv` (income-component cross-check).
-4. `py/make_figures.py` — writes `artifacts/fig1_income_trends.pdf`.
+4. `py/build_capita.py` — writes `output/income_capita.csv` (income per household member).
+5. `py/make_tab2.py` — writes `artifacts/tab2.tex`.
+6. `py/make_figures.py` — writes `artifacts/fig1_income_trends.pdf`.
 
 ## Output mapping
 
 | Paper object | Producing script |
 | --- | --- |
 | Table 1 | `do/analysis.do` |
+| Table 2 | `py/make_tab2.py` |
 | Figure 1 | `py/make_figures.py` |
 
 ## Requirements

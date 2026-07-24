@@ -74,6 +74,7 @@ Exit codes: 0 = GATE GREEN, 1 = GATE RED, 2 = usage/IO error.
 """
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -81,6 +82,11 @@ import sys
 from pathlib import Path
 
 import definition_use as du
+import build_detector_mapping as detector_mapping
+import check_argument_contracts as argument_contracts
+import mechanism_schema as mechanism_schema
+import severity_tokens
+import verify_dismissals as dismissal_verifier
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -150,6 +156,21 @@ SIGNATURES = {
              ["keep if", "drop", "exclu", "omit", "narrow",
               "conjunct", "silently", "left out", "not kept",
               "removed", "restrict"]],
+    "P-23": [["requirements-recall"], ["numpy"],
+             ["whitespace", "operator", "invalid", "reject", "parse"]],
+    "P-24": [["requirements-recall"], ["pandas"], ["2.2.2"], ["1.5.3"],
+             ["conflict", "incompat", "duplicate", "two", "mutually"]],
+    "P-25": [["calculated"], ["reference"], ["speed"],
+             ["overlap", "disjoint", "8", "11", "28", "34"]],
+    "P-26": [["argument"], ["callee", "contract"],
+             ["unread", "never reads", "ignored", "argpos:2"]],
+    "P-27": [["income_pc", "income per member", "income per household member",
+              "per-capita income", "per capita income"],
+             ["age_head", "age of head", "head age", "head's age"]],
+    "P-28": [["wage_pc"],
+             ["age_head", "age of head", "head age", "head's age"]],
+    "P-29": [["crop_pc"],
+             ["age_head", "age of head", "head age", "head's age"]],
 }
 # Plants scored with the P-14 dual-accept branch logic (blocked-visible
 # family): inconsistent at qualifying severity OR blocked with a Blocked
@@ -214,6 +235,11 @@ LEDGER_COLS = [
     "ID", "Current Status", "Current Severity", "Evidence Checked",
     "Evidence Level", "Verdict", "Proposed Register Change",
     "Pipeline/Output Impact", "Proposed Note",
+]
+CODE_LEDGER_COLS = LEDGER_COLS + [
+    "Proposed Status", "Proposed Severity", "Accepted Error Type",
+    "Accepted Mechanism", "Outcome Witness IDs", "Duplicate Target",
+    "Proposed Field Patches", "Verification Record IDs",
 ]
 DEFINITION_USE_LOCATORS = {
     "P-21": {
@@ -298,6 +324,43 @@ def load_rows(path, id_col):
 
 def row_text(d):
     return " | ".join(str(v) for v in d.values()).lower()
+
+
+def is_d03(row):
+    """Match only the D-03 plant, without borrowing Error Type vocabulary."""
+    text = row_text(row).replace("`", "")
+    semantic_text = row_text({
+        key: value for key, value in row.items() if key != "Error Type"
+    }).replace("`", "")
+    at_fixture_site = (
+        row.get("Error Type") == "sample_filter_or_flag_error"
+        and any(
+            re.search(
+                re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)",
+                text,
+            )
+            for site in ("definition", "consumer")
+        )
+    )
+    semantic_anchor = (
+        "baseline_diag_ok" in semantic_text
+        or "do/analysis.do" in semantic_text
+    )
+    semantic_match = (
+        semantic_anchor
+        and any(term in semantic_text for term in ("diagnostic", "diagnostics"))
+        and any(term in semantic_text for term in (
+            "baseline", "wave 1", "wave-1", "wave one", "first wave",
+        ))
+        and any(term in semantic_text for term in (
+            "narrow", "filter", "restrict", "exclude", "drop", "remove",
+        ))
+        and any(term in semantic_text for term in (
+            "sample", "observation", "case", "analytic population",
+            "estimation population",
+        ))
+    )
+    return "baseline_diag_ok" in text or at_fixture_site or semantic_match
 
 
 def sig_match(text, groups):
@@ -464,11 +527,411 @@ def check_artifact_manifest(audit):
                     "in its Candidate findings")
 
 
+def check_clean_recall_chain(audit):
+    """U6a: mechanical P-23 chain plus conditional P-24 b3b provenance."""
+    plant = "requirements-recall.txt"
+    manifest_path = audit / "_run/manifest_check.md"
+    mapping_path = audit / "_run/detector_mapping.md"
+    plan_path = audit / "plans/code_error_second_read_plan.md"
+    required = (manifest_path, mapping_path, plan_path)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        return "FAIL", "missing U6a artifact(s): " + ", ".join(missing)
+    manifest_text = manifest_path.read_text(encoding="utf-8", errors="replace")
+    mapping_text = mapping_path.read_text(encoding="utf-8", errors="replace")
+    plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
+    if plant not in manifest_text:
+        return "FAIL", f"P-23 absent from {manifest_path.name}"
+    if plant not in mapping_text:
+        return "FAIL", f"P-23 absent from {mapping_path.name}"
+    plan_rows = []
+    for headers, rows in parse_tables(plan_text):
+        if {"Script Scope", "Shard File", "Reason"} <= set(headers):
+            plan_rows.extend(dict(zip(headers, row)) for row in rows
+                             if len(row) == len(headers))
+    owners = [row for row in plan_rows
+              if plant in row["Script Scope"] and row["Reason"].strip("`") == "detector"]
+    if not owners:
+        return "FAIL", "P-23 file is not allocated with reason detector"
+
+    # code_b3 is the pre-merge snapshot; code_b3d is taken immediately after
+    # b3 promotion and is therefore the recorded post-b3 state.
+    post_b3 = audit / "_run/snapshots/code_b3d/code_error_register.md"
+    if post_b3.is_file() and sig_match(
+            post_b3.read_text(encoding="utf-8", errors="replace"), SIGNATURES["P-24"]):
+        return "PASS", "P-23 detector chain present; P-24 provenance vacuous (found at first pass)"
+    final_rows = load_rows(audit / "code_error_register.md", "Error ID")
+    p24 = [row for row in final_rows
+           if plant in row_text(row) and sig_match(row_text(row), SIGNATURES["P-24"])]
+    if not p24:
+        return "FAIL", "P-24 absent after first pass and absent from final code register"
+    expected_ids = {row["Error ID"] for row in p24}
+    for owner in owners:
+        shard = audit.parent / owner["Shard File"].strip().strip("`")
+        if shard.is_file():
+            shard_text = shard.read_text(encoding="utf-8", errors="replace")
+            if expected_ids & set(re.findall(r"E-\d{4}", shard_text)):
+                return "PASS", "P-23 detector chain present; P-24 originates in its b3b shard"
+    return "FAIL", "P-24 lacks the file's b3b-shard provenance"
+
+
+def check_u7_allocation_split(audit):
+    """P-25 cannot score green when one worker owns assertion and figure."""
+    from claim_handoffs import (
+        allocation_source_entry, load_claims_allocations, parse_line_intervals,
+    )
+    try:
+        manifest = json.loads(
+            (audit / "_run/manifest.json").read_text(encoding="utf-8")
+        )
+        source_set = manifest["paper_source_set"]
+        allocations, _ = load_claims_allocations(
+            audit / "plans/claims_review_plan.md"
+        )
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        return "FAIL", f"cannot inspect executed U7 claims allocation: {exc}"
+    if len({row["Worker ID"] for row in allocations}) < 2:
+        return "FAIL", "executed claims plan has fewer than two workers"
+    paper_entry = next((entry for entry in source_set if str(
+        entry.get("source_path", "")).replace("\\", "/").endswith("paper/paper.tex")), None)
+    if paper_entry is None:
+        return "FAIL", "paper_source_set does not contain paper/paper.tex"
+    lines = Path(paper_entry["source_path"]).read_text(encoding="utf-8").splitlines()
+    assertion = [number for number, line in enumerate(lines, start=1)
+                 if "calculated and reference speeds show substantial overlap" in line]
+    figure = [number for number, line in enumerate(lines, start=1)
+              if "\\label{fig:speed-overlap}" in line]
+    if len(assertion) != 1 or len(figure) != 1:
+        return "FAIL", "P-25 assertion or appendix figure anchor is not unique"
+
+    def owner(line_number):
+        found = []
+        for row in allocations:
+            try:
+                entry = allocation_source_entry(row, source_set, audit.parent)
+                intervals = parse_line_intervals(row["Line Intervals"])
+            except ValueError:
+                continue
+            if (Path(entry["source_path"]).resolve() ==
+                    Path(paper_entry["source_path"]).resolve()
+                    and any(start <= line_number <= end for start, end in intervals)):
+                found.append(row["Worker ID"])
+        return found[0] if len(found) == 1 else None
+
+    assertion_owner, figure_owner = owner(assertion[0]), owner(figure[0])
+    if assertion_owner is None or figure_owner is None:
+        return "FAIL", "P-25 assertion or figure lacks exactly one interval owner"
+    if assertion_owner == figure_owner:
+        return "FAIL", (f"P-25 masking: {assertion_owner} owns both body assertion "
+                        "and appendix figure")
+    return "PASS", (f"body assertion owned by {assertion_owner}; appendix figure "
+                    f"owned by {figure_owner}")
+
+
 def _table_with_headers(text, required, exact=False):
     for headers, rows in parse_tables(text):
         if (headers == required if exact else set(required) <= set(headers)):
             return headers, [r for r in rows if len(r) == len(headers)]
     return None, None
+
+
+def _clean(value):
+    return du.normalize_cell(value or "")
+
+
+def _list_cell(value):
+    value = _clean(value)
+    if value in {"", "-", "—"}:
+        return []
+    return [_clean(part) for part in value.split(";") if _clean(part)]
+
+
+def check_channel_adjudication(audit, expected):
+    """Trace the three U3b manifest plants through every adjudication layer."""
+    plants = expected.get("adjudication_contract_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U3b adjudication plants"
+    manifest_path = audit / "_run/manifest_check.md"
+    if not manifest_path.is_file():
+        return "FAIL", f"manifest artifact missing: {manifest_path}"
+    manifest_text = manifest_path.read_text(encoding="utf-8", errors="replace")
+    plant_paths = {item["manifest"] for item in plants}
+    # Legacy synthetic scorer fixtures predate U3b. Do not pretend they test
+    # this channel; report it explicitly instead of turning unrelated unit
+    # tests red. A real fixture run emits at least one of the two conda paths.
+    if not any(path in manifest_text for path in plant_paths - {"pyproject.toml"}):
+        return "NOT COVERED", "U3b conda plants are absent from this synthetic artifact"
+    source_rows = []
+    for headers, rows in parse_tables(manifest_text):
+        if {"Source ID", "Manifest", "Witness Count"} <= set(headers):
+            source_rows.extend(dict(zip(headers, row)) for row in rows
+                               if len(row) == len(headers))
+    source_by_manifest = {}
+    for row in source_rows:
+        source_by_manifest[_clean(row["Manifest"])] = _clean(row["Source ID"])
+    missing = sorted(plant_paths - set(source_by_manifest))
+    if missing:
+        return "FAIL", "manifest candidates missing for " + ", ".join(missing)
+
+    try:
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
+    except detector_mapping.MappingError as exc:
+        return "FAIL", f"detector mapping is missing or malformed: {exc}"
+    mappings_by_source = {}
+    for row in mappings:
+        mappings_by_source.setdefault(row["Source ID"], []).append(row)
+
+    plan_path = audit / "plans/code_error_recheck_plan.md"
+    if not plan_path.is_file():
+        return "FAIL", f"code recheck plan missing: {plan_path}"
+    plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
+    headers, rows = _table_with_headers(plan_text, ["ID", "Reason", "Likely Evidence"])
+    inventory = [dict(zip(headers, row)) for row in rows] if rows is not None else []
+
+    ledgers, records = [], {}
+    ledger_root = audit / "_code_error_recheck"
+    if ledger_root.is_dir():
+        for path in sorted(ledger_root.rglob("*.md")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for table_headers, table_rows in parse_tables(text):
+                if table_headers == CODE_LEDGER_COLS:
+                    ledgers.extend(dict(zip(table_headers, row)) for row in table_rows
+                                   if len(row) == len(table_headers))
+                if table_headers in (dismissal_verifier.MF_RECORD_COLS,
+                                     dismissal_verifier.PROBE_RECORD_COLS):
+                    for row in table_rows:
+                        if len(row) == len(table_headers):
+                            record = dict(zip(table_headers, row))
+                            records[_clean(record["Record ID"])] = record
+    ledger_by_id = {}
+    for row in ledgers:
+        ledger_by_id.setdefault(_clean(row["ID"]), []).append(row)
+
+    receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
+    receipt_rows = []
+    if receipt_path.is_file():
+        text = receipt_path.read_text(encoding="utf-8", errors="replace")
+        headers, rows = _table_with_headers(
+            text, dismissal_verifier.RECEIPT_COLS, exact=True)
+        if rows is not None:
+            receipt_rows = [dict(zip(headers, row)) for row in rows]
+    boundary_path = audit / "_run/code_b6a/witness_outcomes.md"
+    if not boundary_path.is_file():
+        return "FAIL", f"assembled witness boundary missing: {boundary_path}"
+    boundary_text = boundary_path.read_text(encoding="utf-8", errors="replace")
+    headers, rows = _table_with_headers(
+        boundary_text, list(mechanism_schema.POST_BOUNDARY_WITNESS_COLUMNS),
+        exact=True)
+    post_rows = [dict(zip(headers, row)) for row in rows] if rows is not None else []
+    post_keys = {tuple(_clean(row[field]) for field in
+                       ("Channel", "Source ID", "Witness ID")) for row in post_rows}
+    assembled = set()
+    headers, rows = _table_with_headers(boundary_text, ["Error ID"], exact=True)
+    if rows is not None:
+        assembled = {_clean(row[0]) for row in rows}
+
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    final_by_id = {row["Error ID"]: row for row in load_rows(final_path, "Error ID")}
+
+    notes = []
+    for item in plants:
+        label, manifest = item["id"], item["manifest"]
+        source = source_by_manifest[manifest]
+        source_mappings = mappings_by_source.get(source, [])
+        if not source_mappings:
+            return "FAIL", f"{label} source {source} is absent from detector mapping"
+        error_ids = {_clean(row["Error ID"]) for row in source_mappings}
+        if len(error_ids) != 1:
+            return "FAIL", f"{label} source {source} maps to {len(error_ids)} Error IDs"
+        error_id = next(iter(error_ids))
+        inv = [row for row in inventory if _clean(row.get("ID")) == error_id]
+        if len(inv) != 1 or source not in inv[0].get("Likely Evidence", ""):
+            return "FAIL", f"{label} {error_id} is absent from b4 inventory evidence"
+        dispositions = ledger_by_id.get(error_id, [])
+        if len(dispositions) != 1:
+            return "FAIL", f"{label} {error_id} has {len(dispositions)} structured ledger rows"
+        ledger = dispositions[0]
+        if _clean(ledger["Verdict"]) != item["verdict"]:
+            return "FAIL", f"{label} ledger verdict is {_clean(ledger['Verdict'])}, expected {item['verdict']}"
+        expected_keys = {tuple(_clean(row[field]) for field in
+                               ("Channel", "Source ID", "Witness ID"))
+                         for row in source_mappings}
+        if set(_list_cell(ledger["Outcome Witness IDs"])) != {key[2] for key in expected_keys}:
+            return "FAIL", f"{label} ledger does not declare every mapped witness"
+        if not _clean(ledger["Accepted Error Type"]) or not _clean(ledger["Accepted Mechanism"]):
+            return "FAIL", f"{label} structured accepted type/mechanism is empty"
+        if not expected_keys <= post_keys:
+            return "FAIL", f"{label} witnesses are absent from assembled boundary"
+        final = final_by_id.get(error_id)
+        if final is None or _clean(final.get("Status")) != item["final_status"]:
+            found = _clean(final.get("Status")) if final else "missing"
+            return "FAIL", f"{label} final status is {found}, expected {item['final_status']}"
+        if "min_severity" in item and severity(final) < item["min_severity"]:
+            return "FAIL", f"{label} final severity is below {item['min_severity']}"
+        if "exact_severity" in item and severity(final) != item["exact_severity"]:
+            return "FAIL", f"{label} final severity must equal {item['exact_severity']}"
+        if item.get("receipt_required"):
+            record_ids = set(_list_cell(ledger["Verification Record IDs"]))
+            covered = set()
+            for receipt in receipt_rows:
+                key = tuple(_clean(receipt[field]) for field in
+                            ("Channel", "Source ID", "Witness ID"))
+                if (key in expected_keys and _clean(receipt["Record ID"]) in record_ids
+                        and _clean(receipt["Accepted (yes/no)"]) == "yes"):
+                    covered.add(key)
+                    plant_file = (audit.parent / manifest).resolve()
+                    if _clean(receipt["Input Digest (sha256)"]) != hashlib.sha256(
+                            plant_file.read_bytes()).hexdigest():
+                        return "FAIL", f"{label} receipt input digest does not bind the plant"
+            if covered != expected_keys or error_id not in assembled:
+                return "FAIL", f"{label} lacks qualifying receipt/assembled coverage"
+            plant_file = (audit.parent / manifest).resolve()
+            _tool, _version, _invocation, result = dismissal_verifier._manifest_run(
+                plant_file, "micromamba")
+            if not dismissal_verifier.accepted_result(result.returncode, result.stderr):
+                return "FAIL", f"{label} independent pinned-oracle recheck did not accept"
+        notes.append(f"{label} {source} -> {error_id} {item['final_status']}")
+    return "PASS", "; ".join(notes)
+
+
+def check_argument_contract_channel(audit, expected):
+    """Trace the U8a plant from raw AC output through mapping and final canon."""
+    plants = expected.get("argument_contract_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U8a argument-contract plant"
+    path = audit / "_run/argument_contracts.md"
+    if not path.is_file():
+        return "FAIL", f"argument-contract artifact missing: {path}"
+    try:
+        artifact = argument_contracts.parse_artifact(
+            path.read_text(encoding="utf-8"))
+        _declared, _display, mappings = detector_mapping.load_mapping(
+            audit / "_run/detector_mapping.md")
+    except (argument_contracts.ArgumentContractError,
+            detector_mapping.MappingError) as exc:
+        return "FAIL", f"U8a artifact is malformed: {exc}"
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    final = {row["Error ID"]: row for row in load_rows(final_path, "Error ID")}
+    receipts = []
+    receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
+    if receipt_path.is_file():
+        headers, rows = _table_with_headers(
+            receipt_path.read_text(encoding="utf-8", errors="replace"),
+            dismissal_verifier.RECEIPT_COLS, exact=True)
+        if rows is not None:
+            receipts = [dict(zip(headers, row)) for row in rows]
+    notes = []
+    for plant in plants:
+        caller = plant["caller"]
+        calls = [row for row in artifact.call_sites
+                 if row.site_anchor.startswith(caller + ":")]
+        findings = [row for row in artifact.findings
+                    if row.site_anchor.startswith(caller + ":")]
+        if len(calls) != 2:
+            return "FAIL", f"{plant['id']} expected two master call sites; found {len(calls)}"
+        if [(row.finding_kind, row.witness_id, row.callee_path)
+                for row in findings] != [(plant["finding_kind"],
+                                           plant["witness_id"],
+                                           plant["callee"])]:
+            return "FAIL", f"{plant['id']} raw artifact does not contain its exact one-flag set"
+        flagged_source = findings[0].source_id
+        control = [row for row in calls if row.resolved_callee == plant["control"]]
+        if len(control) != 1 or control[0].outcome != "consumed":
+            return "FAIL", f"{plant['id']} fully-consuming control is not quiet"
+        mapped = [row for row in mappings
+                  if row["Channel"] == "AC" and row["Source ID"] == flagged_source]
+        if len(mapped) != 1 or mapped[0]["Witness ID"] != plant["witness_id"]:
+            return "FAIL", f"{plant['id']} flagged source lacks exact AC mapping coverage"
+        error_id = mapped[0]["Error ID"]
+        row = final.get(error_id)
+        if row is None:
+            return "FAIL", f"{plant['id']} mapped candidate {error_id} is absent from final canon"
+        if row.get("Status") == "not_error":
+            covered = [receipt for receipt in receipts
+                       if _clean(receipt.get("Channel")) == "AC"
+                       and _clean(receipt.get("Source ID")) == flagged_source
+                       and _clean(receipt.get("Witness ID")) == plant["witness_id"]
+                       and _clean(receipt.get("Accepted (yes/no)")) == "yes"]
+            if not covered:
+                return "FAIL", f"{plant['id']} was dismissed without a verification receipt"
+            return "FAIL", f"{plant['id']} was dismissed instead of surviving as a downgraded issue"
+        if row.get("Status") not in {"confirmed", "confirmation_needed", "blocked"}:
+            return "FAIL", f"{plant['id']} final status {row.get('Status')!r} is not an issue status"
+        if row.get("Error Type") != "missing_input_or_output":
+            return "FAIL", f"{plant['id']} final row has wrong Error Type"
+        notes.append(f"{plant['id']} {flagged_source} -> {error_id} {row.get('Status')}")
+    return "PASS", "; ".join(notes)
+
+
+def check_severity_token_plants(audit, expected):
+    """U8b severity plants: receipted token on arm (a), band caps on (b)/(c).
+
+    Artifact-layer assertions in the ``adjudication_contract_plants`` style:
+    arm (a) must close confirmed at its exact severity carrying exactly one
+    mode-qualifying token whose target resolves to a reported output row and
+    whose verifier receipt exists; arms (b)/(c) assert the severity band
+    REGARDLESS of status — a ``confirmation_needed`` row above the band still
+    fails the plant."""
+    plants = expected.get("severity_token_plants", [])
+    if not plants:
+        return "NOT COVERED", "answer key has no U8b severity-token plants"
+    final_path = audit / "code_error_register.md"
+    if not final_path.is_file():
+        return "FAIL", f"final code-error register missing: {final_path}"
+    rows = load_rows(final_path, "Error ID")
+    receipts = {}
+    for stage in ("code_b6b", "code_b6a"):
+        if (audit / f"_run/{stage}/token_receipts.md").is_file():
+            parsed, failures = severity_tokens.load_receipts(audit, stage)
+            if failures:
+                return "FAIL", f"{stage} token receipts are malformed: {failures[0]}"
+            for key, receipt in parsed.items():
+                receipts.setdefault(key, receipt)
+    output_rows = []
+    output_path = audit / "output_register.md"
+    if output_path.is_file():
+        output_rows = load_rows(output_path, "Output ID")
+    notes = []
+    for item in plants:
+        pid = item["id"]
+        matched = [d for d in rows if sig_match(row_text(d), SIGNATURES[pid])]
+        if len(matched) != 1:
+            return "FAIL", f"{pid} matches {len(matched)} register rows (need exactly one)"
+        d = matched[0]
+        sev, status = severity(d), (d.get("Status") or "").strip()
+        if "max_severity" in item and sev > int(item["max_severity"]):
+            return "FAIL", (f"{pid} arm ({item.get('arm', '?')}) severity {sev} exceeds "
+                            f"its band <= {item['max_severity']} (status={status!r} — "
+                            "the band binds regardless of status)")
+        if "exact_severity" in item and sev != int(item["exact_severity"]):
+            return "FAIL", f"{pid} final severity is {sev}, expected {item['exact_severity']}"
+        if "final_status" in item and status != item["final_status"]:
+            return "FAIL", f"{pid} final status is {status!r}, expected {item['final_status']}"
+        if item.get("receipt_required"):
+            carrier = severity_tokens.why_text(d)
+            found = severity_tokens.literal_tokens(carrier)
+            kind = item.get("token_kind", "output")
+            if len(found) != 1 or not found[0].startswith(kind + ":"):
+                return "FAIL", (f"{pid} carrier must hold exactly one {kind}: token "
+                                f"(found {found})")
+            token = found[0]
+            target = token.split(":", 1)[1]
+            target_row = next((r for r in output_rows
+                               if (r.get("Output ID") or "").strip() == target), None)
+            if kind == "output" and (target_row is None or not (
+                    target_row.get("Paper Location") or "").strip(" -—")):
+                return "FAIL", f"{pid} token target {target} does not resolve to a reported output row"
+            covered = [key for key in receipts
+                       if key[0] == d.get("Error ID") and key[1] == token]
+            if len(covered) != 1:
+                return "FAIL", f"{pid} lacks exactly one verifier token receipt for {token}"
+        notes.append(f"{pid} {d.get('Error ID')} {status} sev={sev}")
+    return "PASS", "; ".join(notes)
 
 
 def check_channel_definition_use(audit):
@@ -499,23 +962,48 @@ def check_channel_definition_use(audit):
     if not plan.is_file():
         return "FAIL", f"code recheck plan missing: {plan}"
     plan_text = plan.read_text(encoding="utf-8", errors="replace")
-    try:
-        mappings = du.parse_mappings(plan_text)
-    except du.DefinitionUseFormatError as exc:
-        return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
+    detector_mappings = None
+    detector_path = audit / "_run/detector_mapping.md"
+    if detector_path.is_file():
+        try:
+            _declared, _display, detector_mappings = detector_mapping.load_mapping(
+                detector_path)
+        except detector_mapping.MappingError as exc:
+            return "FAIL", f"detector mapping is malformed: {exc}"
+        mappings = None
+    else:
+        try:
+            mappings = du.parse_mappings(plan_text)
+        except du.DefinitionUseFormatError as exc:
+            return "FAIL", f"Definition/use bundle mapping table is malformed: {exc}"
     _, inventory_rows = _table_with_headers(
         plan_text, ["ID", "Reason", "Likely Evidence"])
     if inventory_rows is None:
         return "FAIL", "b4 inventory missing"
     inventory = [dict(zip(["ID", "Reason", "Likely Evidence"], row))
                  for row in inventory_rows]
-    mapped_ids = {}
+    mapped_ids, mapped_witnesses = {}, {}
     for label, bid in located.items():
-        matches = [row for row in mappings
-                   if du.normalize_cell(row.get("Bundle ID", "")) == bid]
+        if detector_mappings is not None:
+            matches = [row for row in detector_mappings
+                       if row["Channel"] == "DU" and row["Source ID"] == bid]
+            ids = {row["Error ID"] for row in matches}
+            if len(ids) != 1:
+                return "FAIL", f"{label} {bid} maps to {len(ids)} Error IDs"
+            eid = next(iter(ids))
+            mapped_witnesses[label] = {
+                (row["Channel"], row["Source ID"], row["Witness ID"])
+                for row in matches}
+        else:
+            matches = [row for row in mappings
+                       if du.normalize_cell(row.get("Bundle ID", "")) == bid]
+            if len(matches) == 1:
+                eid = du.normalize_cell(matches[0].get("Error ID", ""))
         if len(matches) != 1:
-            return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
-        eid = du.normalize_cell(matches[0].get("Error ID", ""))
+            if detector_mappings is None:
+                return "FAIL", f"{label} {bid} has {len(matches)} mapping rows (expected 1)"
+            if not matches:
+                return "FAIL", f"{label} {bid} has no detector mapping rows"
         inv = [row for row in inventory
                if du.normalize_cell(row.get("ID", "")) == eid]
         if len(inv) != 1:
@@ -524,14 +1012,27 @@ def check_channel_definition_use(audit):
             return "FAIL", f"{label} {bid} absent from inventory Likely Evidence"
         mapped_ids[label] = eid
 
-    ledger_rows = []
+    ledger_rows, verification_records = [], {}
     ledger_root = audit / "_code_error_recheck"
     if ledger_root.is_dir():
         for path in sorted(ledger_root.rglob("*.md")):
             ledger_text = path.read_text(encoding="utf-8", errors="replace")
-            _, rows = _table_with_headers(ledger_text, LEDGER_COLS, exact=True)
+            headers, rows = _table_with_headers(
+                ledger_text, CODE_LEDGER_COLS, exact=True)
             if rows is not None:
-                ledger_rows.extend(dict(zip(LEDGER_COLS, row)) for row in rows)
+                ledger_rows.extend(dict(zip(headers, row)) for row in rows)
+            else:
+                headers, rows = _table_with_headers(
+                    ledger_text, LEDGER_COLS, exact=True)
+                if rows is not None:
+                    ledger_rows.extend(dict(zip(headers, row)) for row in rows)
+            for headers, rows in parse_tables(ledger_text):
+                if headers in (dismissal_verifier.MF_RECORD_COLS,
+                               dismissal_verifier.PROBE_RECORD_COLS):
+                    for row in rows:
+                        if len(row) == len(headers):
+                            record = dict(zip(headers, row))
+                            verification_records[_clean(record["Record ID"])] = record
     ledgers = {}
     for label, eid in mapped_ids.items():
         matches = [row for row in ledger_rows
@@ -582,30 +1083,31 @@ def check_channel_definition_use(audit):
     if d_row is None or d_row.get("Status") != "not_error":
         found = d_row.get("Status", "missing") if d_row else "missing"
         return "FAIL", f"D-03 mapped Error ID {d_eid} must finish not_error; found {found}"
-    def is_d03(row):
-        text = row_text(row).replace("`", "")
-        at_fixture_site = (
-            row.get("Error Type") == "sample_filter_or_flag_error"
-            and any(
-                re.search(re.escape(DEFINITION_USE_LOCATORS["D-03"][site]) + r"(?!\d)", text)
-                for site in ("definition", "consumer")
-            )
-        )
-        semantic_match = (
-            any(term in text for term in ("diagnostic", "diagnostics"))
-            and any(term in text for term in (
-                "baseline", "wave 1", "wave-1", "wave one", "first wave",
-            ))
-            and any(term in text for term in (
-                "narrow", "filter", "restrict", "exclude", "drop", "remove",
-            ))
-            and any(term in text for term in (
-                "sample", "observation", "case", "analytic population",
-                "estimation population",
-            ))
-        )
-        return "baseline_diag_ok" in text or at_fixture_site or semantic_match
-
+    if detector_mappings is not None:
+        record_ids = set(_list_cell(d_ledger.get("Verification Record IDs", "")))
+        record_coverage = {
+            tuple(_clean(record[field]) for field in
+                  ("Channel", "Source ID", "Witness ID"))
+            for record_id, record in verification_records.items()
+            if record_id in record_ids
+        }
+        if record_coverage != mapped_witnesses["D-03"]:
+            return "FAIL", "D-03 lacks a qualifying synthetic verification record per witness"
+        receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
+        receipt_coverage = set()
+        if receipt_path.is_file():
+            receipt_text = receipt_path.read_text(encoding="utf-8", errors="replace")
+            headers, rows = _table_with_headers(
+                receipt_text, dismissal_verifier.RECEIPT_COLS, exact=True)
+            if rows is not None:
+                for raw in rows:
+                    receipt = dict(zip(headers, raw))
+                    if (_clean(receipt["Record ID"]) in record_ids
+                            and _clean(receipt["Accepted (yes/no)"]) == "yes"):
+                        receipt_coverage.add(tuple(_clean(receipt[field]) for field in
+                                                   ("Channel", "Source ID", "Witness ID")))
+        if receipt_coverage != mapped_witnesses["D-03"]:
+            return "FAIL", "D-03 synthetic verification records lack qualifying receipts"
     issue_rows = [row for row in final_rows
                   if row.get("Status") in {"candidate", "confirmed", "confirmation_needed", "blocked"}
                   and is_d03(row)]
@@ -771,6 +1273,14 @@ def main() -> int:
     expected = json.loads(args.expected.read_text(encoding="utf-8"))
 
     audit = args.audit_dir
+    run_manifest = {}
+    run_manifest_path = audit / "_run" / "manifest.json"
+    if run_manifest_path.is_file():
+        try:
+            run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    u7_fixture_active = isinstance(run_manifest.get("allocation_override"), dict)
     tagged_rows = []
     for fname, id_col in REGISTERS:
         path = audit / fname
@@ -858,10 +1368,55 @@ def main() -> int:
     print(f"U2 manifest artifact: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("U2 manifest artifact check failed")
-    status, note = check_channel_definition_use(audit)
+    expected_ids = {item.get("id") for section in ("must_find", "must_not_find")
+                    for item in expected.get(section, [])}
+    if {"P-21", "D-03"} & expected_ids:
+        status, note = check_channel_definition_use(audit)
+    else:
+        status, note = ("NOT COVERED",
+                        "answer key does not request definition/use channel plants")
     print(f"Definition/use channel: {status} — {note}")
     if status == "FAIL":
         red_reasons.append("definition/use channel check failed")
+    if {"P-23", "P-24"} <= expected_ids:
+        status, note = check_clean_recall_chain(audit)
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U6a plant pair")
+    print(f"U6a clean-recall chain: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U6a clean-recall chain check failed")
+    if "P-25" in expected_ids:
+        if u7_fixture_active:
+            status, note = check_u7_allocation_split(audit)
+        else:
+            status, note = ("FAIL", (
+                "run manifest lacks allocation_override: the P-25 fixture run "
+                "must pin its two-worker allocation (fixture/README.md)"
+            ))
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U7a P-25 plant")
+    print(f"U7a allocation split: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U7a allocation split check failed")
+    status, note = check_channel_adjudication(audit, expected)
+    print(f"U3b adjudication channel: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U3b adjudication channel check failed")
+    if "P-26" in expected_ids:
+        status, note = check_argument_contract_channel(audit, expected)
+    else:
+        status, note = ("NOT COVERED", "answer key does not request the U8a P-26 plant")
+    print(f"U8a argument-contract channel: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U8a argument-contract channel check failed")
+    if {"P-27", "P-28", "P-29"} <= expected_ids:
+        status, note = check_severity_token_plants(audit, expected)
+    else:
+        status, note = ("NOT COVERED",
+                        "answer key does not request the U8b severity plants")
+    print(f"U8b severity-token plants: {status} — {note}")
+    if status == "FAIL":
+        red_reasons.append("U8b severity-token plant check failed")
     if lint_mod is not None:
         for label, fn, red in (
             ("U4 anchoring advisory", check_artifact_anchoring,

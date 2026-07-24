@@ -14,12 +14,12 @@ only.
 | `{STREAM}` | `claims` or `code-error` |
 | `{COMPUTE_BUDGET}` | manifest `compute_budget_minutes` |
 | `{OFF_LIMITS}` | manifest `off_limits` list (`;`-separated), or "none" |
-| `{PAPER_PATH}` | manifest `paper_audit_path` (claims stream only; substituted inside `{STREAM_CHECKS}`) |
-| `{STREAM_CHECKS}` | claims stream: the two-step preliminary check below, with `{PAPER_PATH}` substituted; code stream: `None.` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` audit-twin mapping (claims stream only; substituted inside `{STREAM_CHECKS}`) |
+| `{STREAM_CHECKS}` | claims stream: the two-step preliminary check below, with `{PAPER_SOURCE_SET}` substituted; code stream: `None.` |
 
 Claims-stream text for `{STREAM_CHECKS}`:
 
-> Before any code inspection, for each assigned ID: (a) search `{PAPER_PATH}` for the row's
+> Before any code inspection, for each assigned ID: (a) search `{PAPER_SOURCE_SET}` for the row's
 > verbatim `Paper Quote` — if it does not appear, the claim does not exist in the manuscript:
 > verdict `not_substantiated`, evidence `static_source_verified`, note "quote not found in
 > manuscript"; (b) check `Used in Text` is correct — an issue about a number the text never
@@ -137,7 +137,8 @@ or revisit files not needed to decide the assigned rows. Do not mint IDs.
 - **Off-limits**: never open, run, or audit anything listed in {OFF_LIMITS}; a row that could only
   be decided by touching off-limits material gets the `deferred` verdict (note: deferred under the
   off-limits list), not an overstated verdict.
-- Write only to `{SHARD_FILE}`. Do not edit canonical registers, code, data, or paper text.
+- Write only to `{SHARD_FILE}` and the probe artifact files it names beside itself. Do not
+  edit canonical registers, code, data, or paper text.
 - Every assigned ID appears exactly once in the ledger.
 - Repo-relative paths everywhere.
 
@@ -148,9 +149,46 @@ Write the shard with:
 2. Files inspected
 3. Commands run, if any
 4. Row-level ledger:
-   | ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |
+   claims: `ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note`;
+   code-error: one table with
+   `ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note | Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs`.
    `Proposed Note` follows the three-part structure (paper says → code shows → why it
    matters) whenever the verdict keeps or creates an issue.
 5. Cluster summary: findings to keep / demote / needing confirmation / blocked, and
    consequences the cross-linking stage should know about.
+6. Typed footer table `Entry ID | Kind | Register IDs | Observation | Reason`. In recheck
+   context a defect observation uses `candidate` with an empty Register IDs cell; workers never
+   mint IDs. A genuine non-defect uses `not_rowed_observation` with its one-line reason.
+
+For the code-error stream, follow the structured matrix in `{CONTRACT_PATH}`. Under
+`### Witness outcomes`, write exactly `Channel | Source ID | Witness ID | Verdict | Mech Class |
+Mech Object | Mech Relation | Mech Expected | Mech Actual | Proposed Severity | Duplicate Target`
+for `confirmed_error`, `not_error`, and `duplicate` only, keyed by the
+full Channel/Source ID/Witness ID tuple. `Mech Relation` is closed by register class: code errors
+use only `never_fires`, `overwrites`, `wrong_target`, `stale_reference`, `omits`, `adds`,
+`wrong_value`, `mismatches`, `matches`, or `unresolved` (claims use the same list; outputs use
+`maps_to`, `matches`, or `unresolved`). Percent-escape reserved characters; never emit canonical
+mechanism bytes or `MIXED`. Under `### Verification records`, write the exact MF or DU/CV
+channel-typed table. Persist every DU/CV dismissal probe beside the shard and name it in
+`Harness / Input Domain`. A probe must be a single self-contained file — all synthetic inputs
+inline, reading no other file and no package data — because the verifier re-runs exactly that
+one file hermetically. A verification record is a claim, not a receipt: never fabricate or
+write a Receipt ID.
+
+For each code-error disposition that proposes Severity 3–4 with Status `confirmed` or
+`confirmation_needed` (except `pii_or_disclosure_risk`), establish one terminal tie under the
+severity-token contract. Put exactly one mode-qualifying literal token in the proposed
+`Why It Matters` patch. In full mode use `output:O-####` or `claim:C-####` resolved against the
+digest-pinned dispatch registers supplied with this cluster; in code-errors-only use
+`artifact:RA-<12 lowercase hex>` from CODEMAP. Additional affected outputs stay prose.
+
+Append one exact `### Token verification records` table with columns
+`Record Type | Error ID | Token | Obligation Digest | Mechanism | Witness IDs | Error Location | Flawed Identifier | Cited Target | Lineage JSON | Probe Path | Probe Output SHA256 | Verdict | Derived From Receipt ID`.
+Use `token_verification`/`verified`; bind the obligation digest to the accepted decoded
+five-field mechanism, exact sorted witness set, error location, and flawed identifier. Persist a
+self-contained probe beside the shard. `Lineage JSON` is an ordered `{anchor,carries}` chain:
+every hop resolves and textually contains what it carries, starts at the flawed definition, and
+ends at the cited output producer/claim location or both RA writer and declaration anchors.
+Leave `Derived From Receipt ID` blank/`—` except when supplementary split work reruns a parent
+probe. You write the record and probe only; the conductor-run verifier alone writes receipts.
 ```

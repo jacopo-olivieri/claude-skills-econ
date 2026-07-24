@@ -1,0 +1,146 @@
+{
+  "b0": [
+    {"type": "artifact", "pattern": "CODEMAP.md"},
+    {"type": "validate", "validator": "lint:b0"}
+  ],
+  "claims_b1": [
+    {"type": "artifact", "pattern": "plans/claims_review_plan.md"},
+    {"type": "artifact", "pattern": "_run/crossref_inventory.json", "when": "paper_source_set"},
+    {"type": "artifact", "pattern": "_run/crossref_assignments.json", "when": "paper_source_set"},
+    {"type": "validate", "validator": "crossref:inventory", "when": "paper_source_set"},
+    {"type": "validate", "validator": "lint:b1-claims"}
+  ],
+  "claims_b2": [
+    {"type": "artifact", "pattern": "_work/**/*.md"},
+    {"type": "validate", "validator": "lint:b2-claims"}
+  ],
+  "claims_b3": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "validate", "validator": "lint:b3-claims"},
+    {"type": "validate", "validator": "handoff:ledger", "when": "paper_source_set"}
+  ],
+  "claims_b3c": [
+    {"type": "artifact", "pattern": "_run/conventions.md"}
+  ],
+  "claims_b3b": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "validate", "validator": "lint:b3b-claims"},
+    {"type": "validate", "validator": "handoff:ledger", "when": "paper_source_set"}
+  ],
+  "claims_adjudication": [
+    {"type": "artifact", "pattern": "_run/claims_adjudication_worklist.json"},
+    {"type": "artifact", "pattern": "_run/claims_adjudication_verdicts.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/handoff_ledger.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/claims_register.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication/output_register.md"},
+    {"type": "validate", "validator": "handoff:adjudication"}
+  ],
+  "claims_b4": [
+    {"type": "artifact", "pattern": "plans/claims_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b4-claims"}
+  ],
+  "claims_b5": [
+    {"type": "artifact", "pattern": "_recheck/**/*.md"},
+    {"type": "validate", "validator": "lint:b5-claims"}
+  ],
+  "claims_b6a": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "artifact", "pattern": "plans/claims_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b6a-claims"}
+  ],
+  "claims_b5s": [
+    {"type": "artifact", "pattern": "plans/claims_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b5s-claims"}
+  ],
+  "claims_b6b": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "output_register.md"},
+    {"type": "artifact", "pattern": "late_observations_claims.md"},
+    {"type": "validate", "validator": "lint:b6b-claims"}
+  ],
+  "code_b1": [
+    {"type": "artifact", "pattern": "plans/code_error_review_plan.md"},
+    {"type": "validate", "validator": "lint:b1-code"}
+  ],
+  "code_b2": [
+    {"type": "artifact", "pattern": "_code_errors/**/*.md"},
+    {"type": "validate", "validator": "lint:b2-code"}
+  ],
+  "code_b3": [
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "validate", "validator": "lint:b3-code"}
+  ],
+  "code_b3d": [
+    {"type": "artifact", "pattern": "_run/definition_use_bundles.md"},
+    {"type": "artifact", "pattern": "_run/manifest_check.md"},
+    {"type": "artifact", "pattern": "_run/argument_contracts.md"},
+    {"type": "artifact", "pattern": "_run/detector_mapping.md"},
+    {"type": "validate", "validator": "detector:mapping"}
+  ],
+  "code_b3b": [
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "validate", "validator": "lint:b3b-code"}
+  ],
+  "code_b4": [
+    {"type": "artifact", "pattern": "plans/code_error_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b4-code"}
+  ],
+  "code_b5": [
+    {"type": "artifact", "pattern": "_code_error_recheck/**/*.md"},
+    {"type": "validate", "validator": "lint:b5-code"}
+  ],
+  "code_b6a": [
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "plans/code_error_supplementary_recheck_plan.md"},
+    {"type": "artifact", "pattern": "_run/code_b6a/witness_outcomes.md"},
+    {"type": "validate", "validator": "boundary:assemble"},
+    {"type": "validate", "validator": "lint:b6a-code"}
+  ],
+  "code_b5s": [
+    {"type": "artifact", "pattern": "plans/code_error_supplementary_recheck_plan.md"},
+    {"type": "validate", "validator": "lint:b5s-code"}
+  ],
+  "code_b6b": [
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "late_observations_code.md"},
+    {"type": "artifact", "pattern": "_run/code_b6b/dismissal_receipts.md"},
+    {"type": "artifact", "pattern": "_run/code_b6b/witness_outcomes.md"},
+    {"type": "validate", "validator": "boundary:assemble-supplementary"},
+    {"type": "validate", "validator": "lint:b6b-code"}
+  ],
+  "bC": [
+    {"type": "artifact", "pattern": "plans/late_observation_corrections.md"},
+    {"type": "validate", "validator": "lint:bC"}
+  ],
+  "claims_adjudication_lineage": [
+    {"type": "artifact", "pattern": "_run/claims_adjudication_lineage_worklist.json"},
+    {"type": "artifact", "pattern": "_run/claims_adjudication_lineage_verdicts.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication_lineage/handoff_ledger.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/claims_adjudication_lineage/claims_register.md"},
+    {"type": "validate", "validator": "handoff:adjudication-lineage"}
+  ],
+  "b7": [
+    {"type": "artifact", "pattern": "claims_register.md"},
+    {"type": "artifact", "pattern": "code_error_register.md"},
+    {"type": "artifact", "pattern": "register_cross_link_summary.md"},
+    {"type": "validate", "validator": "lint:b7"}
+  ],
+  "severity_token_rulings": [
+    {"type": "artifact", "pattern": "_run/severity_token_rulings.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/b7_rejected_worklist.json"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/code_error_register.md"},
+    {"type": "artifact", "pattern": "_run/snapshots/severity_token_rulings/severity_token_rulings.json"},
+    {"type": "validate", "validator": "lint:severity-token-rulings"}
+  ],
+  "b8": [
+    {"type": "artifact", "pattern": "_staging/*.md"},
+    {"type": "validate", "validator": "lint:b8"}
+  ],
+  "b9": [
+    {"type": "artifact", "pattern": "code_review.xlsx"},
+    {"type": "validate", "validator": "lint:b9"}
+  ]
+}

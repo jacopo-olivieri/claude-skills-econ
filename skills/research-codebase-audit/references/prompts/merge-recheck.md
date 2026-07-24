@@ -1,6 +1,7 @@
 # Skeleton — recheck merge (mutates rows)
 
-Dispatched at b6-claims / b6-code. One coordinator subagent per stream. This merge **mutates**
+Dispatched at b6a-claims / b6a-code and reused at b6b-claims / b6b-code. One coordinator
+subagent per stream. This merge **mutates**
 existing canonical rows per the verdict mapping; it adds rows only for declared splits. Fill
 slots only.
 
@@ -14,6 +15,7 @@ slots only.
 | `{SUMMARY_FILE}` | `audit/claims_recheck_summary.md` or `audit/code_error_recheck_summary.md` |
 | `{COORD_ID_RANGE}` | the plan's `Merge-coordinator range:` line(s) — claims stream passes both the C- and O- ranges, code stream the E- range |
 | `{BLOCKED_SHARDS}` | conductor: blocked cluster shards, or "none" |
+| `{MERGE_PHASE}` | `b6a` (may mint footer-derived discoveries and writes the supplementary plan) or `b6b` (mints no rows; footer candidates become late observations/dismissals) |
 
 ## Skeleton
 
@@ -29,6 +31,8 @@ registers.
 ## TASK
 
 You are the recheck merge coordinator.
+Merge phase: {MERGE_PHASE}. Apply the phase-specific supplementary contract in
+`{CONTRACT_PATH}` exactly.
 
 Read: `{RECHECK_PLAN_PATH}`, `{CONTRACT_PATH}`, all shards in `{SHARD_DIR}`, and the
 canonical registers {REGISTER_FILES}.
@@ -51,6 +55,17 @@ to `{SUMMARY_FILE}`.
    (three-part structure). When a verdict sets a claim row to `blocked`, populate its
    `Blocked Check` column from the ledger (what stayed checkable from visible material and the
    result) — it is required non-empty on every `blocked` claim.
+   For a mechanically mapped code-error row, never write `not_error`: leave the staged row at its
+   non-dismissal state for the conductor's boundary assembler. A code proposal at Severity 3–4
+   may remain severe only with its exact qualifying token-verification obligation. At b6a, put
+   every accepted discovery, late-token opportunity, and severe split descendant lacking its
+   own receipt into the one six-column supplementary plan; parent receipts never inherit. At
+   b6b, cap every still-uncovered descendant to Severity 1–2 before atomic promotion; preserve a
+   severe `confirmation_needed` row only when it has its own receipt or the exact certified
+   late-severity residual. Never use a residual for split-only or `target_not_live`. Derive a
+   mapped `duplicate_of:<ID>` only after the
+   guarded-duplicate legs in the contract pass; otherwise keep the row `confirmed` or
+   `confirmation_needed`.
 3. Follow the row-lifecycle rules in `{CONTRACT_PATH}`: never delete; demotions follow
    the mapping; cross-cluster duplicates become tombstones; splits/merges only when required
    to represent the evidence faithfully, each declared in the summary, with split rows
@@ -62,6 +77,10 @@ to `{SUMMARY_FILE}`.
 6. Resolve conflicting verdicts on the same ID conservatively (the weaker claim about the
    evidence wins: `confirmation_needed` over `confirmed`); think hard about each such
    conflict and record the reasoning in the summary.
+7. When mapped witnesses split, add the exact normalized lineage table to the summary:
+   `Original Error ID | Descendant Error ID | Channel | Source ID | Witness ID`, one row per
+   witness, including the branch that keeps the original ID. Descendant sets must be non-empty,
+   disjoint, and cover the parent's complete mapped witness set.
 
 ## CONSTRAINTS
 

@@ -21,3 +21,14 @@ ax.legend(["Shocked", "Non-shocked"])
 
 plt.tight_layout()
 plt.savefig("artifacts/fig1_income_trends.pdf")
+
+# Appendix Figure A2: the plotted ranges are deliberately disjoint.
+calculated_speeds = [8, 9, 10, 11]
+reference_speeds = [28, 30, 32, 34]
+fig, axes = plt.subplots(1, 2)
+axes[0].plot(calculated_speeds)
+axes[0].set_title("Panel A: calculated speeds")
+axes[1].plot(reference_speeds)
+axes[1].set_title("Panel B: reference speeds")
+fig.tight_layout()
+fig.savefig("artifacts/figA2_speed_comparison.pdf")

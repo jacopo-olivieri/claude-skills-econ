@@ -62,8 +62,20 @@ Figure~\ref{fig:trends} plots average household income by survey wave and shock 
 \label{fig:trends}
 \end{figure}
 
+Table~\ref{tab:capita} reports mean income per household member by survey wave,
+computed by dividing total household income by household size.
+
+\begin{table}[ht]
+\centering
+\caption{Income per household member, by wave}
+\label{tab:capita}
+\input{../artifacts/tab2.tex}
+\end{table}
+
 As a robustness check, we re-estimate the main specification with bootstrap standard
 errors (200 replications); the confidence interval excludes zero.
+
+The calculated and reference speeds show substantial overlap (Figure A2).
 
 % Placebo figure removed at referee request:
 % \begin{figure}[ht]
@@ -91,5 +103,12 @@ The village rainfall series used to construct the shock is built in three steps:
 The gauge match was performed at the national meteorological service, and gauge coordinates
 are not distributed with this package. The resulting village-level series ships with the
 package and is merged into the household file.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.8\textwidth]{../artifacts/figA2_speed_comparison.pdf}
+\caption{Speed comparison. Panel A: calculated speeds. Panel B: reference speeds.}
+\label{fig:speed-overlap}
+\end{figure}
 
 \end{document}

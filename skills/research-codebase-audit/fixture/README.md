@@ -1,8 +1,8 @@
 # Fixture — planted-error validation package
 
 `planted/` is a tiny synthetic replication package (mini paper, two Stata scripts, two
-Python scripts, data, a TOML manifest, artifacts, README) with **21 planted findings**
-(`must_find` items P-01 through P-21) spanning the error taxonomy — including the three
+Python scripts, data, manifests, artifacts, README) with **28 planted findings**
+(`must_find` items P-01 through P-21 plus P-23 through P-29) spanning the error taxonomy — including the three
 classes added by the design (seed, SE specification, weights), a transcription mismatch
 against a shipped artifact, hygiene/PII findings, and **three decoys** that must NOT be
 flagged (a commented-out figure, an intentional subset of a stated member list, and an
@@ -62,6 +62,35 @@ covers):
   cleared `not_error`: the additional wave restriction is explicitly the diagnostic's
   domain and `restore` prevents it from narrowing the estimation sample.
 
+**Clean-file recall pair (added 2026-07-18)** — P-23/P-24 share the otherwise-clean
+`requirements-recall.txt`. P-23 is the mechanically flaggable whitespace-operator error that
+must enter the b3d manifest artifact/mapping and force a `detector` second read. P-24 is a
+human-only pair of individually legal but mutually incompatible exact pandas pins; if first pass
+does not recover it, its candidate must originate in that file's b3b shard.
+
+**Claim-handoff plant (added 2026-07-20)** — P-25 says the calculated and reference speeds
+substantially overlap in body prose while appendix Figure A2's planted code uses disjoint ranges.
+The run manifest must carry `allocation_override` with purpose `fixture`; its exact b1 allocation
+must use at least two claims workers and place the P-25 body sentence and `fig:speed-overlap`
+appendix figure in different line intervals. It must also allocate every line of the mechanically
+included `artifacts/tab1.tex` source. `score_fixture.py` refuses a one-worker collapse regardless
+of whether a final row happens to recover P-25.
+
+**Severity-token plants (added 2026-07-21)** — P-27/P-28/P-29 are three arms of one
+wrong-denominator mechanism family in `py/build_capita.py` (every per-member measure
+divides by `age_head` instead of `hhsize`, against the paper's stated definition), built
+to exercise the U8b severity-token contract end to end:
+- **P-27 (arm a)** — `income_pc` is consumed downstream by `py/make_tab2.py`, which writes
+  the reported Table 2 means, so the reported quantity is wrong. Must end `confirmed` at
+  severity 3 carrying exactly one receipted `output:` token resolving to the Table 2
+  output row (`severity_token_plants` in the answer key; scored by
+  `check_severity_token_plants`).
+- **P-28 (arm b)** — `wage_pc` shares the mechanism but is never read again (not saved,
+  not aggregated). The final severity must stay at or below 2 **regardless of status**.
+- **P-29 (arm c)** — `crop_pc` is consumed two lines later by a village `groupby` mean
+  that is only printed; its descendants never reach any output (the E-0304
+  local-consumption shape). Severity band <= 2, again regardless of status.
+
 `expected_findings.json` is the answer key. It lives here, **outside the audited scope**:
 when running the audit, hand the skill `fixture/planted/` as the repo root so no worker can
 see this folder's other files.
@@ -80,7 +109,7 @@ does not make that claim, so the privacy check is judged from the public package
    ladder level is not comparable to the recorded ones.
 3. When the run finishes, score `audit/code_review.xlsx` (or the registers) against
    `expected_findings.json`:
-   - **Recall**: all 21 `must_find` mechanisms present as issue-flagged or confirmed rows
+   - **Recall**: all 28 `must_find` mechanisms present as issue-flagged or confirmed rows
      (any register; matching is by mechanism, not wording), severities at or above
      `min_severity` (see `expected_findings.json` `scoring` for the P-14/P-20 dual-accept
      rule).

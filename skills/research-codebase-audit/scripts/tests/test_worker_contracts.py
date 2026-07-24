@@ -21,6 +21,7 @@ ROLE_SIZE_CAPS = {
     "merge_first_pass": 0.67,
     "merge_recheck": 0.78,
     "conventions": 0.39,
+    "conventions_scan": 0.55,
     "cross_link": 0.66,
     "rewrite": 0.68,
 }

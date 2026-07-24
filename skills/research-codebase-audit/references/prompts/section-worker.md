@@ -9,7 +9,9 @@ message. Fill slots only.
 | `{CONTRACT_PATH}` | `audit/_run/contracts/claims_first_pass.md` |
 | `{PLAN_PATH}` | `audit/plans/claims_review_plan.md` |
 | `{WORKER_ID}` / `{PAPER_SECTION}` / `{SHARD_FILE}` / `{CLAIM_ID_RANGE}` / `{OUTPUT_ID_RANGE}` / `{SECTION_PRIORITIES}` | allocation table |
-| `{PAPER_PATH}` | manifest `paper_audit_path` |
+| `{PAPER_SOURCE_SET}` | manifest `paper_source_set` mapping |
+| `{ASSIGNED_X_IDS}` | assignment artifact IDs for this worker, or `none` |
+| `{CROSSREF_INVENTORY_PATH}` | `audit/_run/crossref_inventory.json` |
 | `{ARTIFACTS_INSTRUCTION}` | conductor, from CODEMAP's Materials Inventory. Artifacts exist → `Shipped artifacts exist at <paths>. Diff every reported coefficient, sample size, and hardcoded number in your section against the artifact values at reported precision, recording mismatches as transcription or rounding_or_precision claims.` No artifacts → `No shipped artifacts were found; transcription checks are limited to values visible in code, logs, and documentation.` |
 
 ## Skeleton
@@ -20,14 +22,14 @@ We are preparing a code review of this academic paper and replication package. U
 
 You are Worker {WORKER_ID}.
 
-Scope: {PAPER_SECTION} of `{PAPER_PATH}`
+Scope: {PAPER_SECTION} in `{PAPER_SOURCE_SET}`
 Shard: `{SHARD_FILE}`
 ID ranges: {CLAIM_ID_RANGE}, {OUTPUT_ID_RANGE}
 Focus on: {SECTION_PRIORITIES}
 
 Read first, in order: the plan; your assigned paper section; `audit/CODEMAP.md` (start with its
-Materials Inventory); `{CONTRACT_PATH}`; then only the code and documentation relevant to your
-section.
+Materials Inventory); `{CONTRACT_PATH}`; `{CROSSREF_INVENTORY_PATH}` entries
+{ASSIGNED_X_IDS}; then only the code and documentation relevant to your section.
 
 Register schemas, status vocabulary, ID conventions, and severity rubric:
 `{CONTRACT_PATH}`. Use them exactly.
@@ -43,6 +45,10 @@ Rules:
   type.
 - Apply the claim-unit, `Paper Quote`, and `Used in Text` rules from `{CONTRACT_PATH}`
   exactly.
+- **Anchor-side ownership:** record every substantive assertion whose quote starts in your
+  interval, regardless of which worker owns a referenced figure/table. A caption covers only
+  its own text. If you notice an assertion anchored in another interval, file an H row instead
+  of a foreign-span claim.
 - {ARTIFACTS_INSTRUCTION}
 - Link claims to outputs (`Output IDs` / `Claim IDs`) within your shard; both directions.
 - Think carefully about whether the code actually supports each claim before setting
@@ -108,15 +114,21 @@ Rules:
   wording), the row is `inconsistent`, not `blocked`. `Blocked Check` is required non-empty on
   every `blocked` row and must be empty on every non-blocked row — even a legitimately blocked
   row with nothing to check must say so ("nothing visible to check").
-- Use IDs only from your assigned ranges. If a range runs out, stop adding rows and put
-  `BLOCKED: ID range exhausted` in your coordinator notes.
+- Use IDs only from your assigned ranges. If a range runs out, stop adding rows, add a typed
+  `not_rowed_observation` with reason `ID range exhausted`, and report the block.
 - Repo-relative paths everywhere.
+
+After the register tables, write `### Handoffs` and the exact five-column H table from the
+contract (or `No handoffs.`), then `### Cross-reference coverage` with exactly one terminal row
+per assigned X-ID (or `No assigned cross-references.`). A `covered` row carries the cited
+C-row's exact Paper Quote and the `path:line-range` where that quote resolves; a `disposition`
+uses the closed reason/evidence contract.
 
 Completion criterion — exhaustive: every table, figure, footnote, equation, and quantitative
 sentence in your scope has a register row or an explicit skip note with a reason. End the
-shard with the two-part footer specified in `{CONTRACT_PATH}` (coverage note +
-coordinator notes); the coverage note must prove the criterion above, and section overlaps
-go in the coordinator notes — deduplication is the coordinator's job, not yours.
+shard with the two-part footer specified in `{CONTRACT_PATH}` (coverage note + typed
+observations); the coverage note must prove the criterion above. Section-overlap notes use
+`not_rowed_observation` with a reason — deduplication is the coordinator's job, not yours.
 
 Parallel-safety: you may read any file, but write only to your shard. Do not edit canonical
 registers, code, paper text, plans, or other workers' shards. Do not run the pipeline.

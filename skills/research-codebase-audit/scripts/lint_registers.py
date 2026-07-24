@@ -8,18 +8,28 @@ Usage:
     lint_registers.py --stage STAGE [--shard PATH] [--audit-dir audit]
 
 Stages: b0, b1-claims, b1-code, b2-claims, b2-code, b3-claims, b3-code,
-        b4-claims, b4-code, b5-claims, b5-code, b6-claims, b6-code, b7, b8, b9
+        b4-claims, b4-code, b5-claims, b5-code, b6a-claims, b6a-code,
+        b5s-claims, b5s-code, b6b-claims, b6b-code, bC, b7,
+        severity_token_rulings, b8, b9
 (b2/b5 lint one worker shard, passed with --shard; b3b-claims/b3b-code lint a
 second-read shard with --shard, or the second-read merge without it).
 """
 
 import argparse
+import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import definition_use as du
+import build_detector_mapping as detector_mapping
+import mechanism_schema as mechanism
+import severity_tokens
+import severity_token_rulings
+from anchor_resolver import AnchorError, contains as anchor_contains, resolve_quote
+from paper_sources import PaperSourceError, validate_source_set
 
 # --------------------------------------------------------------- constants
 
@@ -42,6 +52,35 @@ LEDGER_COLS = [
     "Evidence Level", "Verdict", "Proposed Register Change",
     "Pipeline/Output Impact", "Proposed Note",
 ]
+CODE_LEDGER_COLS = LEDGER_COLS + [
+    "Proposed Status", "Proposed Severity", "Accepted Error Type",
+    "Accepted Mechanism", "Outcome Witness IDs", "Duplicate Target",
+    "Proposed Field Patches", "Verification Record IDs",
+]
+WITNESS_OUTCOME_COLS = list(mechanism.PRE_BOUNDARY_WITNESS_COLUMNS)
+POST_WITNESS_COLS = list(mechanism.POST_BOUNDARY_WITNESS_COLUMNS)
+MF_VERIFICATION_COLS = [
+    "Channel", "Record ID", "Source ID", "Witness ID",
+    "File Digest (sha256)", "Consumer", "Consumer Version", "Invocation",
+    "Observed Result", "Whole-File Acceptance (yes/no)",
+]
+PROBE_VERIFICATION_COLS = [
+    "Channel", "Record ID", "Source ID", "Witness ID",
+    "Proposition Tested", "Harness / Input Domain", "Observed Result",
+    "Scope Anchor",
+]
+RECEIPT_COLS = [
+    "Channel", "Receipt ID", "Source ID", "Witness ID", "Record ID",
+    "Tool", "Tool Version", "Input Digest (sha256)", "Invocation",
+    "Exit Status", "Accepted (yes/no)", "Result Digest (sha256)",
+]
+LINEAGE_COLS = [
+    "Original Error ID", "Descendant Error ID", "Channel", "Source ID",
+    "Witness ID",
+]
+PATCHABLE_ERROR_FIELDS = {
+    "Code Location", "Code/Data Source", "Error Description", "Why It Matters",
+}
 
 CLAIM_TYPES = {
     "quantitative_result", "sample_count", "treatment_definition",
@@ -60,7 +99,7 @@ ERROR_TYPES = {
 CLAIMS_STATUS_FIRST = {"confirmed", "mapped", "unclear", "inconsistent", "blocked"}
 CLAIMS_STATUS_FINAL = CLAIMS_STATUS_FIRST | {"confirmation_needed"}
 OUTPUT_STATUS_FIRST = {"listed", "mapped", "confirmed", "orphan", "inconsistent", "unclear"}
-OUTPUT_STATUS_FINAL = OUTPUT_STATUS_FIRST
+OUTPUT_STATUS_FINAL = OUTPUT_STATUS_FIRST - {"listed"}
 ERROR_STATUS_FIRST = {"candidate", "confirmed", "not_error", "blocked"}
 ERROR_STATUS_FINAL = (ERROR_STATUS_FIRST | {"confirmation_needed"})
 
@@ -68,7 +107,10 @@ CLAIMS_VERDICTS = {
     "substantiated", "substantiated_but_reframe", "row_note_only",
     "not_substantiated", "confirmation_needed", "blocked",
 }
-ERROR_VERDICTS = {"confirmed_error", "not_error", "confirmation_needed", "blocked", "deferred"}
+ERROR_VERDICTS = {
+    "confirmed_error", "not_error", "duplicate", "confirmation_needed",
+    "blocked", "deferred",
+}
 EVIDENCE_LEVELS = {
     "static_source_verified", "artifact_verified", "data_inspected_verified",
     "parser_or_runtime_verified", "synthetic_test_verified",
@@ -100,14 +142,73 @@ CONVENTION_CATEGORIES = {
 ID_RE = {"C": r"C-\d{4}", "O": r"O-\d{4}", "E": r"E-\d{4}"}
 RANGE_RE = re.compile(r"([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
 COORD_RE = re.compile(r"Merge-coordinator range:\s*([CEO]-\d{4})\s*[–—-]\s*([CEO]-\d{4})")
+FOOTER_COLS = ["Entry ID", "Kind", "Register IDs", "Observation", "Reason"]
+FOOTER_KINDS = {"candidate", "not_rowed_observation"}
+FOOTER_ENTRY_RE = re.compile(r"OBS-(\d{4})")
+COVERAGE_COLS = ["Script", "Outcome"]
+COVERAGE_CLEAN = "clean"
+COVERAGE_FINDINGS_RE = re.compile(
+    r"findings:\s*((?:[CEO]-\d{4})(?:\s*[;,]\s*[CEO]-\d{4})*)$"
+)
+COVERAGE_BLOCKED_RE = re.compile(r"blocked:\s*(\S.*)$")
+HYGIENE_SINGLETON = "@hygiene:data-and-log-lens"
+SECOND_READ_PLAN_COLS = {
+    "claims": [
+        "Worker ID", "File/Section Scope", "Shard File", "Claim ID Range",
+        "Output ID Range", "Reason", "Known Findings", "Assigned Handoff IDs",
+    ],
+    "code": [
+        "Worker ID", "Script Scope", "Shard File", "Error ID Range", "Reason",
+        "Known Findings", "Assigned Handoff IDs",
+    ],
+}
+SECOND_READ_REASONS = {"detector", "flagged", "clean_sample", "handoff"}
+SUPPLEMENTARY_PLAN_FILES = {
+    "claims": "claims_supplementary_recheck_plan.md",
+    "code": "code_error_supplementary_recheck_plan.md",
+}
+SUPPLEMENTARY_SHARD_DIRS = {
+    "claims": "_recheck_supplementary",
+    "code": "_code_error_recheck_supplementary",
+}
+SUPPLEMENTARY_SUMMARY_FILES = {
+    "claims": "claims_supplementary_recheck_summary.md",
+    "code": "code_error_supplementary_recheck_summary.md",
+}
+SUPPLEMENTARY_EMPTY = "No supplementary recheck inventory."
+DISCOVERY_RANGE_RE = re.compile(
+    r"^Declared supplementary discovery range:\s*([CEO]-\d{4})[–—-]([CEO]-\d{4})\s*$",
+    re.M,
+)
+DISCOVERY_COUNTS_RE = re.compile(
+    r"^Discoveries declared:\s*C=(\d+);\s*O=(\d+);\s*E=(\d+)\s*$", re.M)
+OUTPUT_DISCOVERY_COLS = ["Output ID", "Claim ID", "Claim Verdict", "Output Status"]
+OUTPUT_FROM_CLAIM_VERDICT = {
+    "substantiated": "inconsistent",
+    "substantiated_but_reframe": "inconsistent",
+    "row_note_only": "mapped",
+    "not_substantiated": "mapped",
+    "confirmation_needed": "unclear",
+    "blocked": "unclear",
+}
+LO_COLS = ["LO ID", "Source Shard", "Anchor", "Observation"]
+LO_DISPOSITION_COLS = ["LO ID", "Prior State", "State"]
+LO_EMPTY = "No late observations."
+LO_DISPOSITIONS_EMPTY = "No dispositions."
+BC_PLAN_COLS = [
+    "BC ID", "LO ID", "Register", "Operation", "Row ID", "Payload JSON",
+    "Old Value SHA256",
+]
+BC_RANGE_RE = re.compile(r"^Declared bC range:\s*([CEO]-\d{4})[–—-]([CEO]-\d{4})\s*$", re.M)
 def has_conflict_markers(text):
     starts = re.search(r"^<{7}(\s|$)", text, re.M)
     ends = re.search(r"^>{7}(\s|$)", text, re.M)
     return bool(starts or ends)
 
 SNAP_KEY = {
-    "b3-claims": "claims_b3", "b6-claims": "claims_b6",
-    "b3-code": "code_b3", "b6-code": "code_b6", "b7": "b7", "b8": "b8",
+    "b3-claims": "claims_b3", "b6a-claims": "claims_b6a",
+    "b6b-claims": "claims_b6b", "b3-code": "code_b3",
+    "b6a-code": "code_b6a", "b6b-code": "code_b6b", "b7": "b7", "b8": "b8",
     "b3b-claims": "claims_b3b", "b3b-code": "code_b3b",
 }
 
@@ -201,6 +302,81 @@ def table_by_cols(lint, path, text, expected_cols, label):
                 lint.fail(f"{path}: {label} row {k + 1} has {len(rows[k])} cells, expected {len(headers)}")
             return [r for k, r in enumerate(rows) if k not in bad]
     lint.fail(f"{path}: no table with exact {label} columns found")
+    return None
+
+
+def tables_by_cols(lint, path, text, expected_cols, label, required=False):
+    """Return all well-shaped rows from every table with one exact header."""
+    found, matched = [], 0
+    for headers, rows, _line in parse_tables(text):
+        if headers != expected_cols:
+            continue
+        matched += 1
+        for index, row in enumerate(rows, start=1):
+            if len(row) != len(headers):
+                lint.fail(f"{path}: {label} row {index} has {len(row)} cells, "
+                          f"expected {len(headers)}")
+            else:
+                found.append(dict(zip(headers, row)))
+    if required and matched == 0:
+        lint.fail(f"{path}: no table with exact {label} columns found")
+    return found
+
+
+def blank_cell(value):
+    return (value or "").strip().strip("`") in {"", "-", "—"}
+
+
+def list_cell(value):
+    if blank_cell(value):
+        return []
+    return [part.strip().strip("`") for part in str(value).split(";")
+            if not blank_cell(part)]
+
+
+def parse_field_patches(lint, path, row):
+    value = row.get("Proposed Field Patches", "")
+    if blank_cell(value):
+        return {}
+    patches = {}
+    for raw in value.split(" || "):
+        if " := " not in raw:
+            lint.fail(f"{path}: {row['ID']} malformed Proposed Field Patches entry {raw!r}")
+            continue
+        column, replacement = raw.split(" := ", 1)
+        if column not in PATCHABLE_ERROR_FIELDS:
+            lint.fail(f"{path}: {row['ID']} field patch names non-whitelisted column {column!r}")
+        elif column in patches:
+            lint.fail(f"{path}: {row['ID']} field patch repeats column {column!r}")
+        elif not replacement:
+            lint.fail(f"{path}: {row['ID']} field patch for {column!r} is empty")
+        else:
+            patches[column] = replacement
+    return patches
+
+
+def expected_code_disposition(ledger, severe_authorized=False):
+    """Final (status, severity) a mapped code ledger row's verdict requires.
+
+    Shared by the b6 merge lint and ``assemble_boundary.py --check`` so both
+    gates apply the same verdict -> applied-disposition contract. Returns
+    None for an invalid verdict.
+    """
+    verdict = (ledger.get("Verdict") or "").strip()
+    proposed = (ledger.get("Proposed Severity") or "").strip()
+    if verdict == "confirmed_error":
+        return "confirmed", proposed
+    if verdict == "not_error":
+        return "not_error", ""
+    if verdict == "confirmation_needed":
+        capped = (proposed if severe_authorized else str(min(int(proposed), 2))) \
+            if proposed in {"1", "2", "3", "4"} else proposed
+        return "confirmation_needed", capped
+    if verdict in {"blocked", "deferred"}:
+        return "blocked", (ledger.get("Current Severity") or "").strip()
+    if verdict == "duplicate":
+        target = (ledger.get("Duplicate Target") or "").strip()
+        return f"duplicate_of:{target}", ""
     return None
 
 
@@ -745,7 +921,596 @@ def scope_tokens(cell):
     return {t.strip().strip("`") for t in re.split(r"[;,]", cell or "") if t.strip()}
 
 
+def normalized_audit_path(value):
+    """Normalize a plan/shard path to its package-relative ``audit/...`` wire."""
+    raw = str(value or "").strip().strip("`").replace("\\", "/")
+    if not raw:
+        return ""
+    marker = "/audit/"
+    if marker in raw:
+        raw = "audit/" + raw.split(marker, 1)[1]
+    elif raw.startswith("audit/"):
+        pass
+    elif raw.startswith("/"):
+        return raw
+    else:
+        raw = "audit/" + raw.lstrip("./")
+    return raw
+
+
+def audit_path(audit, value):
+    normalized = normalized_audit_path(value)
+    if normalized.startswith("audit/"):
+        return audit.parent / normalized
+    return Path(value)
+
+
+def check_identifier_exhaustion(lint, path, ranges):
+    """Refuse a declaration that consumes the last four-digit register ID."""
+    labels = {"C": "claims", "O": "output", "E": "code-error"}
+    for letter, _start, end in ranges:
+        if end >= 9999:
+            lint.fail(
+                f"{path}: {labels[letter]} register identifier space exhausted "
+                f"at {letter}-9999 (four-digit IDs cannot wrap)"
+            )
+
+
+def second_read_allocations(lint, path, stream):
+    """Parse and validate the documented U6a second-read allocation contract."""
+    text = read_text(lint, path)
+    if text is None:
+        return None, []
+    expected = SECOND_READ_PLAN_COLS[stream]
+    matches = [(rows, line) for headers, rows, line in parse_tables(text)
+               if headers == expected]
+    if len(matches) != 1:
+        lint.fail(
+            f"{path}: expected exactly one second-read allocation table with columns "
+            + " | ".join(expected)
+        )
+        return None, []
+    rows, _line = matches[0]
+    allocations = []
+    for index, row in enumerate(rows, start=1):
+        if len(row) != len(expected):
+            lint.fail(
+                f"{path}: allocation row {index} has {len(row)} cells, "
+                f"expected {len(expected)}"
+            )
+            continue
+        entry = dict(zip(expected, row))
+        if entry["Reason"] not in SECOND_READ_REASONS:
+            lint.fail(
+                f"{path}: {entry['Worker ID']} has invalid Reason "
+                f"{entry['Reason']!r}"
+            )
+        allocations.append(entry)
+    coord = [parse_range(f"{a}–{b}") for a, b in COORD_RE.findall(text)]
+    if stream == "claims":
+        audit = Path(path).parent.parent
+        ledger_path = audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json"
+        if ledger_path.is_file():
+            try:
+                ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                forwarded = {entry["id"] for entry in ledger.get("H", [])
+                             if entry.get("state") == "forwarded"}
+            except (OSError, json.JSONDecodeError) as exc:
+                lint.fail(f"{ledger_path}: invalid handoff ledger ({exc})")
+                forwarded = set()
+            assigned = []
+            for entry in allocations:
+                raw = entry["Assigned Handoff IDs"]
+                ids = [] if blank_cell(raw) else [item.strip() for item in raw.split(",")]
+                if any(not re.fullmatch(r"H-\d{4}", item) for item in ids):
+                    lint.fail(f"{path}: {entry['Worker ID']} has malformed Assigned Handoff IDs")
+                for handoff_id in ids:
+                    if handoff_id not in forwarded:
+                        lint.fail(f"{path}: {entry['Worker ID']} names non-forwarded {handoff_id}")
+                assigned.extend(ids)
+            duplicates = sorted({item for item in assigned if assigned.count(item) > 1})
+            if duplicates:
+                lint.fail(f"{path}: forwarded H IDs assigned more than once: {duplicates}")
+            if set(assigned) != forwarded:
+                lint.fail(f"{path}: Assigned Handoff IDs do not exactly cover forwarded ledger IDs; "
+                          f"missing={sorted(forwarded - set(assigned))}, "
+                          f"extra={sorted(set(assigned) - forwarded)}")
+        else:
+            for entry in allocations:
+                if not blank_cell(entry["Assigned Handoff IDs"]):
+                    lint.fail(f"{path}: Assigned Handoff IDs must remain empty until U7 "
+                              "ledger activation (claims_b3 ledger snapshot missing)")
+    else:
+        for entry in allocations:
+            if not blank_cell(entry["Assigned Handoff IDs"]):
+                lint.fail(
+                    f"{path}: code-stream Assigned Handoff IDs must remain empty"
+                )
+    return allocations, [item for item in coord if item]
+
+
+def coverage_outcome(lint, path, row_number, value):
+    """Return (kind, IDs/reason) for one exact coverage outcome."""
+    outcome = str(value or "").strip()
+    if outcome == COVERAGE_CLEAN:
+        return "clean", []
+    match = COVERAGE_FINDINGS_RE.fullmatch(outcome)
+    if match:
+        return "findings", re.findall(r"[CEO]-\d{4}", match.group(1))
+    match = COVERAGE_BLOCKED_RE.fullmatch(outcome)
+    if match:
+        return "blocked", match.group(1).strip()
+    lint.fail(
+        f"{path}: coverage row {row_number} outcome {outcome!r} must be exactly "
+        "'clean', 'findings: <IDs>', or 'blocked: <reason>'"
+    )
+    return "invalid", []
+
+
+def typed_shard_footer(lint, path, text, stream, recheck=False):
+    """Validate the shared typed footer and return (entries, coverage rows).
+
+    Recheck workers cannot mint register rows.  In that context ``candidate``
+    therefore means a defect-character observation for the consuming merge and
+    its Register IDs cell is deliberately empty.
+    """
+    table_matches = [(rows, line) for headers, rows, line in parse_tables(text)
+                     if headers == FOOTER_COLS]
+    if len(table_matches) != 1:
+        lint.fail(
+            f"{path}: expected exactly one typed footer table with columns "
+            + " | ".join(FOOTER_COLS)
+        )
+        entries = []
+    else:
+        entries = []
+        rows, _line = table_matches[0]
+        for index, row in enumerate(rows, start=1):
+            if len(row) != len(FOOTER_COLS):
+                lint.fail(
+                    f"{path}: typed footer row {index} has {len(row)} cells, "
+                    f"expected {len(FOOTER_COLS)}"
+                )
+                continue
+            entry = dict(zip(FOOTER_COLS, row))
+            expected_id = f"OBS-{index:04d}"
+            if entry["Entry ID"] != expected_id:
+                lint.fail(
+                    f"{path}: typed footer entry {index} must be {expected_id}, "
+                    f"got {entry['Entry ID']!r}"
+                )
+            if entry["Kind"] not in FOOTER_KINDS:
+                lint.fail(
+                    f"{path}: {entry['Entry ID']} has invalid Kind "
+                    f"{entry['Kind']!r}"
+                )
+            if blank_cell(entry["Observation"]) or "\n" in entry["Observation"]:
+                lint.fail(f"{path}: {entry['Entry ID']} requires a one-line Observation")
+            ids = re.findall(r"[CEO]-\d{4}", entry["Register IDs"])
+            if entry["Kind"] == "candidate":
+                if recheck and (ids or not blank_cell(entry["Register IDs"])):
+                    lint.fail(
+                        f"{path}: {entry['Entry ID']} recheck candidate cannot mint Register IDs"
+                    )
+                elif not recheck and not ids:
+                    lint.fail(f"{path}: {entry['Entry ID']} candidate requires Register IDs")
+                if not blank_cell(entry["Reason"]):
+                    lint.fail(f"{path}: {entry['Entry ID']} candidate Reason must be empty")
+            elif entry["Kind"] == "not_rowed_observation":
+                if ids or not blank_cell(entry["Register IDs"]):
+                    lint.fail(
+                        f"{path}: {entry['Entry ID']} not_rowed_observation cannot name Register IDs"
+                    )
+                if blank_cell(entry["Reason"]) or "\n" in entry["Reason"]:
+                    lint.fail(
+                        f"{path}: {entry['Entry ID']} not_rowed_observation requires a one-line Reason"
+                    )
+            entry["_ids"] = ids
+            entries.append(entry)
+
+    coverage = []
+    if stream == "code" and not recheck:
+        matches = [(rows, line) for headers, rows, line in parse_tables(text)
+                   if headers == COVERAGE_COLS]
+        if len(matches) != 1:
+            lint.fail(
+                f"{path}: expected exactly one code coverage table with columns "
+                + " | ".join(COVERAGE_COLS)
+            )
+        else:
+            rows, _line = matches[0]
+            seen = set()
+            for index, row in enumerate(rows, start=1):
+                if len(row) != len(COVERAGE_COLS):
+                    lint.fail(
+                        f"{path}: coverage row {index} has {len(row)} cells, "
+                        f"expected {len(COVERAGE_COLS)}"
+                    )
+                    continue
+                data = dict(zip(COVERAGE_COLS, row))
+                script = data["Script"].strip().strip("`")
+                if (not script or script.startswith("/") or ".." in Path(script).parts
+                        or (script.startswith("@") and script != HYGIENE_SINGLETON)):
+                    lint.fail(f"{path}: invalid coverage key {script!r}")
+                if script in seen:
+                    lint.fail(f"{path}: duplicate coverage key {script!r}")
+                seen.add(script)
+                kind, detail = coverage_outcome(lint, path, index, data["Outcome"])
+                coverage.append({"script": script, "outcome": data["Outcome"],
+                                 "kind": kind, "detail": detail})
+    return entries, coverage
+
+
+def shard_register_ids(text, stream):
+    columns = ((CLAIMS_COLS, "Claim ID"), (OUTPUT_COLS, "Output ID")) \
+        if stream == "claims" else ((ERROR_COLS, "Error ID"),)
+    found = set()
+    for headers, rows, _line in parse_tables(text):
+        for expected, id_col in columns:
+            if headers == expected:
+                index = headers.index(id_col)
+                found.update(row[index] for row in rows
+                             if len(row) == len(headers) and not is_example_row(row))
+    return found
+
+
+def validate_footer_candidates(lint, path, text, stream, entries, coverage):
+    row_ids = shard_register_ids(text, stream)
+    footer_ids = set()
+    for entry in entries:
+        if entry["Kind"] != "candidate":
+            continue
+        footer_ids.update(entry["_ids"])
+        for register_id in entry["_ids"]:
+            if register_id not in row_ids:
+                lint.fail(
+                    f"{path}: {entry['Entry ID']} cites {register_id}, which is not a row in the shard"
+                )
+    if footer_ids != row_ids:
+        missing = sorted(row_ids - footer_ids)
+        extra = sorted(footer_ids - row_ids)
+        lint.fail(
+            f"{path}: typed-footer candidate IDs do not equal shard row IDs; "
+            f"missing={missing}, extra={extra}"
+        )
+    if stream != "code":
+        return
+    cited = set()
+    clean_scripts = {row["script"] for row in coverage if row["kind"] == "clean"}
+    for row in coverage:
+        if row["kind"] == "findings":
+            cited.update(row["detail"])
+            for register_id in row["detail"]:
+                if register_id not in row_ids:
+                    lint.fail(
+                        f"{path}: coverage cites {register_id}, which is not a row in the shard"
+                    )
+    if cited != row_ids:
+        lint.fail(
+            f"{path}: findings coverage IDs do not equal code-error row IDs; "
+            f"missing={sorted(row_ids - cited)}, extra={sorted(cited - row_ids)}"
+        )
+    for headers, rows, _line in parse_tables(text):
+        if headers != ERROR_COLS:
+            continue
+        for row in rows:
+            if len(row) != len(headers) or is_example_row(row):
+                continue
+            data = dict(zip(headers, row))
+            sources = scope_tokens(data["Code/Data Source"])
+            for source in sorted(sources & clean_scripts):
+                lint.fail(
+                    f"{path}: {source!r} carries finding {data['Error ID']} and cannot be clean"
+                )
+
+
+def parse_footer_dispositions(lint, report_path, report):
+    """Parse the documented footer-disposition line grammar."""
+    raw = report.get("footer_dispositions", [])
+    if not isinstance(raw, list):
+        lint.fail(f"{report_path}: footer_dispositions must be a list")
+        return []
+    parsed = []
+    pattern = re.compile(
+        r"^(audit/[^#]+)#(OBS-\d{4})\s+\|\s+"
+        r"(candidate:((?:[CEO]-\d{4})(?:\s*[;,]\s*[CEO]-\d{4})*)|"
+        r"late_observation:(LO-[CE]-\d{4})|dismissed:(\S.*))$"
+    )
+    for index, line in enumerate(raw, start=1):
+        if not isinstance(line, str) or not (match := pattern.fullmatch(line.strip())):
+            lint.fail(
+                f"{report_path}: footer disposition {index} must serialize as "
+                "'<audit shard>#<OBS-ID> | candidate:<IDs>', "
+                "'... | late_observation:<LO-ID>', or '... | dismissed:<reason>'"
+            )
+            continue
+        ids = re.findall(r"[CEO]-\d{4}", match.group(4) or "")
+        action = "candidate" if match.group(4) else (
+            "late_observation" if match.group(5) else "dismissed")
+        parsed.append({"key": (match.group(1), match.group(2)),
+                       "action": action, "ids": ids,
+                       "lo_id": match.group(5) or ""})
+    return parsed
+
+
+def reconcile_footer_dispositions(lint, audit, allocations, stream,
+                                  report_path, report, staging_ids, manifest,
+                                  worker_stage):
+    """Prove the exact-one typed-footer entry/disposition join."""
+    stage = manifest.get("stages", {}).get(worker_stage, {}) \
+        if isinstance(manifest, dict) else {}
+    shard_states = stage.get("shards", {}) if isinstance(stage, dict) else {}
+    expected = {}
+    for allocation in allocations or []:
+        wire = normalized_audit_path(allocation.get("Shard File"))
+        state = shard_states.get(wire, shard_states.get(allocation.get("Shard File"), {}))
+        if isinstance(state, dict) and state.get("status") == "blocked":
+            continue
+        path = audit_path(audit, wire)
+        text = read_text(lint, path)
+        if text is None:
+            continue
+        entries, coverage = typed_shard_footer(lint, path, text, stream)
+        validate_footer_candidates(lint, path, text, stream, entries, coverage)
+        for entry in entries:
+            key = (wire, entry["Entry ID"])
+            if key in expected:
+                lint.fail(f"{path}: duplicate typed-footer join key {wire}#{entry['Entry ID']}")
+            expected[key] = entry
+    actual = {}
+    for disposition in parse_footer_dispositions(lint, report_path, report):
+        key = disposition["key"]
+        if key in actual:
+            lint.fail(f"{report_path}: duplicate footer disposition for {key[0]}#{key[1]}")
+        actual[key] = disposition
+    for key in sorted(set(expected) - set(actual)):
+        lint.fail(f"{report_path}: typed footer entry {key[0]}#{key[1]} is undispositioned")
+    for key in sorted(set(actual) - set(expected)):
+        lint.fail(f"{report_path}: disposition has no typed footer entry {key[0]}#{key[1]}")
+    for key in sorted(set(expected) & set(actual)):
+        entry, disposition = expected[key], actual[key]
+        if entry["Kind"] == "candidate" and disposition["action"] != "candidate":
+            lint.fail(
+                f"{report_path}: {key[0]}#{key[1]} candidate entry cannot be dismissed"
+            )
+            continue
+        if disposition["action"] == "candidate":
+            if set(disposition["ids"]) - staging_ids:
+                lint.fail(
+                    f"{report_path}: {key[0]}#{key[1]} disposition cites absent staging IDs "
+                    f"{sorted(set(disposition['ids']) - staging_ids)}"
+                )
+            if entry["Kind"] == "candidate" and set(disposition["ids"]) != set(entry["_ids"]):
+                lint.fail(
+                    f"{report_path}: {key[0]}#{key[1]} candidate disposition IDs "
+                    "do not match the shard entry"
+                )
+
+
 # --------------------------------------------------------------- stage checks
+
+
+def _token_register_rows(lint, path):
+    loaded = load_register(lint, path, ERROR_COLS, allow_extra=True)
+    if loaded is None:
+        return []
+    headers, rows = loaded
+    return [dict(zip(headers, row)) for row in rows if not is_example_row(row)]
+
+
+def _token_dispatch_contract(lint, audit, manifest, plan):
+    """Builder-declared U8b digest/snapshot wire for code-b5 dispatch."""
+    if (manifest or {}).get("mode", "replication") != "replication":
+        return
+    stages = (manifest or {}).get("stages", {})
+    # Historical unit fixtures do not model initialized production stages.
+    if not isinstance(stages, dict) or "code_b4" not in stages:
+        return
+    claims_b3 = stages.get("claims_b3") if isinstance(stages, dict) else None
+    if isinstance(claims_b3, dict) and claims_b3.get("status") != "done":
+        lint.fail(f"{plan}: code recheck dispatch requires lint-green claims_b3")
+    try:
+        head = severity_tokens.dispatch_head(audit)
+    except severity_tokens.SeverityTokenError as exc:
+        lint.fail(str(exc))
+        return
+    text = read_text(lint, plan) or ""
+    expected = f"Severity-token dispatch input head: {head}"
+    if not re.search(rf"(?m)^{re.escape(expected)}$", text):
+        lint.fail(f"{plan}: missing exact digest-pinned line '{expected}'")
+
+
+def _token_receipt_gate(lint, audit, manifest, rows, stage,
+                        allowed_uncovered=(), tokenless_ok=()):
+    classifications, failures = severity_tokens.gate_rows(
+        audit.parent, audit, manifest, rows, stage)
+    for failure in severity_tokens.excuse_uncovered_failures(
+            audit.parent, audit, manifest, rows, failures,
+            allowed_uncovered, tokenless_ok):
+        lint.fail(f"severity-token gate: {failure}")
+    return classifications
+
+
+def _first_residual_introduction(
+        lint, audit, stages, filename, cols, target_col, target_id, intro_stage):
+    """Return the earliest comparable done snapshot containing a target."""
+    import certify_stage as _certify
+    order = list(_certify.FULL_STAGES)
+    claims_wave = {
+        "claims_b4", "claims_b5", "claims_b6a", "claims_b5s", "claims_b6b",
+    }
+    containing = []
+    for candidate_stage in order:
+        if stages.get(candidate_stage, {}).get("status") != "done":
+            continue
+        candidate_path = audit / "_run/snapshots" / candidate_stage / filename
+        if not candidate_path.is_file():
+            continue
+        candidate = load_register(lint, candidate_path, cols, allow_extra=True)
+        if candidate and target_id in col(candidate[1], candidate[0], target_col):
+            containing.append(candidate_stage)
+
+    def comparable(candidate_stage):
+        pair = {candidate_stage, intro_stage}
+        return not (
+            "code_b6a" in pair and any(item in claims_wave for item in pair)
+        )
+
+    return next((item for item in containing if comparable(item)), None)
+
+
+def _residual_rows(lint, audit, required=False):
+    path = audit / "_run/late_severity_residuals.md"
+    if not path.is_file():
+        if required:
+            lint.fail(f"missing or empty file: {path}")
+        return []
+    text = read_text(lint, path)
+    if text is None:
+        return []
+    rows = tables_by_cols(
+        lint, path, text, severity_tokens.RESIDUAL_COLS,
+        "late severity residuals", required=True)
+    check_unique(lint, path, [row["Error ID"] for row in rows], "residual Error ID")
+    try:
+        wanted_dispatch = severity_tokens.dispatch_head(audit)
+    except severity_tokens.SeverityTokenError as exc:
+        lint.fail(str(exc))
+        wanted_dispatch = None
+    for row in rows:
+        eid = row["Error ID"]
+        if row["Target Kind"] not in {"claim", "output"}:
+            lint.fail(f"{path}: {eid} residual Target Kind must be claim/output")
+        if not re.fullmatch(r"[CO]-\d{4}", row["Target ID"]):
+            lint.fail(f"{path}: {eid} residual has malformed Target ID")
+        if row["Target Kind"][0].upper() != row["Target ID"][0]:
+            lint.fail(f"{path}: {eid} residual Target Kind/ID disagree")
+        if wanted_dispatch and row["Dispatch Input Head"] != wanted_dispatch:
+            lint.fail(f"{path}: {eid} residual dispatch head disagrees with pinned inputs")
+        if row["Supplementary Outcome"] not in severity_tokens.RESIDUAL_OUTCOMES:
+            lint.fail(f"{path}: {eid} invalid Supplementary Outcome")
+        if blank_cell(row["Target Introduction Head"]) or blank_cell(
+                row["Supplementary Evidence IDs"]):
+            lint.fail(f"{path}: {eid} residual requires introduction head and evidence IDs")
+        # The target must have been absent from the bytes actually dispatched.
+        filename = ("claims_register.md" if row["Target Kind"] == "claim"
+                    else "output_register.md")
+        dispatch_file = audit / "_run/snapshots/code_b5_dispatch" / filename
+        target_col = "Claim ID" if row["Target Kind"] == "claim" else "Output ID"
+        cols = CLAIMS_COLS if row["Target Kind"] == "claim" else OUTPUT_COLS
+        loaded = load_register(lint, dispatch_file, cols)
+        if loaded and row["Target ID"] in col(loaded[1], cols, target_col):
+            lint.fail(f"{path}: {eid} target existed in the dispatch-time register")
+        live = load_register(lint, audit / filename, cols, allow_extra=True)
+        live_by_id = ({dict(zip(live[0], raw))[target_col]:
+                       dict(zip(live[0], raw)) for raw in live[1]} if live else {})
+        target = live_by_id.get(row["Target ID"])
+        if target is None or str(target.get("Status", "")).startswith("duplicate_of:"):
+            lint.fail(f"{path}: {eid} residual target is not live")
+        elif row["Target Kind"] == "claim" and target.get("Used in Text") != "TRUE":
+            lint.fail(f"{path}: {eid} residual claim target is not terminally used in text")
+        elif row["Target Kind"] == "output" and blank_cell(target.get("Paper Location", "")):
+            lint.fail(f"{path}: {eid} residual output target lacks a paper location")
+        intro = re.fullmatch(r"([a-zA-Z0-9_]+):([0-9a-f]{64})",
+                             row["Target Introduction Head"])
+        intro_stage = None
+        if not intro:
+            lint.fail(f"{path}: {eid} Target Introduction Head must be stage:sha256")
+        else:
+            intro_stage, digest = intro.groups()
+            snapshot = audit / "_run/snapshots" / intro_stage / filename
+            stages = (json.loads((audit / "_run/manifest.json").read_text(encoding="utf-8"))
+                      .get("stages", {}))
+            if stages.get(intro_stage, {}).get("status") != "done":
+                lint.fail(f"{path}: {eid} introduction stage {intro_stage} is not certified done")
+            elif not snapshot.is_file() or severity_tokens.sha256_file(snapshot) != digest:
+                lint.fail(f"{path}: {eid} introduction head does not bind its stage snapshot")
+            else:
+                introduced = load_register(lint, snapshot, cols, allow_extra=True)
+                if introduced and row["Target ID"] not in col(
+                        introduced[1], introduced[0], target_col):
+                    lint.fail(f"{path}: {eid} target is absent from its claimed introduction head")
+                elif introduced:
+                    # The named snapshot must be the first certified snapshot
+                    # containing the target.  Claims b4–b6b run as a wave beside
+                    # code_b6a, so only that cross-stream pair is unordered;
+                    # claims-wave stages remain ordered among themselves.
+                    earliest = _first_residual_introduction(
+                        lint, audit, stages, filename, cols, target_col,
+                        row["Target ID"], intro_stage)
+                    if earliest != intro_stage:
+                        lint.fail(
+                            f"{path}: {eid} introduction stage {intro_stage} is not "
+                            f"the first done snapshot containing {row['Target ID']}; "
+                            f"earliest is {earliest or 'absent'}")
+        if row["Supplementary Outcome"] == "exhausted_post_plan" and intro_stage:
+            # A target whose introduction stage was provably an input to the
+            # b6a union derivation cannot claim it appeared only after the
+            # certified b5s plan input.  The claims recheck wave (claims_b4
+            # onward) runs wall-clock-parallel to the code wave, so those
+            # stages are not provably prior inputs and stay eligible.
+            import certify_stage as _certify
+            order = list(_certify.FULL_STAGES)
+            parallel_claims = {
+                "claims_b4", "claims_b5", "claims_b6a", "claims_b5s",
+                "claims_b6b",
+            }
+            if intro_stage not in order:
+                lint.fail(f"{path}: {eid} exhausted_post_plan names unknown stage {intro_stage}")
+            elif (intro_stage not in parallel_claims
+                    and order.index(intro_stage) <= order.index("code_b6a")):
+                lint.fail(
+                    f"{path}: {eid} exhausted_post_plan target was already an input "
+                    "to the b6a plan derivation")
+        if row["Supplementary Outcome"] == "unavailable_blocked":
+            entry = (json.loads((audit / "_run/manifest.json").read_text(encoding="utf-8"))
+                     .get("stages", {}).get("code_b5s", {}))
+            if entry.get("status") != "blocked" or blank_cell(entry.get("reason", "")):
+                lint.fail(f"{path}: {eid} unavailable_blocked lacks exact code_b5s blocker evidence")
+        elif row["Supplementary Outcome"] == "exhausted_attempt":
+            plan = audit / "plans/code_error_supplementary_recheck_plan.md"
+            try:
+                plan_rows = severity_tokens.rows_for_columns(
+                    plan, severity_tokens.SUPPLEMENTARY_TOKEN_COLS)
+            except severity_tokens.SeverityTokenError as exc:
+                lint.fail(str(exc))
+                plan_rows = []
+            if not any(item["Error ID"] == eid and "late_token" in {
+                    part.strip() for part in item["Reasons"].split(",")}
+                       for item in plan_rows):
+                lint.fail(f"{path}: {eid} exhausted_attempt was not attempted by b5s")
+    return rows
+
+
+def _final_token_partition(lint, audit, manifest, rows, stage="code_b6b"):
+    mode = (manifest or {}).get("mode", "replication")
+    residuals = (_residual_rows(lint, audit, required=True)
+                 if mode == "replication" else [])
+    residual_by_id = {row["Error ID"]: row for row in residuals}
+    # Validated residual coverage is a legal tokenless exit, so the receipt
+    # gate must not fail those rows; the XOR below still enforces
+    # exactly-once coverage.
+    classifications = _token_receipt_gate(
+        lint, audit, manifest, rows, stage, tokenless_ok=residual_by_id)
+    eligible = {row["Error ID"]: row for row in rows
+                if severity_tokens.severe_eligible(row)}
+    for eid, row in sorted(eligible.items()):
+        receipted = classifications.get(eid) in {"live", "target_not_live"}
+        residual = eid in residual_by_id
+        if receipted == residual:
+            lint.fail(f"severity-token partition: {eid} must be covered by receipt XOR residual")
+        if residual:
+            if row["Status"] != "confirmation_needed":
+                lint.fail(f"severity-token partition: confirmed row {eid} cannot use a residual")
+            token, _problem = severity_tokens.row_token_state(row, mode)
+            if token:
+                state, _target = severity_tokens.resolve_target(
+                    audit.parent, audit, manifest, token)
+                if state == "target_not_live":
+                    lint.fail(f"severity-token partition: target_not_live row {eid} cannot use a residual")
+    for eid in sorted(set(residual_by_id) - set(eligible)):
+        lint.fail(f"severity-token partition: residual {eid} is not a currently eligible severe row")
+    return classifications
 
 
 def stage_b0(lint, audit, manifest):
@@ -771,7 +1536,16 @@ def stage_b0(lint, audit, manifest):
             check_unique(lint, audit / "CODEMAP.md", found, f"{letter}- ID")
         if not re.search(r"PRECONDITIONS:\s*\d\s*/\s*5", cm):
             lint.fail(f"{audit / 'CODEMAP.md'}: missing 'PRECONDITIONS: <n>/5' score line")
-    if manifest:
+        _ra_rows, ra_failures = severity_tokens.validate_ra_inventory(
+            audit.parent, audit, manifest)
+        for failure in ra_failures:
+            lint.fail(failure)
+    if manifest and manifest.get("paper_source_set") is not None:
+        try:
+            validate_source_set(audit.parent, manifest)
+        except PaperSourceError as exc:
+            lint.fail(f"manifest: {exc}")
+    elif manifest:
         src, blanked = manifest.get("paper_source_path"), manifest.get("paper_audit_path")
         if src and Path(src).suffix == ".tex":
             if not blanked or blanked == src:
@@ -787,9 +1561,61 @@ def stage_b0(lint, audit, manifest):
                     lint.fail(f"blanked paper line count {n_bl} != source {n_src}")
 
 
-def stage_b1(lint, audit, stream):
+def _stage_b1_claim_handoffs(lint, audit, manifest, plan):
+    """U7 exact plan schema, paper partition, and H/adjudication ranges."""
+    from claim_handoffs import (
+        ADJUDICATION_RANGE_RE, CLAIMS_PLAN_COLS, load_claims_allocations,
+        parse_h_range, validate_partition,
+    )
+    try:
+        allocations, text = load_claims_allocations(plan)
+    except (OSError, ValueError) as exc:
+        lint.fail(str(exc))
+        return None, []
+    expected_override = manifest.get("allocation_override")
+    if isinstance(expected_override, dict) and allocations != expected_override.get("allocation"):
+        lint.fail(f"{plan}: executed allocation does not equal manifest allocation_override")
+    check_unique(lint, plan, [row["Worker ID"] for row in allocations], "Worker ID")
+    check_unique(lint, plan, [row["Shard File"] for row in allocations], "Shard File")
+    ranges = alloc_ranges(lint, plan, allocations, ["Claim ID Range", "Output ID Range"])
+    h_ranges = []
+    for row in allocations:
+        parsed = parse_h_range(row["H ID Range"])
+        if parsed is None:
+            lint.fail(f"{plan}: unparseable H ID Range {row['H ID Range']!r} for {row['Worker ID']}")
+        else:
+            h_ranges.append(parsed)
+    check_disjoint(lint, plan, ranges)
+    check_disjoint(lint, plan, h_ranges)
+    check_identifier_exhaustion(lint, plan, ranges)
+    for _letter, _start, end in h_ranges:
+        if end >= 9999:
+            lint.fail(f"{plan}: handoff identifier space exhausted at H-9999")
+    coord = [parse_range(f"{a}–{b}") for a, b in COORD_RE.findall(text)]
+    coord = [item for item in coord if item]
+    matches = ADJUDICATION_RANGE_RE.findall(text)
+    adjudication = [parse_range(f"{start}–{end}") for start, end in matches]
+    adjudication = [item for item in adjudication if item]
+    if len(adjudication) != 1 or adjudication[0][2] - adjudication[0][1] + 1 != 50:
+        lint.fail(f"{plan}: expected exactly one 50-ID adjudication C-mint range")
+    check_disjoint(lint, plan, ranges + coord + adjudication)
+    if len([item for item in coord if item[0] == "C"]) != 1 \
+            or len([item for item in coord if item[0] == "O"]) != 1:
+        lint.fail(f"{plan}: expected exactly one merge-coordinator range each for C- and O-")
+    try:
+        validate_partition(allocations, manifest["paper_source_set"], audit.parent)
+    except (KeyError, ValueError, OSError) as exc:
+        lint.fail(f"{plan}: {exc}")
+    return allocations, coord
+
+
+def stage_b1(lint, audit, stream, manifest=None):
+    manifest = manifest or {}
     if stream == "claims":
         plan = audit / "plans" / "claims_review_plan.md"
+        if manifest.get("paper_source_set") is not None:
+            _stage_b1_claim_handoffs(lint, audit, manifest, plan)
+            return
         alloc, coord = parse_plan(lint, plan, "Worker ID")
         if alloc is None:
             return
@@ -797,6 +1623,7 @@ def stage_b1(lint, audit, stream):
         check_unique(lint, plan, [a["Shard File"] for a in alloc], "Shard File")
         ranges = alloc_ranges(lint, plan, alloc, ["Claim ID Range", "Output ID Range"])
         check_disjoint(lint, plan, ranges + coord)
+        check_identifier_exhaustion(lint, plan, ranges + coord)
         if len([c for c in coord if c[0] == "C"]) != 1 or len([c for c in coord if c[0] == "O"]) != 1:
             lint.fail(f"{plan}: expected exactly one merge-coordinator range each for C- and O-")
     else:
@@ -808,6 +1635,7 @@ def stage_b1(lint, audit, stream):
         check_unique(lint, plan, [a["Shard File"] for a in alloc], "Shard File")
         ranges = alloc_ranges(lint, plan, alloc, ["Error ID Range"])
         check_disjoint(lint, plan, ranges + coord)
+        check_identifier_exhaustion(lint, plan, ranges + coord)
         if len([c for c in coord if c[0] == "E"]) != 1:
             lint.fail(f"{plan}: expected exactly one merge-coordinator range for E-")
         # every inventory script in exactly one chunk (token match, not substring)
@@ -830,14 +1658,45 @@ def stage_b1(lint, audit, stream):
                 n = sum(1 for a in alloc if script in scope_tokens(a["Script Scope"]))
                 if n != 1:
                     lint.fail(f"{plan}: inventory script '{script}' appears in {n} chunks (expected exactly 1)")
+        hygiene = None
+        for headers, rows, _ in parse_tables(text):
+            if headers == ["Hygiene File", "Chunk"]:
+                hygiene = []
+                for index, row in enumerate(rows, start=1):
+                    if len(row) != len(headers):
+                        lint.fail(
+                            f"{plan}: hygiene inventory row {index} has {len(row)} cells, "
+                            f"expected {len(headers)}"
+                        )
+                    else:
+                        hygiene.append(dict(zip(headers, row)))
+                break
+        if not hygiene:
+            lint.fail(
+                f"{plan}: hygiene file inventory table with exact columns "
+                "'Hygiene File | Chunk' is required and cannot be empty"
+            )
+        else:
+            allocation_by_chunk = {a["Chunk ID"]: a for a in alloc}
+            seen_hygiene = set()
+            for row in hygiene:
+                path = row["Hygiene File"].strip().strip("`")
+                if path in seen_hygiene:
+                    lint.fail(f"{plan}: duplicate hygiene file {path!r}")
+                seen_hygiene.add(path)
+                if row["Chunk"] not in allocation_by_chunk:
+                    lint.fail(
+                        f"{plan}: hygiene file {path!r} names unknown chunk {row['Chunk']!r}"
+                    )
 
 
 def shard_footer(lint, path, text):
+    # U6a replaces free-form coordinator notes with a typed entry table.
+    # Coverage remains stream-specific: code uses the exact table grammar;
+    # claims keeps its exhaustive prose checklist.
     low = text.lower()
     if "coverage" not in low:
         lint.fail(f"{path}: missing coverage note in shard footer")
-    if "coordinator notes" not in low:
-        lint.fail(f"{path}: missing coordinator-notes footer")
 
 
 def find_alloc_for_shard(alloc, shard):
@@ -845,6 +1704,188 @@ def find_alloc_for_shard(alloc, shard):
         if a["Shard File"].strip("`") == str(shard) or str(shard).endswith(a["Shard File"].strip("`")):
             return a
     return None
+
+
+def _exact_or_empty_table(lint, path, text, columns, empty_sentence, label):
+    matches = [(rows, line) for headers, rows, line in parse_tables(text)
+               if headers == columns]
+    has_empty = bool(re.search(
+        rf"(?m)^\s*{re.escape(empty_sentence)}\s*$", text
+    ))
+    if len(matches) > 1 or (matches and has_empty):
+        lint.fail(f"{path}: {label} must use exactly one table or exact empty form")
+        return []
+    if not matches:
+        if not has_empty:
+            lint.fail(f"{path}: missing {label}; use exact empty form '{empty_sentence}'")
+        return []
+    rows, _line = matches[0]
+    output = []
+    for index, row in enumerate(rows, start=1):
+        if len(row) != len(columns):
+            lint.fail(f"{path}: {label} row {index} has {len(row)} cells, expected {len(columns)}")
+        else:
+            output.append(dict(zip(columns, row)))
+    return output
+
+
+def _claims_rows_by_id(claims_rows):
+    """Canon membership map for coverage citations. Paper Context stays the
+    prose locator registers.md mandates; the machine anchor travels on the
+    coverage/resolution entry's Covering Range / Covering Quote cells."""
+    by_id = {}
+    for row in claims_rows:
+        claim = dict(zip(CLAIMS_COLS, row)) if not isinstance(row, dict) else row
+        by_id[claim["Claim ID"]] = claim
+    return by_id
+
+
+def _validate_coverage_row(lint, path, row, obligation_anchor, claims_by_id,
+                           source_set, package_root):
+    from claim_handoffs import validate_disposition
+    outcome = row["Outcome"]
+    if outcome == "covered":
+        claim_id = row["C-ID / Reason"]
+        claim = claims_by_id.get(claim_id)
+        if claim is None:
+            lint.fail(f"{path}: covered obligation cites absent claim {claim_id}")
+            return
+        if row["Covering Quote"] != claim["Paper Quote"]:
+            lint.fail(f"{path}: covering quote for {claim_id} is not verbatim Paper Quote")
+            return
+        try:
+            carried = resolve_quote(
+                source_set, row["Covering Range"], row["Covering Quote"], package_root
+            )
+        except AnchorError as exc:
+            lint.fail(f"{path}: {exc}")
+            return
+        if not anchor_contains(carried, obligation_anchor):
+            lint.fail(f"{path}: covering row {claim_id} does not contain the obligation assertion")
+        if not blank_cell(row["Evidence"]):
+            lint.fail(f"{path}: covered obligation Evidence must be blank")
+    elif outcome == "disposition":
+        try:
+            validate_disposition(row["C-ID / Reason"], row["Evidence"])
+        except ValueError as exc:
+            lint.fail(f"{path}: {exc}")
+        if not (blank_cell(row["Covering Range"]) and blank_cell(row["Covering Quote"])):
+            lint.fail(f"{path}: disposition covering range and quote must be blank")
+    else:
+        lint.fail(f"{path}: invalid terminal outcome {outcome!r}")
+
+
+def _validate_u7_b2_shard(lint, audit, shard, text, allocation, claims_rows, manifest):
+    from claim_handoffs import (
+        HANDOFF_COLS, X_COVERAGE_COLS, parse_h_range,
+    )
+    handoffs = _exact_or_empty_table(
+        lint, shard, text, HANDOFF_COLS, "No handoffs.", "Handoffs"
+    )
+    coverage = _exact_or_empty_table(
+        lint, shard, text, X_COVERAGE_COLS, "No assigned cross-references.",
+        "Cross-reference coverage",
+    )
+    source_set = manifest["paper_source_set"]
+    h_range = parse_h_range(allocation.get("H ID Range"))
+    seen = set()
+    for row in handoffs:
+        handoff_id = row["H ID"]
+        if not re.fullmatch(r"H-\d{4}", handoff_id):
+            lint.fail(f"{shard}: invalid handoff ID {handoff_id!r}")
+        elif handoff_id in seen:
+            lint.fail(f"{shard}: duplicate handoff ID {handoff_id}")
+        elif h_range is None or not (h_range[1] <= int(handoff_id[2:]) <= h_range[2]):
+            lint.fail(f"{shard}: {handoff_id} outside the shard's allocated H range")
+        seen.add(handoff_id)
+        if blank_cell(row["Asserted Substance"]) or "\n" in row["Asserted Substance"]:
+            lint.fail(f"{shard}: {handoff_id} requires one-sentence Asserted Substance")
+        try:
+            resolve_quote(source_set, row["Anchor"], row["Quote"], audit.parent)
+        except AnchorError as exc:
+            lint.fail(f"{shard}: {handoff_id}: {exc}")
+    inventory_path = audit / "_run" / "crossref_inventory.json"
+    assignments_path = audit / "_run" / "crossref_assignments.json"
+    try:
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        assignments = json.loads(assignments_path.read_text(encoding="utf-8"))["assignments"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        lint.fail(f"{shard}: cannot load crossref artifacts: {exc}")
+        return
+    by_id = {entry["id"]: entry for entry in inventory.get("entries", [])}
+    expected = {x_id for x_id, worker in assignments.items()
+                if worker == allocation["Worker ID"]}
+    actual = [row["X ID"] for row in coverage]
+    if len(actual) != len(set(actual)):
+        lint.fail(f"{shard}: duplicate X coverage ID")
+    if set(actual) != expected:
+        lint.fail(f"{shard}: X coverage IDs do not equal assignment; "
+                  f"missing={sorted(expected - set(actual))}, extra={sorted(set(actual) - expected)}")
+    claims_by_id = _claims_rows_by_id(claims_rows)
+    for row in coverage:
+        obligation = by_id.get(row["X ID"])
+        if obligation is None:
+            continue
+        _validate_coverage_row(
+            lint, shard, row, obligation["anchor"], claims_by_id,
+            source_set, audit.parent,
+        )
+
+
+def _validate_u7_b3b_resolutions(lint, audit, shard, text, allocation,
+                                 claims_rows, manifest):
+    from claim_handoffs import HANDOFF_COLS, HANDOFF_RESOLUTION_COLS
+    ledger_path = audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        lint.fail(f"{ledger_path}: invalid handoff ledger ({exc})")
+        return set()
+    filed = {entry["id"]: entry for entry in ledger.get("H", [])}
+    raw = allocation["Assigned Handoff IDs"]
+    assigned = set() if blank_cell(raw) else {item.strip() for item in raw.split(",")}
+    rows = _exact_or_empty_table(
+        lint, shard, text, HANDOFF_RESOLUTION_COLS, "No assigned handoffs.",
+        "Handoffs resolution",
+    )
+    actual = [row["H ID"] for row in rows]
+    if len(actual) != len(set(actual)):
+        lint.fail(f"{shard}: duplicate Handoff resolution ID")
+    if set(actual) != assigned:
+        lint.fail(f"{shard}: handoff resolution IDs do not equal Assigned Handoff IDs; "
+                  f"missing={sorted(assigned - set(actual))}, extra={sorted(set(actual) - assigned)}")
+    source_set = manifest["paper_source_set"]
+    claims_by_id = _claims_rows_by_id(claims_rows)
+    cited = set()
+    for row in rows:
+        original = filed.get(row["H ID"])
+        if original is None:
+            lint.fail(f"{shard}: resolution names unknown handoff {row['H ID']}")
+            continue
+        copied = {
+            "H ID": original["id"], "Anchor": original["anchor"],
+            "Quote": original["quote"],
+            "Asserted Substance": original["asserted_substance"],
+            "Referenced Objects": original["referenced_objects"],
+        }
+        for column in HANDOFF_COLS:
+            if row[column] != copied[column]:
+                lint.fail(f"{shard}: {row['H ID']} changes filed {column}")
+        synthetic = {
+            "Outcome": "covered" if row["Resolution"] == "resolved" else row["Resolution"],
+            "C-ID / Reason": row["C-ID / Reason"], "Evidence": row["Evidence"],
+            "Covering Range": row["Covering Range"], "Covering Quote": row["Covering Quote"],
+        }
+        if row["Resolution"] not in {"resolved", "disposition"}:
+            lint.fail(f"{shard}: invalid handoff Resolution {row['Resolution']!r}")
+            continue
+        _validate_coverage_row(
+            lint, shard, synthetic, original["resolved_anchor"], claims_by_id,
+            source_set, audit.parent,
+        )
+        if row["Resolution"] == "resolved" and re.fullmatch(r"C-\d{4}", row["C-ID / Reason"]):
+            cited.add(row["C-ID / Reason"])
+    return cited
 
 
 def stage_b2(lint, audit, stream, shard):
@@ -889,6 +1930,14 @@ def stage_b2(lint, audit, stream, shard):
         )
         check_abs_paths(lint, shard, c_rows, CLAIMS_COLS, ["Code/Data Source"])
         check_abs_paths(lint, shard, o_rows, OUTPUT_COLS, ["Output Path/Pattern", "Producing Script"])
+        manifest_path = audit / "_run" / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                manifest = {}
+            if manifest.get("paper_source_set") is not None:
+                _validate_u7_b2_shard(lint, audit, shard, text, a, c_rows, manifest)
     else:
         alloc, _ = parse_plan(lint, audit / "plans" / "code_error_review_plan.md", "Chunk ID")
         a = find_alloc_for_shard(alloc, shard)
@@ -910,6 +1959,8 @@ def stage_b2(lint, audit, stream, shard):
                 lint.fail(f"{shard}: Related Claim IDs must be empty at b2")
         check_abs_paths(lint, shard, e_rows, ERROR_COLS, ["Code/Data Source", "Code Location"])
     shard_footer(lint, shard, text)
+    entries, coverage = typed_shard_footer(lint, shard, text, stream)
+    validate_footer_candidates(lint, shard, text, stream, entries, coverage)
 
 
 def load_register(lint, path, cols, allow_extra=False):
@@ -928,70 +1979,231 @@ def load_register(lint, path, cols, allow_extra=False):
     return cols, [r for r in rows if not is_example_row(r)]
 
 
-def stage_b3(lint, audit, stream):
-    staging = audit / "_staging"
+def code_review_inventory(lint, plan, allocations):
+    """Return inventory path -> owning declared shard, including hygiene."""
+    text = read_text(lint, plan)
+    if text is None:
+        return {}
+    shard_by_chunk = {
+        row["Chunk ID"]: normalized_audit_path(row["Shard File"])
+        for row in allocations or []
+    }
+    inventory = {}
+    script_table = hygiene_table = None
+    for headers, rows, _line in parse_tables(text):
+        if "Script" in headers and "Chunk" in headers and script_table is None:
+            script_table = (headers, rows)
+        if headers == ["Hygiene File", "Chunk"]:
+            hygiene_table = (headers, rows)
+    for label, table, path_col in (
+            ("script", script_table, "Script"),
+            ("hygiene", hygiene_table, "Hygiene File")):
+        if table is None:
+            lint.fail(f"{plan}: missing {label} inventory table")
+            continue
+        headers, rows = table
+        for index, row in enumerate(rows, start=1):
+            if len(row) != len(headers):
+                lint.fail(f"{plan}: malformed {label} inventory row {index}")
+                continue
+            data = dict(zip(headers, row))
+            path = data[path_col].strip().strip("`")
+            owner = shard_by_chunk.get(data["Chunk"])
+            if not owner:
+                lint.fail(
+                    f"{plan}: {label} inventory path {path!r} names unknown chunk "
+                    f"{data['Chunk']!r}"
+                )
+                continue
+            if path in inventory:
+                lint.fail(f"{plan}: inventory path {path!r} is declared more than once")
+            inventory[path] = owner
+    hygiene_owners = sorted({owner for path, owner in inventory.items()
+                             if hygiene_table and path in {
+                                 row[0].strip().strip("`") for row in hygiene_table[1]
+                                 if len(row) == 2
+                             }})
+    if len(hygiene_owners) != 1:
+        lint.fail(
+            f"{plan}: hygiene files must belong to exactly one shard, got {hygiene_owners}"
+        )
+    else:
+        inventory[HYGIENE_SINGLETON] = hygiene_owners[0]
+    return inventory
+
+
+def manifest_shard_state(manifest, stage, wire):
+    entry = manifest.get("stages", {}).get(stage, {}) if isinstance(manifest, dict) else {}
+    shards = entry.get("shards", {}) if isinstance(entry, dict) else {}
+    for raw, value in (shards.items() if isinstance(shards, dict) else ()):
+        if normalized_audit_path(raw) == wire and isinstance(value, dict):
+            return value.get("status")
+    return None
+
+
+def reconcile_code_coverage(lint, audit, plan, allocations, manifest):
+    """Prove every code/hygiene inventory key has one earned outcome."""
+    inventory = code_review_inventory(lint, plan, allocations)
+    observed = {}
+    for allocation in allocations or []:
+        wire = normalized_audit_path(allocation["Shard File"])
+        if manifest_shard_state(manifest, "code_b2", wire) == "blocked":
+            continue
+        path = audit_path(audit, wire)
+        text = read_text(lint, path)
+        if text is None:
+            continue
+        entries, coverage = typed_shard_footer(lint, path, text, "code")
+        validate_footer_candidates(lint, path, text, "code", entries, coverage)
+        for row in coverage:
+            row = {**row, "shard": wire}
+            observed.setdefault(row["script"], []).append(row)
+    unreviewed = []
+    for path, owner in sorted(inventory.items()):
+        rows = observed.get(path, [])
+        blocked_owner = manifest_shard_state(manifest, "code_b2", owner) == "blocked"
+        if blocked_owner:
+            if rows:
+                lint.fail(
+                    f"coverage: blocked owner {owner} for {path!r} conflicts with "
+                    f"{len(rows)} coverage row(s)"
+                )
+            unreviewed.append(path)
+            continue
+        if len(rows) != 1:
+            lint.fail(
+                f"coverage: inventory path {path!r} has {len(rows)} coverage rows "
+                "across all shards (expected exactly 1)"
+            )
+    for path, rows in sorted(observed.items()):
+        if path not in inventory:
+            lint.fail(f"coverage: shard row names non-inventory path {path!r}")
+        if len(rows) > 1:
+            outcomes = [row["outcome"] for row in rows]
+            lint.fail(f"coverage: conflicting outcomes for {path!r}: {outcomes}")
+    earned = {
+        path: (rows[0]["outcome"] if len(rows) == 1 else None)
+        for path, rows in sorted(observed.items()) if path in inventory
+    }
+    return unreviewed, earned
+
+
+# U6a phase-C erratum (checklist §3): the b3/b3b certification obligations
+# read immutable evidence only — promoted canonical registers, frozen stage
+# snapshots, and shard files — never ``audit/_staging``. Promotion atomically
+# renames staging over canon, so at certification time canon IS the promoted
+# stage output; once a later stage freezes its pre-merge snapshot, that copy
+# is the exact stage-era state for every re-verification after canon evolves.
+POST_STAGE_SNAPSHOTS = {
+    ("b3", "claims"): ("claims_b3b",),
+    ("b3", "code"): ("code_b3d",),
+    ("b3b", "claims"): ("claims_adjudication", "claims_b6a"),
+    ("b3b", "code"): ("code_b6a",),
+}
+
+
+def promoted_register(lint, audit, boundary, stream, fname, cols):
+    """Load the frozen post-stage register evidence for one boundary."""
+    for name in POST_STAGE_SNAPSHOTS[(boundary, stream)]:
+        path = audit / "_run" / "snapshots" / name / fname
+        if path.is_file():
+            return path, load_register(lint, path, cols)
+    path = audit / fname
+    return path, load_register(lint, path, cols)
+
+
+def _validate_handoff_report_block(lint, audit, report_path, report, stage):
+    ledger_path = audit / "_run" / "snapshots" / stage / "handoff_ledger.json"
+    if not ledger_path.is_file():
+        return
+    try:
+        payload = ledger_path.read_bytes()
+        ledger = json.loads(payload)
+    except (OSError, json.JSONDecodeError) as exc:
+        lint.fail(f"{ledger_path}: invalid immutable handoff ledger ({exc})")
+        return
+    expected = {
+        "H": len(ledger.get("H", [])), "X": len(ledger.get("X", [])),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    if report.get("handoff_ledger") != expected:
+        lint.fail(f"{report_path}: handoff_ledger block disagrees with {ledger_path}")
+
+
+def stage_b3(lint, audit, stream, manifest):
+    worker_stage = f"{stream}_b2"
+    # Direct synthetic row tests from before U6 do not model the worker stage.
+    # Every initialized production manifest does, so the read-layer contract is
+    # enforced at all real b3 certification boundaries without weakening those
+    # older, intentionally narrow test fixtures.
+    enforce_read_layer = worker_stage in manifest.get("stages", {})
     if stream == "claims":
         plan = audit / "plans" / "claims_review_plan.md"
         alloc, _ = parse_plan(lint, plan, "Worker ID")
         ranges = alloc_ranges(lint, plan, alloc or [], ["Claim ID Range", "Output ID Range"]) if alloc else []
-        c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS)
-        o = load_register(lint, staging / "output_register.md", OUTPUT_COLS)
+        c_path, c = promoted_register(
+            lint, audit, "b3", stream, "claims_register.md", CLAIMS_COLS)
+        o_path, o = promoted_register(
+            lint, audit, "b3", stream, "output_register.md", OUTPUT_COLS)
         report_path = audit / "_run" / "merge_report_claims.json"
         if c is None or o is None:
             return
         _, c_rows = c
         _, o_rows = o
-        check_claims_rows(lint, staging / "claims_register.md", c_rows)
-        check_output_rows(lint, staging / "output_register.md", o_rows)
+        check_claims_rows(lint, c_path, c_rows)
+        check_output_rows(lint, o_path, o_rows)
         cids = col(c_rows, CLAIMS_COLS, "Claim ID")
         oids = col(o_rows, OUTPUT_COLS, "Output ID")
-        check_unique(lint, staging, cids + oids, "ID")
+        check_unique(lint, c_path.parent, cids + oids, "ID")
         for i in cids + oids:
             if ranges and not in_ranges(i, ranges):
-                lint.fail(f"staging: {i} outside union of planned worker ranges")
+                lint.fail(f"merged register: {i} outside union of planned worker ranges")
         for v in col(c_rows, CLAIMS_COLS, "Related Error IDs"):
             if v:
-                lint.fail("staging claims: Related Error IDs must still be blank at b3")
+                lint.fail("merged claims: Related Error IDs must still be blank at b3")
         check_bidirectional(
             lint, c_rows, CLAIMS_COLS, "Claim ID", "Output IDs",
             o_rows, OUTPUT_COLS, "Output ID", "Claim IDs", "b3 C<->O",
         )
         counts = {"claims_register.md": len(c_rows), "output_register.md": len(o_rows)}
+        staging_ids = set(cids + oids)
+        unreviewed = None
     else:
         plan = audit / "plans" / "code_error_review_plan.md"
         alloc, _ = parse_plan(lint, plan, "Chunk ID")
         ranges = alloc_ranges(lint, plan, alloc or [], ["Error ID Range"]) if alloc else []
-        e = load_register(lint, staging / "code_error_register.md", ERROR_COLS)
+        e_path, e = promoted_register(
+            lint, audit, "b3", stream, "code_error_register.md", ERROR_COLS)
         report_path = audit / "_run" / "merge_report_code.json"
         if e is None:
             return
         _, e_rows = e
-        check_error_rows(lint, staging / "code_error_register.md", e_rows)
+        check_error_rows(lint, e_path, e_rows)
+        mode = (manifest or {}).get("mode", "replication")
+        for raw in e_rows:
+            row = dict(zip(ERROR_COLS, raw))
+            if row.get("Severity") not in {"3", "4"}:
+                continue
+            token, problem = severity_tokens.row_token_state(row, mode)
+            if token is None:
+                lint.warn(
+                    f"severity-token: {row['Error ID']} Severity {row['Severity']} "
+                    f"has no qualifying terminal token ({problem})")
         eids = col(e_rows, ERROR_COLS, "Error ID")
-        check_unique(lint, staging, eids, "Error ID")
+        check_unique(lint, e_path.parent, eids, "Error ID")
         for i in eids:
             if ranges and not in_ranges(i, ranges):
-                lint.fail(f"staging: {i} outside union of planned chunk ranges")
+                lint.fail(f"merged register: {i} outside union of planned chunk ranges")
         for v in col(e_rows, ERROR_COLS, "Related Claim IDs"):
             if v:
-                lint.fail("staging errors: Related Claim IDs must still be blank at b3")
-        # coverage: every inventory script has a coverage-table row in some shard
-        text = plan.read_text(encoding="utf-8") if plan.is_file() else ""
-        scripts = []
-        for headers, rows, _ in parse_tables(text):
-            if "Script" in headers and "Chunk" in headers:
-                scripts = [dict(zip(headers, r))["Script"].strip("`") for r in rows if len(r) == len(headers)]
-                break
-        covered = set()
-        for p in sorted((audit / "_code_errors").glob("*.md")):
-            for headers, rows, _ in parse_tables(p.read_text(encoding="utf-8", errors="replace")):
-                if "Script" in headers and "Outcome" in headers:
-                    si = headers.index("Script")
-                    covered |= {r[si].strip().strip("`") for r in rows if len(r) == len(headers)}
-        for s in scripts:
-            if s and s not in covered:
-                lint.fail(f"coverage: inventory script '{s}' has no coverage-table row in any code shard")
+                lint.fail("merged errors: Related Claim IDs must still be blank at b3")
+        if enforce_read_layer:
+            unreviewed, coverage_outcomes = reconcile_code_coverage(
+                lint, audit, plan, alloc, manifest)
+        else:
+            unreviewed, coverage_outcomes = [], {}
         counts = {"code_error_register.md": len(e_rows)}
+        staging_ids = set(eids)
     rep_text = read_text(lint, report_path)
     if rep_text is None:
         return
@@ -1000,6 +2212,32 @@ def stage_b3(lint, audit, stream):
     except json.JSONDecodeError as exc:
         lint.fail(f"{report_path}: invalid JSON ({exc})")
         return
+    if stream == "claims":
+        _validate_handoff_report_block(
+            lint, audit, report_path, rep, "claims_b3"
+        )
+    if enforce_read_layer:
+        reconcile_footer_dispositions(
+            lint, audit, alloc, stream, report_path, rep, staging_ids, manifest,
+            worker_stage,
+        )
+    if stream == "code" and enforce_read_layer:
+        reported = rep.get("unreviewed_files")
+        if not isinstance(reported, list):
+            lint.fail(f"{report_path}: must carry list-valued 'unreviewed_files'")
+        elif sorted(reported) != sorted(unreviewed):
+            lint.fail(
+                f"{report_path}: unreviewed_files {sorted(reported)} != "
+                f"manifest-backed blocked inventory {sorted(unreviewed)}"
+            )
+        recorded_outcomes = rep.get("coverage_outcomes")
+        if not isinstance(recorded_outcomes, dict):
+            lint.fail(f"{report_path}: must carry object-valued 'coverage_outcomes'")
+        elif recorded_outcomes != coverage_outcomes:
+            lint.fail(
+                f"{report_path}: coverage_outcomes disagree with shard evidence; "
+                f"recorded={recorded_outcomes}, observed={coverage_outcomes}"
+            )
     for reg, n in counts.items():
         entry = rep.get(reg)
         if not isinstance(entry, dict):
@@ -1013,7 +2251,7 @@ def stage_b3(lint, audit, stream):
         if sr - dd != ad:
             lint.fail(f"{report_path}: '{reg}' identity violated: {sr} - {dd} != {ad}")
         if ad != n:
-            lint.fail(f"{report_path}: '{reg}' added={ad} but staging register has {n} rows")
+            lint.fail(f"{report_path}: '{reg}' added={ad} but merged register has {n} rows")
         for key in ("conflicts", "coverage_gaps", "blocked_shards"):
             if not isinstance(entry.get(key), list):
                 lint.fail(f"{report_path}: '{reg}' must carry list-valued '{key}'")
@@ -1021,12 +2259,12 @@ def stage_b3(lint, audit, stream):
 
 def stage_b3b(lint, audit, stream, manifest):
     """Second-read recall sweep merge: new rows only, all unverified candidates, no b3 row
-    deleted or mutated. Compares staging against the pre-sweep (b3b) snapshot."""
+    deleted or mutated. Compares the promoted post-b3b evidence against the
+    pre-sweep (b3b) snapshot; never reads ``audit/_staging`` (phase-C erratum)."""
     snap = audit / "_run" / "snapshots" / SNAP_KEY[f"b3b-{stream}"]
-    staging = audit / "_staging"
     if stream == "claims":
         plan = audit / "plans" / "claims_second_read_plan.md"
-        alloc, _ = parse_plan(lint, plan, "Worker ID")
+        alloc, coord = second_read_allocations(lint, plan, stream)
         ranges = alloc_ranges(lint, plan, alloc or [], ["Claim ID Range", "Output ID Range"]) if alloc else []
         files = [("claims_register.md", CLAIMS_COLS, "Claim ID"), ("output_register.md", OUTPUT_COLS, "Output ID")]
         report_path = audit / "_run" / "merge_report_claims_b3b.json"
@@ -1035,64 +2273,115 @@ def stage_b3b(lint, audit, stream, manifest):
         b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Claim ID Range", "Output ID Range"]) if b1_alloc else []
     else:
         plan = audit / "plans" / "code_error_second_read_plan.md"
-        alloc, _ = parse_plan(lint, plan, "Worker ID")
+        alloc, coord = second_read_allocations(lint, plan, stream)
         ranges = alloc_ranges(lint, plan, alloc or [], ["Error ID Range"]) if alloc else []
         files = [("code_error_register.md", ERROR_COLS, "Error ID")]
         report_path = audit / "_run" / "merge_report_code_b3b.json"
         b1_plan = audit / "plans" / "code_error_review_plan.md"
         b1_alloc, b1_coord = parse_plan(lint, b1_plan, "Chunk ID")
         b1_ranges = alloc_ranges(lint, b1_plan, b1_alloc or [], ["Error ID Range"]) if b1_alloc else []
+        detector_ranges = []
+        mapping_path = audit / "_run" / "detector_mapping.md"
+        if mapping_path.exists():
+            try:
+                declared, _display, _rows = detector_mapping.load_mapping(mapping_path)
+                detector_ranges.append(declared)
+            except detector_mapping.MappingError as exc:
+                lint.fail(f"{mapping_path}: {exc}")
     check_manifest_worker_shards(
         lint, manifest, f"{stream}_b3b", plan, "Worker ID", alloc,
     )
     # machinery (a): b3b ranges disjoint from b1 ranges, the merge-coordinator range, and each other
-    check_disjoint(lint, plan, ranges + b1_ranges + b1_coord)
+    check_disjoint(lint, plan, ranges + coord + b1_ranges + b1_coord
+                   + (detector_ranges if stream == "code" else []))
+    check_identifier_exhaustion(
+        lint, plan, ranges + coord + b1_ranges + b1_coord
+        + (detector_ranges if stream == "code" else []),
+    )
+    handoff_resolution_cids = set()
+    if stream == "claims" and (
+            audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json").is_file():
+        from claim_handoffs import HANDOFF_RESOLUTION_COLS
+        for allocation in alloc or []:
+            if manifest_shard_state(
+                    manifest, "claims_b3b",
+                    normalized_audit_path(allocation["Shard File"])) == "blocked":
+                continue
+            shard_path = audit_path(audit, allocation["Shard File"])
+            shard_text = read_text(lint, shard_path)
+            if shard_text is None:
+                continue
+            for row in tables_by_cols(
+                    lint, shard_path, shard_text, HANDOFF_RESOLUTION_COLS,
+                    "handoff resolutions"):
+                if row["Resolution"] == "resolved":
+                    handoff_resolution_cids.add(row["C-ID / Reason"])
+    if stream == "code" and "code_b3d" in (
+            manifest.get("stages", {}) if isinstance(manifest, dict) else {}):
+        # The post-b3d ordering of the b3b baseline is enforced structurally:
+        # the plan builder refuses to run before code_b3d is certified done,
+        # and --check reads only the frozen code_b3b snapshot (test-pinned per
+        # the checklist; the phase-C erratum removed the runtime mtime check).
+        command = [
+            sys.executable, str(Path(__file__).with_name("build_second_read_plan.py")),
+            str(audit.parent), "--audit-dir", str(audit), "--check",
+        ]
+        checked = subprocess.run(command, capture_output=True, text=True)
+        if checked.returncode:
+            lint.fail(
+                "code second-read plan does not match recomputed trigger/sample: "
+                + (checked.stderr or checked.stdout).strip()
+            )
 
     total_new = 0
     for f, cols, idc in files:
-        st = load_register(lint, staging / f, cols)
+        st_path, st = promoted_register(lint, audit, "b3b", stream, f, cols)
         sn = load_register(lint, snap / f, cols)
         if st is None or sn is None:
             continue
         _, st_rows = st
         _, sn_rows = sn
         if f == "claims_register.md":
-            check_claims_rows(lint, staging / f, st_rows)
+            check_claims_rows(lint, st_path, st_rows)
         elif f == "output_register.md":
-            check_output_rows(lint, staging / f, st_rows)
+            check_output_rows(lint, st_path, st_rows)
         else:
-            check_error_rows(lint, staging / f, st_rows)
+            check_error_rows(lint, st_path, st_rows)
         st_ids = col(st_rows, cols, idc)
-        check_unique(lint, staging / f, st_ids, idc)
+        check_unique(lint, st_path, st_ids, idc)
         st_by = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in st_rows}
         sn_by = {dict(zip(cols, r))[idc]: dict(zip(cols, r)) for r in sn_rows}
         st_set, sn_set = set(st_by), set(sn_by)
         for i in sorted(sn_set - st_set):
-            lint.fail(f"{staging / f}: b3 row {i} deleted at second-read merge (rows are never deleted)")
+            lint.fail(f"{st_path}: b3 row {i} deleted at second-read merge (rows are never deleted)")
         for i in sorted(sn_set & st_set):
             for c in cols:
                 if st_by[i][c] != sn_by[i][c]:
-                    lint.fail(f"{staging / f}: b3 row {i} column '{c}' changed at second-read merge (the sweep only adds rows)")
+                    lint.fail(f"{st_path}: b3 row {i} column '{c}' changed at second-read merge (the sweep only adds rows)")
         new_ids = st_set - sn_set
         total_new += len(new_ids)
         for i in sorted(new_ids):
             if ranges and not in_ranges(i, ranges):
-                lint.fail(f"{staging / f}: new second-read row {i} outside the b3b-allocated ranges")
+                lint.fail(f"{st_path}: new second-read row {i} outside the b3b-allocated ranges")
             status = st_by[i]["Status"]
             if f == "code_error_register.md" and status != "candidate":
-                lint.fail(f"{staging / f}: new second-read row {i} status '{status}' (must be 'candidate')")
-            elif f == "claims_register.md" and status not in {"inconsistent", "unclear"}:
-                lint.fail(f"{staging / f}: new second-read claim {i} status '{status}' (must be 'inconsistent' or 'unclear')")
+                lint.fail(f"{st_path}: new second-read row {i} status '{status}' (must be 'candidate')")
+            elif (f == "claims_register.md"
+                  and status not in {"inconsistent", "unclear"}
+                  and i not in handoff_resolution_cids):
+                lint.fail(f"{st_path}: new second-read claim {i} status '{status}' (must be 'inconsistent' or 'unclear')")
             elif f == "output_register.md" and status not in {"mapped", "orphan", "unclear", "inconsistent"}:
-                lint.fail(f"{staging / f}: new second-read output {i} status '{status}' (must be mapped/orphan/unclear/inconsistent)")
+                lint.fail(f"{st_path}: new second-read output {i} status '{status}' (must be mapped/orphan/unclear/inconsistent)")
         link_col = {"claims_register.md": "Related Error IDs", "code_error_register.md": "Related Claim IDs"}.get(f)
         if link_col:
             for v in col(st_rows, cols, link_col):
                 if v:
-                    lint.fail(f"{staging / f}: {link_col} must still be blank at b3b (cross-link is a later stage)")
+                    lint.fail(f"{st_path}: {link_col} must still be blank at b3b (cross-link is a later stage)")
     if stream == "claims":
-        c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS)
-        o = load_register(lint, staging / "output_register.md", OUTPUT_COLS)
+        _c_path, c = promoted_register(
+            lint, audit, "b3b", stream, "claims_register.md", CLAIMS_COLS)
+        _o_path, o = promoted_register(
+            lint, audit, "b3b", stream, "output_register.md", OUTPUT_COLS)
         if c and o:
             check_bidirectional(
                 lint, c[1], CLAIMS_COLS, "Claim ID", "Output IDs",
@@ -1106,6 +2395,19 @@ def stage_b3b(lint, audit, stream, manifest):
     except json.JSONDecodeError as exc:
         lint.fail(f"{report_path}: invalid JSON ({exc})")
         return
+    if stream == "claims":
+        _validate_handoff_report_block(
+            lint, audit, report_path, rep, "claims_b3b"
+        )
+    staging_ids = set()
+    for f, cols, idc in files:
+        _path, loaded = promoted_register(lint, audit, "b3b", stream, f, cols)
+        if loaded:
+            staging_ids.update(col(loaded[1], cols, idc))
+    reconcile_footer_dispositions(
+        lint, audit, alloc, stream, report_path, rep, staging_ids, manifest,
+        f"{stream}_b3b",
+    )
     added_total = 0
     for f, cols, idc in files:
         entry = rep.get(f)
@@ -1121,7 +2423,7 @@ def stage_b3b(lint, audit, stream, manifest):
             lint.fail(f"{report_path}: '{f}' identity violated: {sr} - {dd} != {ad}")
         added_total += ad
     if added_total != total_new:
-        lint.fail(f"{report_path}: added total {added_total} != {total_new} new row(s) in staging")
+        lint.fail(f"{report_path}: added total {added_total} != {total_new} new row(s) in the merged register")
 
 
 # --- U8 (b): b3b second-read shard boundary check ----------------------------
@@ -1146,7 +2448,7 @@ def second_read_plan_path(audit, stream):
 
 def stage_b3b_shard(lint, audit, stream, shard):
     plan = second_read_plan_path(audit, stream)
-    alloc, _ = parse_plan(lint, plan, "Worker ID")
+    alloc, _ = second_read_allocations(lint, plan, stream)
     text = read_text(lint, shard)
     if text is None:
         return
@@ -1163,6 +2465,18 @@ def stage_b3b_shard(lint, audit, stream, shard):
             return
         check_claims_rows(lint, shard, c_rows)
         check_output_rows(lint, shard, o_rows)
+        manifest = {}
+        manifest_path = audit / "_run" / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+        handoff_claim_ids = set()
+        if (audit / "_run" / "snapshots" / "claims_b3" / "handoff_ledger.json").is_file():
+            handoff_claim_ids = _validate_u7_b3b_resolutions(
+                lint, audit, shard, text, a, c_rows, manifest
+            )
         cids = col(c_rows, CLAIMS_COLS, "Claim ID")
         oids = col(o_rows, OUTPUT_COLS, "Output ID")
         check_unique(lint, shard, cids + oids, "ID")
@@ -1171,9 +2485,10 @@ def stage_b3b_shard(lint, audit, stream, shard):
                 lint.fail(f"{shard}: {i} outside the second-read-allocated ranges")
         for r in c_rows:
             d = dict(zip(CLAIMS_COLS, r))
-            if d["Status"] not in B3B_CLAIM_STATUSES:
+            if d["Status"] not in B3B_CLAIM_STATUSES and d["Claim ID"] not in handoff_claim_ids:
                 lint.fail(f"{shard}: second-read claim {d['Claim ID']} status "
-                          f"'{d['Status']}' (must be 'inconsistent' or 'unclear')")
+                          f"'{d['Status']}' (must be 'inconsistent'/'unclear' unless "
+                          "cited by a handoff resolution)")
         for r in o_rows:
             d = dict(zip(OUTPUT_COLS, r))
             if d["Status"] not in B3B_OUTPUT_STATUSES:
@@ -1205,83 +2520,77 @@ def stage_b3b_shard(lint, audit, stream, shard):
                 lint.fail(f"{shard}: Related Claim IDs must be blank at b3b (cross-link is a later stage)")
         check_abs_paths(lint, shard, e_rows, ERROR_COLS, ["Code/Data Source", "Code Location"])
     shard_footer(lint, shard, text)
+    entries, coverage = typed_shard_footer(lint, shard, text, stream)
+    validate_footer_candidates(lint, shard, text, stream, entries, coverage)
 
 
-def recheck_plan_path(audit, stream):
-    return audit / "plans" / ("claims_recheck_plan.md" if stream == "claims" else "code_error_recheck_plan.md")
+def recheck_plan_path(audit, stream, supplementary=False):
+    name = (SUPPLEMENTARY_PLAN_FILES[stream] if supplementary else
+            ("claims_recheck_plan.md" if stream == "claims"
+             else "code_error_recheck_plan.md"))
+    return audit / "plans" / name
 
 
-def parse_recheck_plan(lint, audit, stream):
-    plan = recheck_plan_path(audit, stream)
+def parse_recheck_plan(lint, audit, stream, supplementary=False):
+    plan = recheck_plan_path(audit, stream, supplementary)
     text = read_text(lint, plan)
     if text is None:
         return None
     inventory, clusters = [], []
+    token_inventory = []
     for headers, rows, _ in parse_tables(text):
+        if supplementary and stream == "code" \
+                and headers == severity_tokens.SUPPLEMENTARY_TOKEN_COLS:
+            token_inventory = []
+            for row in rows:
+                if len(row) != len(headers):
+                    lint.fail(f"{plan}: malformed supplementary token-obligation row")
+                    continue
+                data = dict(zip(headers, row))
+                token_inventory.append({
+                    **data, "ID": data["Error ID"], "Reason": data["Reasons"],
+                    "_token_schema": True,
+                })
         if "Reason" in headers and any(h == "ID" for h in headers):
             inventory = [dict(zip(headers, r)) for r in rows if len(r) == len(headers)]
         if "Cluster ID" in headers and "Assigned IDs" in headers and "Shard File" in headers:
             clusters = [dict(zip(headers, r)) for r in rows if len(r) == len(headers)]
-    if not inventory:
-        lint.fail(f"{plan}: inventory table (columns incl. 'ID' and 'Reason') not found")
-    if not clusters:
-        lint.fail(f"{plan}: cluster table (Cluster ID / Assigned IDs / Shard File) not found")
+    if token_inventory:
+        inventory = token_inventory
+    if supplementary and not inventory:
+        if SUPPLEMENTARY_EMPTY not in text:
+            lint.fail(f"{plan}: empty inventory requires exact '{SUPPLEMENTARY_EMPTY}'")
+        if clusters:
+            lint.fail(f"{plan}: empty supplementary inventory cannot declare clusters")
+    else:
+        if not inventory:
+            lint.fail(f"{plan}: inventory table (columns incl. 'ID' and 'Reason') not found")
+        if not clusters:
+            lint.fail(f"{plan}: cluster table (Cluster ID / Assigned IDs / Shard File) not found")
     if "audit_readme.md" not in text:
         lint.fail(f"{plan}: missing pointer to the verdict/evidence vocabulary in audit_readme.md")
     return plan, inventory, clusters
 
 
-def parse_definition_use_artifact(lint, audit):
-    """Return standard Bundle IDs from the required b4 detector artifact."""
-    path = audit / "_run" / "definition_use_bundles.md"
-    text = read_text(lint, path)
-    if text is None:
-        lint.fail(f"{path}: missing required b4 definition/use artifact")
-        return None
+def parse_detector_mappings(lint, audit):
+    path = audit / "_run" / "detector_mapping.md"
     try:
-        artifact = du.parse_artifact(text)
-    except du.DefinitionUseFormatError as exc:
+        _declared, _display, rows = detector_mapping.load_mapping(path)
+        return detector_mapping.actionable_rows(rows)
+    except detector_mapping.MappingError as exc:
         lint.fail(f"{path}: {exc}")
-        return None
-    return [row["Bundle ID"] for row in artifact.standard_rows]
-
-
-def parse_definition_use_mappings(lint, plan):
-    """Return rows from the code recheck plan's exact mapping table."""
-    text = read_text(lint, plan)
-    if text is None:
-        return []
-    try:
-        return du.parse_mappings(text)
-    except du.DefinitionUseFormatError as exc:
-        lint.fail(f"{plan}: {exc}")
         return []
 
 
-def check_definition_use_b4(lint, audit, plan, inventory):
-    bundle_ids = parse_definition_use_artifact(lint, audit)
-    if bundle_ids is None:
-        return
-    mappings = parse_definition_use_mappings(lint, plan)
-    by_bundle = {}
-    for row in mappings:
-        bid, eid, kind = row["Bundle ID"], row["Error ID"], row["Mapping Kind"]
-        by_bundle.setdefault(bid, []).append(row)
-        if kind not in du.MAPPING_KINDS:
-            lint.fail(f"{plan}: Bundle ID {bid} has invalid Mapping Kind '{kind}'")
-        if not re.fullmatch(ID_RE["E"], eid):
-            lint.fail(f"{plan}: Bundle ID {bid} has invalid Error ID '{eid}'")
-        if bid not in bundle_ids:
-            lint.fail(f"{plan}: mapping names {bid}, which is not a standard bundle "
-                      "in definition_use_bundles.md")
-    for bid in bundle_ids:
-        count = len(by_bundle.get(bid, []))
-        if count == 0:
-            lint.fail(f"{plan}: standard Bundle ID {bid} is unmapped")
-        elif count != 1:
-            lint.fail(f"{plan}: standard Bundle ID {bid} is mapped {count} times "
-                      "(expected exactly once)")
+def _names_source(text, source_id):
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9_-]){re.escape(source_id)}(?![A-Za-z0-9_-])",
+        text or "",
+    ))
 
+
+def check_detector_mapping_b4(lint, audit, plan, inventory):
+    mappings = parse_detector_mappings(lint, audit)
     inv_by_id = {}
     for row in inventory:
         inv_by_id.setdefault(row.get("ID", ""), []).append(row)
@@ -1290,34 +2599,37 @@ def check_definition_use_b4(lint, audit, plan, inventory):
     if register:
         canonical = {dict(zip(ERROR_COLS, row))["Error ID"]:
                      dict(zip(ERROR_COLS, row)) for row in register[1]}
-    for bid, rows in by_bundle.items():
-        if len(rows) != 1 or bid not in bundle_ids:
-            continue
-        eid = rows[0]["Error ID"]
+    by_error = {}
+    for row in mappings:
+        by_error.setdefault(row["Error ID"], []).append(row)
+    for eid, rows in by_error.items():
         inv_rows = inv_by_id.get(eid, [])
         if len(inv_rows) != 1:
-            lint.fail(f"{plan}: Bundle ID {bid} maps to {eid}, which is absent "
+            lint.fail(f"{plan}: mapped Error ID {eid} is absent "
                       "from the b4 inventory")
             continue
-        if bid not in du.extract_bundle_tokens(
-                inv_rows[0].get("Likely Evidence", "")):
-            lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
-                      f"mapped Bundle ID {bid}")
-        if rows[0]["Mapping Kind"] == "new_candidate":
+        evidence = inv_rows[0].get("Likely Evidence", "")
+        for source_id in sorted({row["Source ID"] for row in rows}):
+            if not _names_source(evidence, source_id):
+                lint.fail(f"{plan}: inventory row {eid} Likely Evidence does not name "
+                          f"mapped source ID {source_id}")
+        if any(row["Mapping Kind"] == "new_candidate" for row in rows):
             canonical_row = canonical.get(eid)
             if canonical_row is None:
                 continue  # canon_ids reports this independently
             if canonical_row.get("Status") != "candidate":
-                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be a "
+                lint.fail(f"{plan}: new_candidate mapping to {eid} must be a "
                           "candidate canonical row")
-            if canonical_row.get("Error Type") != "sample_filter_or_flag_error":
-                lint.fail(f"{plan}: new_candidate mapping {bid} -> {eid} must be typed "
+            if (any(row["Channel"] == "DU" for row in rows)
+                    and canonical_row.get("Error Type") != "sample_filter_or_flag_error"):
+                lint.fail(f"{plan}: DU new_candidate mapping to {eid} must be typed "
                           "sample_filter_or_flag_error")
 
 
-def _all_code_recheck_ledger_rows(lint, audit):
+def _all_code_recheck_ledger_rows(lint, audit, supplementary=False):
     rows = []
-    root = audit / "_code_error_recheck"
+    root = audit / (SUPPLEMENTARY_SHARD_DIRS["code"] if supplementary
+                    else "_code_error_recheck")
     if not root.is_dir():
         return rows
     for path in sorted(root.rglob("*.md")):
@@ -1325,39 +2637,128 @@ def _all_code_recheck_ledger_rows(lint, audit):
         if text is None:
             continue
         for headers, table_rows, _ in parse_tables(text):
-            if headers == LEDGER_COLS:
+            if headers == CODE_LEDGER_COLS:
                 rows.extend((path, dict(zip(headers, row)))
                             for row in table_rows if len(row) == len(headers))
     return rows
 
 
-def check_definition_use_b6(lint, audit):
+def _manifest_rules_by_key(lint, audit):
+    path = audit / "_run/manifest_check.md"
+    text = read_text(lint, path) or ""
+    columns = [
+        "Source ID", "Witness ID", "Site Anchor", "Rule Slug",
+        "Offending Text", "Problem",
+    ]
+    rows = tables_by_cols(
+        lint, path, text, columns, "manifest-check witnesses")
+    result = {}
+    for row in rows:
+        key = ("MF", row["Source ID"], row["Witness ID"])
+        if key in result:
+            lint.fail(f"{path}: duplicate manifest witness {'/'.join(key)}")
+        result[key] = row["Rule Slug"]
+    return result
+
+
+def check_detector_mapping_b6(lint, audit, final_path=None):
     plan = recheck_plan_path(audit, "code")
-    mappings = parse_definition_use_mappings(lint, plan)
+    mappings = parse_detector_mappings(lint, audit)
     if not mappings:
         return
     mapped = {}
+    mapping_by_key = {}
     for row in mappings:
-        mapped.setdefault(row["Error ID"], []).append(row["Bundle ID"])
+        key = (row["Channel"], row["Source ID"], row["Witness ID"])
+        mapped.setdefault(row["Error ID"], []).append(row)
+        mapping_by_key[key] = row
     ledger_rows = _all_code_recheck_ledger_rows(lint, audit)
     ledgers_by_id = {}
     for path, row in ledger_rows:
         ledgers_by_id.setdefault(row.get("ID", ""), []).append((path, row))
-    final = load_register(lint, audit / "_staging" / "code_error_register.md",
-                          ERROR_COLS)
+    ac_stamps = {}
+    if any(row["Channel"] == "AC" for row in mappings):
+        try:
+            ac_stamps = detector_mapping.expected_ac_stamps(audit, mappings)
+        except (detector_mapping.MappingError, OSError) as exc:
+            lint.fail(f"argument-contract stamp binding cannot resolve: {exc}")
+    manifest_rules = (
+        _manifest_rules_by_key(lint, audit)
+        if any(row["Channel"] == "MF" for row in mappings) else {}
+    )
+    frozen_post_b6a = audit / "_run/snapshots/code_b6b/code_error_register.md"
+    final_path = final_path or (
+        frozen_post_b6a if frozen_post_b6a.is_file() else audit / "code_error_register.md")
+    final = load_register(lint, final_path, ERROR_COLS)
     final_by_id = {}
     if final:
         final_by_id = {dict(zip(ERROR_COLS, row))["Error ID"]:
                        dict(zip(ERROR_COLS, row)) for row in final[1]}
+    snap = load_register(
+        lint, audit / "_run/snapshots/code_b6a/code_error_register.md", ERROR_COLS)
+    snapshot_by_id = {}
+    if snap:
+        snapshot_by_id = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                          dict(zip(ERROR_COLS, row)) for row in snap[1]}
 
-    expected_status = {
-        "confirmed_error": "confirmed",
-        "not_error": "not_error",
-        "confirmation_needed": "confirmation_needed",
-        "blocked": "blocked",
-        "deferred": "blocked",
-    }
-    for eid, bundle_ids in mapped.items():
+    summary = audit / "code_error_recheck_summary.md"
+    summary_text = read_text(lint, summary) or ""
+    lineage_rows = tables_by_cols(
+        lint, summary, summary_text, LINEAGE_COLS, "split lineage")
+    lineage, split_originals = {}, set()
+    for row in lineage_rows:
+        key = (row["Channel"], row["Source ID"], row["Witness ID"])
+        mapping = mapping_by_key.get(key)
+        if mapping is None or mapping["Error ID"] != row["Original Error ID"]:
+            lint.fail(f"{summary}: lineage row names an unmapped original/witness")
+            continue
+        full = (row["Original Error ID"], *key)
+        if full in lineage:
+            lint.fail(f"{summary}: mapped witness {'/'.join(key)} appears twice in lineage")
+        lineage[full] = row["Descendant Error ID"]
+        split_originals.add(row["Original Error ID"])
+    for original in split_originals:
+        expected = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                    for row in mapped.get(original, [])}
+        covered = {key[1:] for key in lineage if key[0] == original}
+        if covered != expected:
+            lint.fail(f"{summary}: split lineage for {original} does not exactly cover its mapped witnesses")
+        descendants = {value for key, value in lineage.items() if key[0] == original}
+        if len(descendants) < 2:
+            lint.fail(f"{summary}: split {original} must have at least two non-empty descendants")
+        for descendant in descendants:
+            if descendant not in final_by_id:
+                lint.fail(f"{summary}: split descendant {descendant} is absent from final register")
+
+    boundary_path = audit / "_run/code_b6a/witness_outcomes.md"
+    boundary_text = read_text(lint, boundary_path) or ""
+    post_rows = tables_by_cols(
+        lint, boundary_path, boundary_text, POST_WITNESS_COLS,
+        "post-boundary witness outcomes", required=True)
+    post_by_key = {}
+    for row in post_rows:
+        key = tuple(row[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key in post_by_key:
+            lint.fail(f"{boundary_path}: duplicate post-boundary key {'/'.join(key)}")
+        post_by_key[key] = row
+        if key not in mapping_by_key:
+            lint.fail(f"{boundary_path}: post-boundary row {'/'.join(key)} is not mapped")
+    if set(post_by_key) != set(mapping_by_key):
+        lint.fail(f"{boundary_path}: post-boundary keys do not exactly close detector mapping")
+    dismissal_tables = tables_by_cols(
+        lint, boundary_path, boundary_text, ["Error ID"], "assembled dismissals")
+    assembled = {row["Error ID"] for row in dismissal_tables}
+
+    receipt_path = audit / "_run/code_b6a/dismissal_receipts.md"
+    receipt_text = read_text(lint, receipt_path) or ""
+    receipts = tables_by_cols(lint, receipt_path, receipt_text, RECEIPT_COLS,
+                              "dismissal receipts")
+    receipt_ids = [row["Receipt ID"] for row in receipts]
+    check_unique(lint, receipt_path, receipt_ids, "Receipt ID")
+
+    effective_groups = {}
+    for original, mapping_rows in mapped.items():
+        eid = original
         dispositions = ledgers_by_id.get(eid, [])
         if len(dispositions) != 1:
             lint.fail(f"{plan}: mapped Error ID {eid} has {len(dispositions)} ledger "
@@ -1365,39 +2766,126 @@ def check_definition_use_b6(lint, audit):
             continue
         path, ledger = dispositions[0]
         evidence = ledger.get("Evidence Checked", "")
-        evidence_du_ids = du.extract_bundle_tokens(evidence)
-        for bid in bundle_ids:
-            if bid not in evidence_du_ids:
-                lint.fail(f"{path}: mapped Bundle ID {bid} missing from {eid} "
+        for source_id in sorted({row["Source ID"] for row in mapping_rows}):
+            if not _names_source(evidence, source_id):
+                lint.fail(f"{path}: mapped source ID {source_id} missing from {eid} "
                           "Evidence Checked")
+        for mapping in mapping_rows:
+            full = (eid, mapping["Channel"], mapping["Source ID"], mapping["Witness ID"])
+            effective = lineage.get(full, eid)
+            effective_groups.setdefault(effective, []).append((mapping, path, ledger))
+
+    for eid, group in effective_groups.items():
+        mapping_rows = [item[0] for item in group]
+        path, ledger = group[0][1], group[0][2]
         final_row = final_by_id.get(eid)
         if final_row is None:
             lint.fail(f"{plan}: mapped Error ID {eid} absent from final staging register")
             continue
         status = final_row.get("Status", "")
         verdict = ledger.get("Verdict", "")
-        duplicate = re.fullmatch(r"duplicate_of:(E-\d{4})", status)
-        if duplicate:
-            target = duplicate.group(1)
-            proposal = (ledger.get("Proposed Register Change", "") + " "
-                        + ledger.get("Proposed Note", ""))
-            target_row = final_by_id.get(target)
-            if verdict != "confirmed_error":
-                lint.fail(f"{path}: duplicate disposition for {eid} requires ledger "
-                          f"verdict 'confirmed_error', found '{verdict}'")
-            if status not in proposal:
-                lint.fail(f"{path}: duplicate disposition for {eid} does not explicitly "
-                          f"name equivalent canonical issue row {target}")
-            if target_row is None or target_row.get("Status") != "confirmed":
-                lint.fail(f"{path}: duplicate target {target} is not a confirmed final "
-                          "code-error issue row")
-            continue
-        wanted = expected_status.get(verdict)
-        if wanted is None:
+        expected_disposition = expected_code_disposition(ledger)
+        if expected_disposition is None:
             lint.fail(f"{path}: mapped Error ID {eid} has invalid code verdict '{verdict}'")
-        elif status != wanted:
+            continue
+        wanted, wanted_severity = expected_disposition
+        if status != wanted:
             lint.fail(f"{path}: mapped Error ID {eid} verdict '{verdict}' requires "
                       f"final status '{wanted}', found final status '{status}'")
+        if final_row.get("Severity", "") != wanted_severity:
+            lint.fail(f"{path}: mapped Error ID {eid} final Severity "
+                      f"{final_row.get('Severity')!r} disagrees with applied proposal {wanted_severity!r}")
+        for column, replacement in parse_field_patches(lint, path, ledger).items():
+            if final_row.get(column) != replacement:
+                lint.fail(f"{path}: mapped Error ID {eid} field patch for {column} was not applied")
+
+        keys = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                for row in mapping_rows}
+        final_text = " | ".join(final_row.values())
+        for key in sorted(keys):
+            stamp = ac_stamps.get(key)
+            if stamp is not None and stamp not in final_text:
+                lint.fail(
+                    f"{final_path}: AC-mapped Error ID {eid} stripped the complete "
+                    f"machine-written stamp for witness {key[2]}"
+                )
+        allowed_records = set(list_cell(ledger.get("Verification Record IDs", "")))
+        for key in sorted(keys):
+            if manifest_rules.get(key) != "conda-malformed-line":
+                continue
+            if verdict not in {"not_error", "confirmed_error"}:
+                # verify_dismissals mints pinned-oracle receipts only for
+                # not_error and confirmed_error dispositions; demanding one
+                # for e.g. a duplicate verdict would be unsatisfiable.
+                continue
+            oracle_receipts = [
+                receipt for receipt in receipts
+                if tuple(receipt[field] for field in
+                         ("Channel", "Source ID", "Witness ID")) == key
+                and receipt["Record ID"] in allowed_records
+            ]
+            if len(oracle_receipts) != 1:
+                lint.fail(
+                    f"{receipt_path}: conda-malformed-line witness {'/'.join(key)} "
+                    "requires exactly one pinned-oracle receipt"
+                )
+            elif (verdict == "confirmed_error"
+                  and oracle_receipts[0]["Accepted (yes/no)"] == "yes"):
+                lint.fail(
+                    f"{path}: conda-malformed-line witness {'/'.join(key)} was "
+                    "confirmed_error although the pinned oracle accepts the file; "
+                    "the required disposition is mechanical not_error through the "
+                    "conductor-issued receipt gate"
+                )
+        if verdict == "not_error":
+            if eid not in assembled:
+                lint.fail(f"{boundary_path}: mapped not_error {eid} is absent from Assembled dismissals")
+            covered = set()
+            for receipt in receipts:
+                key = tuple(receipt[field] for field in
+                            ("Channel", "Source ID", "Witness ID"))
+                if (key in keys and receipt["Record ID"] in allowed_records
+                        and receipt["Accepted (yes/no)"] == "yes"):
+                    covered.add(key)
+                    post = post_by_key.get(key, {})
+                    if receipt["Receipt ID"] not in list_cell(post.get("Receipt IDs", "")):
+                        lint.fail(f"{boundary_path}: witness {'/'.join(key)} does not bind qualifying receipt {receipt['Receipt ID']}")
+            if covered != keys:
+                lint.fail(f"{receipt_path}: mapped not_error {eid} lacks qualifying receipt coverage")
+        elif eid in assembled:
+            lint.fail(f"{boundary_path}: Assembled dismissals lists non-not_error mapped row {eid}")
+
+        if verdict == "duplicate":
+            target = ledger.get("Duplicate Target", "").strip()
+            if target not in mapped:
+                lint.fail(f"{path}: guarded duplicate {eid} target {target!r} is not mechanically mapped")
+                continue
+            target_row = snapshot_by_id.get(target) or final_by_id.get(target)
+            source_row = snapshot_by_id.get(eid) or final_row
+            if target_row is None or target_row.get("Error Type") != source_row.get("Error Type"):
+                lint.fail(f"{path}: duplicate {eid} and target {target} do not share Error Type")
+            source_mechanisms = {post_by_key.get(key, {}).get("Mechanism") for key in keys}
+            target_keys = {(row["Channel"], row["Source ID"], row["Witness ID"])
+                           for row in mapped[target]}
+            target_mechanisms = {post_by_key.get(key, {}).get("Mechanism") for key in target_keys}
+            if source_mechanisms != target_mechanisms:
+                lint.fail(f"{path}: duplicate {eid} mechanism differs from target {target}")
+            coverage = (target_row or {}).get("Code Location", "") + " " + (target_row or {}).get("Code/Data Source", "")
+            for mapping in mapping_rows:
+                if mapping["Site Anchor"].rsplit(":", 1)[0] not in coverage:
+                    lint.fail(f"{path}: duplicate target {target} does not cover {mapping['Site Anchor']}")
+
+    # A split is legal only when its active witnesses actually disagree.
+    for original in split_originals:
+        tuples = set()
+        for row in mapped[original]:
+            key = (row["Channel"], row["Source ID"], row["Witness ID"])
+            post = post_by_key.get(key, {})
+            if post.get("Mechanism") not in {None, "—", "-", ""}:
+                tuples.add((post.get("Mechanism"), post.get("Verdict"),
+                            post.get("Proposed Severity"), post.get("Duplicate Target")))
+        if len(tuples) < 2:
+            lint.fail(f"{summary}: split {original} is not justified by distinct active mechanisms")
 
 
 def canon_ids(lint, audit, stream):
@@ -1471,6 +2959,26 @@ def required_recheck_ids(lint, audit, stream):
     return required, substantive
 
 
+def adjudicator_minted_ids(lint, audit):
+    """Return every C-ID minted by a validated reject-and-resolve verdict."""
+    path = audit / "_run/claims_adjudication_verdicts.md"
+    if not path.is_file():
+        return set()
+    text = read_text(lint, path) or ""
+    minted = set()
+    for headers, rows, _line in parse_tables(text):
+        if not {"Verdict", "Minted C-ID"} <= set(headers):
+            continue
+        for raw in rows:
+            if len(raw) != len(headers):
+                lint.fail(f"{path}: malformed adjudication verdict row")
+                continue
+            row = dict(zip(headers, raw))
+            if row["Verdict"] == "reject_and_resolve":
+                minted.add(row["Minted C-ID"])
+    return minted
+
+
 def check_conventions_artifact(lint, audit):
     """Advisory well-formedness check on the optional b3c shared-conventions
     artifact `audit/_run/conventions.md`, consumed by the b4-code recheck grep.
@@ -1516,10 +3024,14 @@ def stage_b4(lint, audit, stream, manifest=None):
         return
     plan, inventory, clusters = parsed
     if stream == "code":
-        check_definition_use_b4(lint, audit, plan, inventory)
+        check_detector_mapping_b4(lint, audit, plan, inventory)
+        _token_dispatch_contract(lint, audit, manifest or {}, plan)
     canon = canon_ids(lint, audit, stream)
     # U8 (a): the required inventory computed from canon (a recall floor).
     required, substantive = required_recheck_ids(lint, audit, stream)
+    adjudicated = adjudicator_minted_ids(lint, audit) if stream == "claims" else set()
+    required |= adjudicated
+    substantive |= adjudicated
     id_letter = "C" if stream == "claims" else "E"  # the inventory's own ID letter
     inv_ids = {row.get("ID", "") for row in inventory}
     assignments = {}
@@ -1532,6 +3044,10 @@ def stage_b4(lint, audit, stream, manifest=None):
                   f"(a mandatory row would silently skip the recheck)")
     for row in inventory:
         i = row.get("ID", "")
+        if i in adjudicated and row.get("Reason") != "adjudicated_handoff":
+            lint.fail(
+                f"{plan}: adjudicator-minted {i} requires Reason adjudicated_handoff"
+            )
         # (a2) wrong-typed inventory IDs: a claims recheck inventory carries only
         #      C- ids (outputs are never rechecked directly); a code inventory only E-.
         if i and i[0] != id_letter:
@@ -1557,14 +3073,16 @@ def stage_b4(lint, audit, stream, manifest=None):
     check_unique(lint, plan, [c["Shard File"] for c in clusters], "cluster Shard File")
 
 
-def stage_b5(lint, audit, stream, shard, manifest):
-    if shard is None:
-        lint.fail("b5 requires --shard")
-        return
-    parsed = parse_recheck_plan(lint, audit, stream)
+def stage_b5(lint, audit, stream, shard, manifest, supplementary=False):
+    parsed = parse_recheck_plan(lint, audit, stream, supplementary)
     if parsed is None:
         return
-    plan, _, clusters = parsed
+    plan, inventory, clusters = parsed
+    if shard is None:
+        if supplementary and not inventory and not clusters:
+            return
+        lint.fail(f"{'b5s' if supplementary else 'b5'} requires --shard")
+        return
     cluster = None
     for c in clusters:
         if c["Shard File"].strip("`") == str(shard) or str(shard).endswith(c["Shard File"].strip("`")):
@@ -1577,7 +3095,8 @@ def stage_b5(lint, audit, stream, shard, manifest):
     text = read_text(lint, shard)
     if text is None:
         return
-    rows = table_by_cols(lint, shard, text, LEDGER_COLS, "recheck ledger")
+    ledger_cols = LEDGER_COLS if stream == "claims" else CODE_LEDGER_COLS
+    rows = table_by_cols(lint, shard, text, ledger_cols, "recheck ledger")
     if rows is None:
         return
     verdicts = CLAIMS_VERDICTS if stream == "claims" else ERROR_VERDICTS
@@ -1587,10 +3106,10 @@ def stage_b5(lint, audit, stream, shard, manifest):
     seen = []
     evidence_levels = set()
     for r in rows:
-        d = dict(zip(LEDGER_COLS, r))
+        d = dict(zip(ledger_cols, r))
         seen.append(d["ID"])
         if d["ID"] not in assigned:
-            lint.fail(f"{shard}: ledger contains unassigned/new ID {d['ID']} (no new IDs at recheck)")
+            lint.fail(f"{shard}: ledger contains unassigned/new ID {d['ID']} (no register IDs may be minted at recheck)")
         if d["Verdict"] not in verdicts:
             lint.fail(f"{shard}: {d['ID']} invalid verdict '{d['Verdict']}'")
         level = d["Evidence Level"]
@@ -1620,11 +3139,269 @@ def stage_b5(lint, audit, stream, shard, manifest):
     if stream == "claims":
         # U4 advisory: identifier anchoring on rows closing `confirmed`.
         check_anchoring_advisory(lint, audit, rows)
+    else:
+        _validate_code_adjudication_shard(
+            lint, audit, shard, text, rows, assigned, supplementary)
+        record_rows = tables_by_cols(
+            lint, shard, text, severity_tokens.TOKEN_RECORD_COLS,
+            "token_verification records")
+        ledger_by_id = {dict(zip(ledger_cols, row))["ID"]:
+                        dict(zip(ledger_cols, row)) for row in rows}
+        seen_token_keys = set()
+        mode = (manifest or {}).get("mode", "replication")
+        for record in record_rows:
+            eid = record["Error ID"]
+            key = (eid, record["Token"], record["Obligation Digest"])
+            if key in seen_token_keys:
+                lint.fail(f"{shard}: duplicate token_verification key {key}")
+            seen_token_keys.add(key)
+            ledger = ledger_by_id.get(eid)
+            if eid not in assigned or ledger is None:
+                lint.fail(f"{shard}: token_verification names unassigned Error ID {eid}")
+                continue
+            if record["Record Type"] != severity_tokens.TOKEN_RECORD_TYPE:
+                lint.fail(f"{shard}: {eid} Record Type must be token_verification")
+            if record["Verdict"] != severity_tokens.TOKEN_RECORD_VERDICT:
+                lint.fail(f"{shard}: {eid} token_verification verdict must be verified")
+            if not severity_tokens.token_allowed(record["Token"], mode):
+                lint.fail(f"{shard}: {eid} token is not legal in {mode} mode")
+            if (record["Mechanism"] != ledger.get("Accepted Mechanism")
+                    or sorted(list_cell(record["Witness IDs"]))
+                    != sorted(list_cell(ledger.get("Outcome Witness IDs")))):
+                lint.fail(f"{shard}: {eid} token_verification mechanism/witness binding disagrees with ledger")
+            try:
+                wanted = severity_tokens.obligation_digest(
+                    eid, record["Token"], record["Mechanism"],
+                    record["Witness IDs"], record["Error Location"],
+                    record["Flawed Identifier"],
+                )
+                if record["Obligation Digest"] != wanted:
+                    lint.fail(f"{shard}: {eid} token_verification obligation digest mismatch")
+            except severity_tokens.SeverityTokenError as exc:
+                lint.fail(f"{shard}: {eid} invalid token_verification mechanism: {exc}")
+            patches = parse_field_patches(lint, shard, ledger)
+            carrier = patches.get("Why It Matters", "")
+            canonical = load_register(lint, audit / "code_error_register.md", ERROR_COLS)
+            if canonical:
+                current = {dict(zip(ERROR_COLS, row))["Error ID"]:
+                           dict(zip(ERROR_COLS, row)) for row in canonical[1]}
+                carrier = carrier or current.get(eid, {}).get("Why It Matters", "")
+            if record["Token"] not in severity_tokens.literal_tokens(carrier):
+                lint.fail(f"{shard}: {eid} token_verification token is absent from the proposed carrier")
     for i in assigned:
         if i not in seen:
             lint.fail(f"{shard}: assigned ID {i} missing from ledger")
     if ladder >= 2 and evidence_levels == {"static_source_verified"}:
         lint.warn(f"{shard}: ladder level {ladder} but every check is static_source_verified")
+    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
+    if supplementary or f"{stream}_b6a" in stages:
+        entries, _coverage = typed_shard_footer(
+            lint, shard, text, stream, recheck=True)
+        # Recheck observations are deliberately not register rows.  Their
+        # typed footer is reconciled at b6a (main) or b6b (supplementary).
+        for entry in entries:
+            if entry["Kind"] == "candidate" and entry["_ids"]:
+                lint.fail(f"{shard}: recheck candidate {entry['Entry ID']} cannot name register IDs")
+
+
+def supplementary_detector_mappings(lint, audit):
+    """Project detector witnesses onto b6a split descendants assigned at b5s."""
+    mappings = parse_detector_mappings(lint, audit)
+    summary = audit / "code_error_recheck_summary.md"
+    text = read_text(lint, summary) or ""
+    lineage_rows = tables_by_cols(
+        lint, summary, text, LINEAGE_COLS, "split lineage")
+    descendants = {
+        (row["Original Error ID"], row["Channel"], row["Source ID"],
+         row["Witness ID"]): row["Descendant Error ID"]
+        for row in lineage_rows
+    }
+    projected = []
+    for mapping in mappings:
+        key = (mapping["Error ID"], mapping["Channel"], mapping["Source ID"],
+               mapping["Witness ID"])
+        descendant = descendants.get(key)
+        if descendant:
+            projected.append({**mapping, "Error ID": descendant})
+    return projected
+
+
+def _check_code_relation(lint, shard, key, relation):
+    allowed_relations = mechanism.REGISTER_RELATIONS["code_errors"]
+    if relation in allowed_relations:
+        return True
+    lint.fail(
+        f"{shard}: witness {'/'.join(key)} Mech Relation {relation!r} is "
+        "outside the closed code_errors list: "
+        f"{', '.join(allowed_relations)}"
+    )
+    return False
+
+
+def _validate_code_adjudication_shard(lint, audit, shard, text, rows, assigned,
+                                       supplementary=False):
+    parsed_tables = parse_tables(text)
+    ledger_table_count = sum(
+        1 for headers, _table_rows, _line in parsed_tables
+        if headers == CODE_LEDGER_COLS
+    )
+    if ledger_table_count != 1:
+        lint.fail(f"{shard}: expected exactly one structured recheck ledger table, "
+                  f"found {ledger_table_count}")
+    for marker in ("Witness outcomes", "Verification records"):
+        count = len(re.findall(
+            rf"(?m)^###\s+{re.escape(marker)}\s*$", text))
+        if count != 1:
+            lint.fail(f"{shard}: expected exactly one '### {marker}' marker, found {count}")
+    outcome_table_count = sum(
+        1 for headers, _table_rows, _line in parsed_tables
+        if headers == WITNESS_OUTCOME_COLS
+    )
+    if outcome_table_count != 1:
+        lint.fail(f"{shard}: expected exactly one witness outcomes table, "
+                  f"found {outcome_table_count}")
+
+    ledger_rows = [dict(zip(CODE_LEDGER_COLS, row)) for row in rows]
+    mappings = (supplementary_detector_mappings(lint, audit)
+                if supplementary else parse_detector_mappings(lint, audit))
+    mapped_ids = {row["Error ID"] for row in mappings}
+    mappings_by_id = {}
+    mapping_by_key = {}
+    for row in mappings:
+        mappings_by_id.setdefault(row["Error ID"], []).append(row)
+        mapping_by_key[(row["Channel"], row["Source ID"], row["Witness ID"])] = row
+    outcomes = tables_by_cols(
+        lint, shard, text, WITNESS_OUTCOME_COLS, "witness outcomes", required=True)
+    records = []
+    records += tables_by_cols(
+        lint, shard, text, MF_VERIFICATION_COLS, "MF verification records")
+    records += tables_by_cols(
+        lint, shard, text, PROBE_VERIFICATION_COLS, "DU/CV verification records")
+    outcome_by_key, record_by_id = {}, {}
+    for outcome in outcomes:
+        key = tuple(outcome[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key in outcome_by_key:
+            lint.fail(f"{shard}: duplicate witness outcome {'/'.join(key)}")
+        outcome_by_key[key] = outcome
+        relation_allowed = _check_code_relation(
+            lint, shard, key, outcome["Mech Relation"])
+        mapping = mapping_by_key.get(key)
+        if mapping is None:
+            lint.fail(f"{shard}: witness outcome {'/'.join(key)} is not mechanically mapped")
+            continue
+        if not relation_allowed:
+            continue
+        try:
+            mechanism.canonicalize_mechanism(
+                outcome["Mech Class"], outcome["Mech Object"],
+                outcome["Mech Relation"], outcome["Mech Expected"],
+                outcome["Mech Actual"], register="code_errors",
+                anchor=mapping["Site Anchor"], projection=mechanism.EMPTY_PROJECTION,
+            )
+        except mechanism.MechanismSchemaError as exc:
+            lint.fail(f"{shard}: witness {'/'.join(key)} mechanism invalid: {exc}")
+    for record in records:
+        record_id = record["Record ID"]
+        if not record_id or blank_cell(record_id):
+            lint.fail(f"{shard}: verification record has an empty Record ID")
+        elif record_id in record_by_id:
+            lint.fail(f"{shard}: duplicate verification Record ID {record_id}")
+        else:
+            record_by_id[record_id] = record
+        channel = record["Channel"]
+        if (channel == "MF") != ("File Digest (sha256)" in record):
+            lint.fail(f"{shard}: verification record {record_id} uses the wrong channel-typed schema")
+        key = tuple(record[field] for field in ("Channel", "Source ID", "Witness ID"))
+        if key not in mapping_by_key:
+            lint.fail(f"{shard}: verification record {record_id} names unmapped key {'/'.join(key)}")
+
+    for row in ledger_rows:
+        eid, verdict = row["ID"], row["Verdict"]
+        parse_field_patches(lint, shard, row)
+        if eid not in mapped_ids:
+            continue
+        mapped = mappings_by_id[eid]
+        expected_keys = {(m["Channel"], m["Source ID"], m["Witness ID"])
+                         for m in mapped}
+        expected_witnesses = {m["Witness ID"] for m in mapped}
+        proposed_status = row["Proposed Status"]
+        proposed_severity = row["Proposed Severity"]
+        duplicate_target = row["Duplicate Target"]
+        required_outcomes = verdict in {"confirmed_error", "not_error", "duplicate"}
+        actual_keys = {key for key in outcome_by_key if key in expected_keys}
+        declared_witnesses = set(list_cell(row["Outcome Witness IDs"]))
+        if required_outcomes:
+            if actual_keys != expected_keys:
+                missing = sorted(expected_keys - actual_keys)
+                extra = sorted(actual_keys - expected_keys)
+                lint.fail(f"{shard}: {eid} witness-outcome coverage mismatch "
+                          f"(missing={missing}, extra={extra})")
+            if declared_witnesses != expected_witnesses:
+                lint.fail(f"{shard}: {eid} Outcome Witness IDs do not exactly cover mapped witnesses")
+        else:
+            if actual_keys or declared_witnesses:
+                lint.fail(f"{shard}: {eid} verdict '{verdict}' must carry no witness outcomes")
+
+        if verdict == "confirmed_error":
+            if proposed_status != "confirmed":
+                lint.fail(f"{shard}: {eid} confirmed_error requires Proposed Status 'confirmed'")
+            if proposed_severity not in {"1", "2", "3", "4"}:
+                lint.fail(f"{shard}: {eid} confirmed_error requires Proposed Severity 1-4")
+            if row["Accepted Error Type"] not in ERROR_TYPES:
+                lint.fail(f"{shard}: {eid} confirmed_error requires a closed Accepted Error Type")
+            if blank_cell(row["Accepted Mechanism"]):
+                lint.fail(f"{shard}: {eid} confirmed_error requires Accepted Mechanism")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} confirmed_error forbids Duplicate Target")
+        elif verdict == "not_error":
+            if proposed_status != "not_error":
+                lint.fail(f"{shard}: {eid} not_error requires Proposed Status 'not_error'")
+            if not blank_cell(proposed_severity):
+                lint.fail(f"{shard}: {eid} not_error forbids Proposed Severity")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} not_error forbids Duplicate Target")
+            record_ids = set(list_cell(row["Verification Record IDs"]))
+            covered = set()
+            for record_id in record_ids:
+                record = record_by_id.get(record_id)
+                if record is None:
+                    lint.fail(f"{shard}: {eid} names unknown verification Record ID {record_id}")
+                    continue
+                covered.add(tuple(record[field] for field in
+                                  ("Channel", "Source ID", "Witness ID")))
+            if covered != expected_keys:
+                lint.fail(f"{shard}: {eid} not_error verification records do not cover every mapped key")
+        elif verdict == "duplicate":
+            target = duplicate_target.strip()
+            if target not in mapped_ids:
+                lint.fail(f"{shard}: {eid} guarded Duplicate Target {target!r} is not mechanically mapped")
+            if proposed_status != f"duplicate_of:{target}":
+                lint.fail(f"{shard}: {eid} duplicate Proposed Status must be derived as duplicate_of:{target}")
+            if not blank_cell(proposed_severity):
+                lint.fail(f"{shard}: {eid} duplicate forbids Proposed Severity")
+            if row["Accepted Error Type"] not in ERROR_TYPES or blank_cell(row["Accepted Mechanism"]):
+                lint.fail(f"{shard}: {eid} duplicate requires accepted error type and mechanism")
+        elif verdict == "confirmation_needed":
+            if proposed_status != "confirmation_needed":
+                lint.fail(f"{shard}: {eid} confirmation_needed requires matching Proposed Status")
+            if proposed_severity not in {"1", "2", "3", "4"}:
+                lint.fail(f"{shard}: {eid} confirmation_needed requires Proposed Severity 1-4")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} confirmation_needed forbids Duplicate Target")
+        elif verdict in {"blocked", "deferred"}:
+            if proposed_status != "blocked":
+                lint.fail(f"{shard}: {eid} {verdict} requires Proposed Status 'blocked'")
+            carried = row["Current Severity"]
+            if (not blank_cell(carried) and proposed_severity != carried) or (
+                    blank_cell(carried) and not blank_cell(proposed_severity)):
+                lint.fail(f"{shard}: {eid} {verdict} must carry forward Current Severity")
+            if not blank_cell(duplicate_target):
+                lint.fail(f"{shard}: {eid} {verdict} forbids Duplicate Target")
+            if verdict == "deferred":
+                citation = (row["Proposed Register Change"] + " "
+                            + row["Proposed Note"]).lower()
+                if "off-limit" not in citation:
+                    lint.fail(f"{shard}: {eid} deferred requires an off-limits citation")
 
 
 def register_files(audit, stream):
@@ -1633,66 +3410,1041 @@ def register_files(audit, stream):
     return [("code_error_register.md", ERROR_COLS, "Error ID")]
 
 
-def stage_b6(lint, audit, stream, manifest):
+def _summary_path(audit, stream, supplementary=False):
+    name = (SUPPLEMENTARY_SUMMARY_FILES[stream] if supplementary else
+            ("claims_recheck_summary.md" if stream == "claims"
+             else "code_error_recheck_summary.md"))
+    return audit / name
+
+
+def _summary_footer_report(text):
+    lines = []
+    pattern = re.compile(
+        r"^audit/[^#\s]+#OBS-\d{4}\s+\|\s+"
+        r"(?:candidate:(?:[CEO]-\d{4})(?:\s*[;,]\s*[CEO]-\d{4})*|"
+        r"late_observation:LO-[CE]-\d{4}|dismissed:\S.*)$"
+    )
+    for line in (text or "").splitlines():
+        if pattern.fullmatch(line.strip()):
+            lines.append(line.strip())
+    return {"footer_dispositions": lines}
+
+
+def _manifest_shard_status(manifest, stage_key, raw):
+    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
+    stage = stages.get(stage_key, {}) if isinstance(stages, dict) else {}
+    shards = stage.get("shards", {}) if isinstance(stage, dict) else {}
+    wire = normalized_audit_path(raw)
+    value = shards.get(wire, shards.get(raw, {})) if isinstance(shards, dict) else {}
+    return value.get("status") if isinstance(value, dict) else None
+
+
+def _recheck_footer_entries(lint, audit, stream, clusters, manifest, stage_key):
+    entries = {}
+    for cluster in clusters:
+        raw = cluster.get("Shard File", "")
+        if _manifest_shard_status(manifest, stage_key, raw) == "blocked":
+            continue
+        wire = normalized_audit_path(raw)
+        path = audit_path(audit, wire)
+        text = read_text(lint, path)
+        if text is None:
+            continue
+        parsed, _coverage = typed_shard_footer(
+            lint, path, text, stream, recheck=True)
+        for entry in parsed:
+            key = (wire, entry["Entry ID"])
+            if key in entries:
+                lint.fail(f"{path}: duplicate typed-footer join key {wire}#{entry['Entry ID']}")
+            entries[key] = entry
+    return entries
+
+
+def _reconcile_recheck_footers(lint, audit, stream, clusters, manifest,
+                               stage_key, summary, allowed_candidates=None,
+                               late_rows=None):
+    expected = _recheck_footer_entries(
+        lint, audit, stream, clusters, manifest, stage_key)
+    actual = {}
+    for disposition in parse_footer_dispositions(
+            lint, summary, _summary_footer_report(read_text(lint, summary) or "")):
+        key = disposition["key"]
+        if key in actual:
+            lint.fail(f"{summary}: duplicate footer disposition for {key[0]}#{key[1]}")
+        actual[key] = disposition
+    for key in sorted(set(expected) - set(actual)):
+        lint.fail(f"{summary}: typed footer entry {key[0]}#{key[1]} is undispositioned")
+    for key in sorted(set(actual) - set(expected)):
+        lint.fail(f"{summary}: disposition has no typed footer entry {key[0]}#{key[1]}")
+    candidate_ids = set()
+    late_by_id = {row["LO ID"]: row for row in (late_rows or [])}
+    for key in sorted(set(expected) & set(actual)):
+        entry, disposition = expected[key], actual[key]
+        action = disposition["action"]
+        if entry["Kind"] == "candidate" and action == "dismissed":
+            # Explicit dismissal is the operator-ratified alternative to minting.
+            continue
+        if allowed_candidates is not None:
+            if action == "late_observation":
+                lint.fail(f"{summary}: main-wave footer {key[0]}#{key[1]} cannot become a late observation")
+            if action == "candidate":
+                candidate_ids.update(disposition["ids"])
+                extra = set(disposition["ids"]) - set(allowed_candidates)
+                if extra:
+                    lint.fail(f"{summary}: footer disposition cites non-discovery IDs {sorted(extra)}")
+        else:
+            if action == "candidate":
+                lint.fail(f"{summary}: b6b cannot mint register rows from {key[0]}#{key[1]}")
+            if entry["Kind"] == "candidate" and action not in {"late_observation", "dismissed"}:
+                lint.fail(f"{summary}: b5s candidate must become a late observation or dismissal")
+            if action == "late_observation":
+                row = late_by_id.get(disposition["lo_id"])
+                source = f"{key[0]}#{key[1]}"
+                if row is None or row.get("Source Shard") != source:
+                    lint.fail(f"{summary}: {source} does not join exactly to {disposition['lo_id']}")
+    return candidate_ids
+
+
+def _ranges_from_text(text):
+    return [parsed for a, b in RANGE_RE.findall(text or "")
+            if (parsed := parse_range(f"{a}–{b}"))]
+
+
+def _previous_ranges(lint, audit, stream):
+    names = (["claims_review_plan.md", "claims_second_read_plan.md"]
+             if stream == "claims" else
+             ["code_error_review_plan.md", "code_error_second_read_plan.md"])
+    ranges = []
+    for name in names:
+        path = audit / "plans" / name
+        text = read_text(lint, path)
+        if text is not None:
+            ranges.extend(_ranges_from_text(text))
+    if stream == "code":
+        path = audit / "_run/detector_mapping.md"
+        text = read_text(lint, path)
+        if text is not None:
+            ranges.extend(_ranges_from_text(text))
+    return ranges
+
+
+def _validate_supplementary_plan(lint, audit, stream, inventory, clusters,
+                                 new_ids, discovery_ids, expected_reasons=None,
+                                 split_parents=None):
+    plan = recheck_plan_path(audit, stream, True)
+    text = read_text(lint, plan) or ""
+    declared = [parse_range(f"{a}–{b}") for a, b in DISCOVERY_RANGE_RE.findall(text)]
+    declared = [item for item in declared if item]
+    check_identifier_exhaustion(lint, plan, declared)
+    check_disjoint(lint, plan, _previous_ranges(lint, audit, stream) + declared)
+    by_letter = {letter: set() for letter in "CEO"}
+    for item in discovery_ids:
+        by_letter[item[0]].add(item)
+    for letter in "CEO":
+        spans = [span for span in declared if span[0] == letter]
+        capacity = sum(end - start + 1 for _l, start, end in spans)
+        if capacity != len(by_letter[letter]):
+            lint.fail(f"{plan}: {letter} discovery range capacity {capacity} does not equal accepted count {len(by_letter[letter])}")
+        for item in sorted(by_letter[letter]):
+            if not in_ranges(item, spans):
+                lint.fail(f"{plan}: discovery {item} is outside its declared range")
+    inv_ids = [row.get("ID", "") for row in inventory]
+    expected_inventory = ({item for item in new_ids if item.startswith(("C-", "E-"))}
+                          if expected_reasons is None else set(expected_reasons))
+    if set(inv_ids) != expected_inventory or len(inv_ids) != len(set(inv_ids)):
+        lint.fail(f"{plan}: supplementary inventory must exactly equal the discovery/token-obligation union; expected={sorted(expected_inventory)}, actual={sorted(inv_ids)}")
+    if expected_reasons is not None:
+        by_id = {row.get("ID", ""): row for row in inventory}
+        for item, reasons in sorted(expected_reasons.items()):
+            row = by_id.get(item, {})
+            if not row.get("_token_schema"):
+                lint.fail(f"{plan}: {item} must use the six-column token-obligation schema")
+                continue
+            actual_reasons = [part.strip() for part in row.get("Reasons", "").split(",")
+                              if part.strip()]
+            wanted_reasons = sorted(reasons)
+            if actual_reasons != wanted_reasons or any(
+                    reason not in severity_tokens.SUPPLEMENTARY_REASONS
+                    for reason in actual_reasons):
+                lint.fail(f"{plan}: {item} Reasons must be canonical {wanted_reasons}")
+            if reasons & {"late_token", "split_token"}:
+                if not re.fullmatch(r"[0-9a-f]{64}", row.get("Obligation Digest", "")):
+                    lint.fail(f"{plan}: {item} token obligation requires a sha256 digest")
+                products = set(list_cell(row.get("Required Products", "")))
+                if not {"token_verification", "token_receipt"}.issubset(products):
+                    lint.fail(f"{plan}: {item} token obligation requires token_verification and token_receipt products")
+            wanted_parent = (split_parents or {}).get(item)
+            actual_parent = severity_tokens.clean(row.get("Parent Error ID", ""))
+            if wanted_parent and actual_parent != wanted_parent:
+                lint.fail(f"{plan}: split_token {item} Parent Error ID must be {wanted_parent}")
+            if not wanted_parent and not blank_cell(actual_parent):
+                lint.fail(f"{plan}: non-split {item} cannot name Parent Error ID")
+    assignments = {}
+    expected_dir = f"audit/{SUPPLEMENTARY_SHARD_DIRS[stream]}/"
+    for cluster in clusters:
+        wire = normalized_audit_path(cluster.get("Shard File", ""))
+        if not wire.startswith(expected_dir) or not wire.endswith(".md"):
+            lint.fail(f"{plan}: supplementary shard path {wire!r} must live under {expected_dir}")
+        for item in re.findall(r"[CEO]-\d{4}", cluster.get("Assigned IDs", "")):
+            assignments.setdefault(item, []).append(cluster.get("Cluster ID", ""))
+    for item in sorted(expected_inventory):
+        if len(assignments.get(item, [])) != 1:
+            lint.fail(f"{plan}: supplementary inventory ID {item} assigned {len(assignments.get(item, []))} times")
+    for item in sorted(set(assignments) - expected_inventory):
+        lint.fail(f"{plan}: cluster assigns non-inventory ID {item}")
+
+
+def _lineage_descendants(lint, summary, text):
+    rows = tables_by_cols(lint, summary, text, LINEAGE_COLS, "split lineage")
+    return {row["Descendant Error ID"] for row in rows}
+
+
+def _u8_tokens_active(manifest, audit, stage="code_b6a", rows=None):
+    # Activation is derived from register contents, not only from the token
+    # artifacts: a severe-eligible row makes the gate mandatory, so a conductor
+    # that omits the token workflow fails instead of silently reproducing the
+    # pre-U8 behavior.
+    if rows is not None and severity_tokens.gate_required(rows):
+        return True
+    stages = (stage,) if isinstance(stage, str) else tuple(stage)
+    if any((audit / f"_run/{item}/token_receipts.md").is_file()
+           for item in stages):
+        return True
+    plan = audit / "plans/code_error_supplementary_recheck_plan.md"
+    if plan.is_file():
+        try:
+            text = plan.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        header = "| " + " | ".join(severity_tokens.SUPPLEMENTARY_TOKEN_COLS) + " |"
+        return header in text
+    return False
+
+
+def _expected_code_token_obligations(lint, audit, manifest, final_rows,
+                                     discovery_ids, summary, summary_text):
+    """Derive the one supplementary discovery/late/split union (§11)."""
+    reasons = {item: {"discovery"} for item in discovery_ids
+               if item.startswith("E-")}
+    split_parents = {}
+    for row in tables_by_cols(
+            lint, summary, summary_text, LINEAGE_COLS, "split lineage"):
+        split_parents[row["Descendant Error ID"]] = row["Original Error ID"]
+    classifications, _failures = severity_tokens.gate_rows(
+        audit.parent, audit, manifest, final_rows, "code_b6a")
+    dispatch = audit / "_run/snapshots/code_b5_dispatch"
+    dispatched_ids = {"claim": set(), "output": set()}
+    for kind, filename, cols, id_col in (
+            ("claim", "claims_register.md", CLAIMS_COLS, "Claim ID"),
+            ("output", "output_register.md", OUTPUT_COLS, "Output ID")):
+        loaded = load_register(lint, dispatch / filename, cols)
+        if loaded:
+            dispatched_ids[kind] = set(col(loaded[1], cols, id_col))
+    mode = (manifest or {}).get("mode", "replication")
+    for row in final_rows:
+        if not severity_tokens.severe_eligible(row):
+            continue
+        eid = row["Error ID"]
+        if classifications.get(eid) in {"live", "target_not_live"}:
+            continue
+        if eid in split_parents:
+            reasons.setdefault(eid, set()).add("split_token")
+        token, problem = severity_tokens.row_token_state(row, mode)
+        if token and not problem and token.startswith(("claim:", "output:")):
+            kind, target = severity_tokens.token_target(token)
+            state, _target_row = severity_tokens.resolve_target(
+                audit.parent, audit, manifest, token)
+            if state == "live" and target not in dispatched_ids[kind]:
+                reasons.setdefault(eid, set()).add("late_token")
+    return reasons, split_parents
+
+
+def _output_discovery_lifecycle(lint, summary, text, rows, discovery_ids):
+    discovered = {item for item in discovery_ids if item.startswith("O-")}
+    table = tables_by_cols(
+        lint, summary, text, OUTPUT_DISCOVERY_COLS, "output discovery dispositions")
+    by_id = {}
+    for row in table:
+        output_id = row["Output ID"]
+        if output_id in by_id:
+            lint.fail(f"{summary}: duplicate output discovery disposition {output_id}")
+        by_id[output_id] = row
+        wanted = OUTPUT_FROM_CLAIM_VERDICT.get(row["Claim Verdict"])
+        if wanted is None or row["Output Status"] != wanted:
+            lint.fail(f"{summary}: output {output_id} verdict/status mapping is invalid")
+    final = {dict(zip(OUTPUT_COLS, row))["Output ID"]: dict(zip(OUTPUT_COLS, row))
+             for row in rows}
+    for output_id in sorted(discovered):
+        status = final.get(output_id, {}).get("Status")
+        structural = status == "orphan"
+        mapped = output_id in by_id
+        if structural == mapped:
+            lint.fail(f"{summary}: output discovery {output_id} must take exactly one claim-disposition or orphan branch")
+        if mapped:
+            record = by_id[output_id]
+            if final[output_id].get("Claim IDs") != record["Claim ID"]:
+                lint.fail(f"{summary}: output discovery {output_id} claim join disagrees with register")
+            if status != record["Output Status"]:
+                lint.fail(f"{summary}: output discovery {output_id} status disagrees with mapping")
+
+
+def _stage_b6_pre_u6_fixture(lint, audit, stream, manifest):
+    """Preserve historical direct-fixture coverage below the production seam.
+
+    Initialized runs always contain ``<stream>_b6a`` and therefore never take
+    this path.  It exists only so U1–U5 tests keep proving the boundary they
+    originally reviewed while their shared builder migrates stage names.
+    """
     check_manifest_worker_shards(
         lint, manifest, f"{stream}_b5", recheck_plan_path(audit, stream),
-        "Cluster ID",
-    )
-    snap = audit / "_run" / "snapshots" / SNAP_KEY[f"b6-{stream}"]
+        "Cluster ID")
+    snap = audit / "_run/snapshots" / SNAP_KEY[f"b6a-{stream}"]
     staging = audit / "_staging"
-    summary = audit / ("claims_recheck_summary.md" if stream == "claims" else "code_error_recheck_summary.md")
+    summary = _summary_path(audit, stream)
     stext = read_text(lint, summary)
     splits = 0
     if stext is not None:
-        m = re.search(r"Splits declared:\s*(\d+)", stext)
-        m2 = re.search(r"Merges declared:\s*(\d+)", stext)
-        if not m or not m2:
-            lint.fail(f"{summary}: missing machine-readable 'Splits declared: <n>' / 'Merges declared: <n>' lines")
+        first = re.search(r"Splits declared:\s*(\d+)", stext)
+        second = re.search(r"Merges declared:\s*(\d+)", stext)
+        if not first or not second:
+            lint.fail(f"{summary}: missing machine-readable split/merge counts")
         else:
-            splits = int(m.group(1))
-    # merge-coordinator ranges from the stream's b1 plan — the only legal source of new IDs
-    if stream == "claims":
-        _, coord = parse_plan(lint, audit / "plans" / "claims_review_plan.md", "Worker ID")
-    else:
-        _, coord = parse_plan(lint, audit / "plans" / "code_error_review_plan.md", "Chunk ID")
+            splits = int(first.group(1))
     total_new = 0
-    for f, cols, idc in register_files(audit, stream):
-        st = load_register(lint, staging / f, cols)
-        sn = load_register(lint, snap / f, cols)
-        if st is None or sn is None:
+    if stream == "claims":
+        _alloc, coord = parse_plan(
+            lint, audit / "plans/claims_review_plan.md", "Worker ID")
+    else:
+        _alloc, coord = parse_plan(
+            lint, audit / "plans/code_error_review_plan.md", "Chunk ID")
+    for fname, cols, id_col in register_files(audit, stream):
+        final_path = staging / fname
+        final = load_register(lint, final_path, cols)
+        before = load_register(lint, snap / fname, cols)
+        if final is None or before is None:
             continue
-        _, st_rows = st
-        _, sn_rows = sn
-        st_ids = col(st_rows, cols, idc)
-        check_unique(lint, staging / f, st_ids, idc)
-        st_set, sn_set = set(st_ids), set(col(sn_rows, cols, idc))
-        for i in sorted(sn_set - st_set):
-            lint.fail(f"{staging / f}: row {i} deleted at recheck merge (rows are never deleted)")
-        new_ids = st_set - sn_set
-        for i in sorted(new_ids):
-            if not coord or not in_ranges(i, coord):
-                lint.fail(f"{staging / f}: new ID {i} outside the merge-coordinator range")
-        total_new += len(new_ids)
-        for r in st_rows:
-            s = dict(zip(cols, r))["Status"]
-            m_dup = re.fullmatch(r"duplicate_of:([CEO]-\d{4})", s)
-            if m_dup and m_dup.group(1) not in st_set:
-                lint.fail(f"{staging / f}: duplicate_of target {m_dup.group(1)} not in register")
-        if f == "claims_register.md":
-            check_claims_rows(lint, staging / f, st_rows, final=True)
-            # U1 advisory: this is a FINAL claims register (recheck merge).
-            check_adjudication_advisory(lint, staging / f, st_rows)
-        elif f == "output_register.md":
-            check_output_rows(lint, staging / f, st_rows, final=True)
+        final_ids = col(final[1], cols, id_col)
+        before_ids = set(col(before[1], cols, id_col))
+        check_unique(lint, final_path, final_ids, id_col)
+        for item in sorted(before_ids - set(final_ids)):
+            lint.fail(f"{final_path}: row {item} deleted at recheck merge")
+        new = set(final_ids) - before_ids
+        for item in sorted(new):
+            if not coord or not in_ranges(item, coord):
+                lint.fail(f"{final_path}: new ID {item} outside the merge-coordinator range")
+        total_new += len(new)
+        if fname == "claims_register.md":
+            check_claims_rows(lint, final_path, final[1], final=True)
+            check_adjudication_advisory(lint, final_path, final[1])
+        elif fname == "output_register.md":
+            check_output_rows(lint, final_path, final[1], final=True)
         else:
-            check_error_rows(lint, staging / f, st_rows, final=True)
-            for s in col(st_rows, cols, "Status"):
-                if s == "candidate":
-                    lint.fail(f"{staging / f}: 'candidate' status must not survive the recheck merge")
+            check_error_rows(lint, final_path, final[1], final=True)
+            for status in col(final[1], cols, "Status"):
+                if status == "candidate":
+                    lint.fail(f"{final_path}: 'candidate' status must not survive the recheck merge")
     if total_new != splits:
-        lint.fail(f"recheck merge: {total_new} new row(s) across registers but 'Splits declared: {splits}'")
+        lint.fail(f"recheck merge: {total_new} new row(s) but 'Splits declared: {splits}'")
     if stream == "code":
-        check_definition_use_b6(lint, audit)
+        check_detector_mapping_b6(
+            lint, audit, audit / "_staging/code_error_register.md")
+
+
+def stage_b6(lint, audit, stream, manifest):
+    """Compatibility entry point for historical in-process unit tests only."""
+    return _stage_b6_pre_u6_fixture(lint, audit, stream, manifest)
+
+
+def stage_b6a(lint, audit, stream, manifest):
+    stages = manifest.get("stages", {}) if isinstance(manifest, dict) else {}
+    if f"{stream}_b6a" not in stages:
+        # Design call 8: the b6 -> b6a rename is a rename, not an alias.  A
+        # manifest without the b6a key predates the U6 supplementary contract
+        # and is a restart; the pre-U6 fixture path stays reachable only via
+        # the in-process helper for the historical U1-U5 test fixtures.
+        lint.fail(
+            f"manifest has no {stream}_b6a stage entry: this run predates the "
+            "b6a/b5s/b6b supplementary contract and must restart (design call 8)"
+        )
+        return
+    main_plan = recheck_plan_path(audit, stream)
+    check_manifest_worker_shards(lint, manifest, f"{stream}_b5", main_plan, "Cluster ID")
+    parsed_main = parse_recheck_plan(lint, audit, stream)
+    parsed_supp = parse_recheck_plan(lint, audit, stream, True)
+    if parsed_main is None or parsed_supp is None:
+        return
+    _main_path, _main_inventory, main_clusters = parsed_main
+    _supp_path, supp_inventory, supp_clusters = parsed_supp
+    snap = audit / "_run/snapshots" / SNAP_KEY[f"b6a-{stream}"]
+    summary = _summary_path(audit, stream)
+    text = read_text(lint, summary) or ""
+    counts_match = DISCOVERY_COUNTS_RE.search(text)
+    if not counts_match:
+        lint.fail(f"{summary}: missing exact 'Discoveries declared: C=<n>; O=<n>; E=<n>' line")
+        declared_counts = {letter: -1 for letter in "COE"}
+    else:
+        declared_counts = dict(zip("COE", map(int, counts_match.groups())))
+    if not re.search(r"(?m)^Splits declared:\s*\d+\s*$", text) or not re.search(
+            r"(?m)^Merges declared:\s*\d+\s*$", text):
+        lint.fail(f"{summary}: missing machine-readable split/merge counts")
+    descendants = _lineage_descendants(lint, summary, text) if stream == "code" else set()
+    new_ids, new_rows = set(), {}
+    final_rows_by_file = {}
+    for fname, cols, id_col in register_files(audit, stream):
+        frozen_post_b6a = audit / "_run/snapshots" / f"{stream}_b6b" / fname
+        final_path = frozen_post_b6a if frozen_post_b6a.is_file() else audit / fname
+        final = load_register(lint, final_path, cols)
+        before = load_register(lint, snap / fname, cols)
+        if final is None or before is None:
+            continue
+        final_rows, before_rows = final[1], before[1]
+        final_rows_by_file[fname] = final_rows
+        final_by_id = {dict(zip(cols, row))[id_col]: dict(zip(cols, row)) for row in final_rows}
+        before_ids = set(col(before_rows, cols, id_col))
+        final_ids = set(final_by_id)
+        for item in sorted(before_ids - final_ids):
+            lint.fail(f"{final_path}: row {item} deleted at b6a (rows are never deleted)")
+        current_new = final_ids - before_ids
+        new_ids.update(current_new)
+        new_rows.update({item: final_by_id[item] for item in current_new})
+        check_unique(lint, final_path, list(final_by_id), id_col)
+        if fname == "claims_register.md":
+            check_claims_rows(lint, final_path, final_rows, final=True)
+            for item in current_new:
+                if final_by_id[item]["Status"] not in {"inconsistent", "unclear"}:
+                    lint.fail(f"{final_path}: discovery {item} must be inconsistent or unclear")
+        elif fname == "output_register.md":
+            check_output_rows(lint, final_path, final_rows, final=True)
+            for item in current_new:
+                if final_by_id[item]["Status"] not in {"mapped", "orphan", "unclear", "inconsistent"}:
+                    lint.fail(f"{final_path}: discovery {item} has illegal output status")
+        else:
+            check_error_rows(lint, final_path, final_rows, final=True)
+            for item, row in final_by_id.items():
+                if row["Status"] == "candidate" and item not in current_new:
+                    lint.fail(f"{final_path}: only a b6a discovery may remain candidate")
+            for item in current_new:
+                if final_by_id[item]["Status"] != "candidate":
+                    lint.fail(f"{final_path}: code discovery {item} must be candidate")
+    discovery_ids = new_ids - descendants
+    actual_counts = {letter: sum(item.startswith(letter + "-") for item in discovery_ids)
+                     for letter in "COE"}
+    if declared_counts != actual_counts:
+        lint.fail(f"{summary}: discovery counts {declared_counts} disagree with rows {actual_counts}")
+    expected_reasons = split_parents = None
+    if stream == "code":
+        error_rows = [dict(zip(ERROR_COLS, row))
+                      for row in final_rows_by_file.get("code_error_register.md", [])]
+        if _u8_tokens_active(manifest, audit, "code_b6a", rows=error_rows):
+            expected_reasons, split_parents = _expected_code_token_obligations(
+                lint, audit, manifest, error_rows, discovery_ids, summary, text)
+            _token_receipt_gate(
+                lint, audit, manifest, error_rows, "code_b6a",
+                allowed_uncovered=expected_reasons,
+            )
+    _validate_supplementary_plan(
+        lint, audit, stream, supp_inventory, supp_clusters, new_ids, discovery_ids,
+        expected_reasons, split_parents)
+    footer_ids = _reconcile_recheck_footers(
+        lint, audit, stream, main_clusters, manifest, f"{stream}_b5", summary,
+        allowed_candidates=discovery_ids)
+    if footer_ids != discovery_ids:
+        lint.fail(f"{summary}: footer-minted discovery IDs do not exactly equal declared discoveries; expected={sorted(discovery_ids)}, actual={sorted(footer_ids)}")
+    if stream == "claims":
+        output_rows = final_rows_by_file.get("output_register.md")
+        if output_rows is not None:
+            _output_discovery_lifecycle(
+                lint, summary, text, output_rows, discovery_ids)
+    else:
+        check_detector_mapping_b6(lint, audit)
+
+
+def _all_recheck_ledgers(lint, audit, stream, supplementary):
+    root = audit / (SUPPLEMENTARY_SHARD_DIRS[stream] if supplementary else
+                    ("_recheck" if stream == "claims" else "_code_error_recheck"))
+    cols = LEDGER_COLS if stream == "claims" else CODE_LEDGER_COLS
+    found = []
+    if not root.is_dir():
+        return found
+    for path in sorted(root.rglob("*.md")):
+        text = read_text(lint, path) or ""
+        for headers, rows, _line in parse_tables(text):
+            if headers == cols:
+                found.extend((path, dict(zip(cols, row))) for row in rows
+                             if len(row) == len(cols))
+    return found
+
+
+def _claim_disposition_allowed(row, final):
+    verdict = row.get("Verdict")
+    status, severity = final.get("Status"), final.get("Severity")
+    if verdict in {"substantiated", "substantiated_but_reframe"}:
+        return status == "inconsistent" and severity in {"1", "2", "3", "4"}
+    if verdict == "row_note_only":
+        return status in {"confirmed", "mapped"} and severity == "1"
+    if verdict == "not_substantiated":
+        return status in {"confirmed", "mapped", "unclear"} and blank_cell(severity)
+    if verdict == "confirmation_needed":
+        return status == "confirmation_needed"
+    if verdict == "blocked":
+        return status == "blocked"
+    return False
+
+
+def _late_observation_rows(lint, audit, stream, path=None):
+    path = path or audit / f"late_observations_{stream}.md"
+    text = read_text(lint, path)
+    if text is None:
+        return path, [], []
+    tables = [(headers, rows) for headers, rows, _line in parse_tables(text)]
+    matches = [rows for headers, rows in tables if headers == LO_COLS]
+    if len(matches) > 1:
+        lint.fail(f"{path}: expected at most one late-observations table")
+    rows = []
+    if matches:
+        for raw in matches[0]:
+            if len(raw) != len(LO_COLS):
+                lint.fail(f"{path}: malformed late-observation row")
+                continue
+            rows.append(dict(zip(LO_COLS, raw)))
+    elif LO_EMPTY not in text:
+        lint.fail(f"{path}: requires a table or exact '{LO_EMPTY}'")
+    disp_matches = [rows for headers, rows in tables if headers == LO_DISPOSITION_COLS]
+    dispositions = []
+    if disp_matches:
+        if len(disp_matches) != 1:
+            lint.fail(f"{path}: expected exactly one dispositions table")
+        for raw in disp_matches[0]:
+            if len(raw) == len(LO_DISPOSITION_COLS):
+                dispositions.append(dict(zip(LO_DISPOSITION_COLS, raw)))
+    elif rows and LO_DISPOSITIONS_EMPTY not in text:
+        lint.fail(f"{path}: late observations require a Dispositions table")
+    prefix = "LO-C-" if stream == "claims" else "LO-E-"
+    for index, row in enumerate(rows, start=1):
+        if row["LO ID"] != f"{prefix}{index:04d}":
+            lint.fail(f"{path}: late-observation IDs must be sequential from {prefix}0001")
+        if not re.fullmatch(r"audit/[^#]+#OBS-\d{4}", row["Source Shard"]):
+            lint.fail(f"{path}: {row['LO ID']} Source Shard must be path#OBS-####")
+        if blank_cell(row["Anchor"]) or blank_cell(row["Observation"]):
+            lint.fail(f"{path}: {row['LO ID']} requires Anchor and Observation")
+    if {row["LO ID"] for row in dispositions} != {row["LO ID"] for row in rows}:
+        lint.fail(f"{path}: dispositions must cover every late observation exactly once")
+    check_unique(lint, path, [row["LO ID"] for row in dispositions], "LO disposition")
+    for row in dispositions:
+        if not valid_lo_state(row["Prior State"]):
+            lint.fail(f"{path}: {row['LO ID']} invalid prior state {row['Prior State']!r}")
+        if not valid_lo_state(row["State"]):
+            lint.fail(f"{path}: {row['LO ID']} invalid disposition state {row['State']!r}")
+        elif not valid_lo_transition(row["Prior State"], row["State"]):
+            lint.fail(
+                f"{path}: illegal recorded disposition transition for {row['LO ID']}: "
+                f"{row['Prior State']!r} -> {row['State']!r}")
+    return path, rows, dispositions
+
+
+def valid_lo_state(state):
+    return bool(
+        state == "pending" or state == "acknowledged_unverified"
+        or re.fullmatch(r"qa_commissioned:QA-\d{4}", state)
+        or re.fullmatch(r"qa_closed:QA-\d{4}:(?:conclusive|inconclusive)", state)
+        or re.fullmatch(r"minted:BC-\d{4}", state)
+    )
+
+
+def valid_lo_transition(before, after):
+    if before == after:
+        return True
+    if before == "pending":
+        return bool(after == "acknowledged_unverified"
+                    or re.fullmatch(r"qa_commissioned:QA-\d{4}", after)
+                    or re.fullmatch(r"minted:BC-\d{4}", after))
+    commissioned = re.fullmatch(r"qa_commissioned:(QA-\d{4})", before)
+    if commissioned:
+        return after in {
+            f"qa_closed:{commissioned.group(1)}:conclusive",
+            f"qa_closed:{commissioned.group(1)}:inconclusive",
+        }
+    if before == "acknowledged_unverified" or re.fullmatch(
+            r"qa_closed:QA-\d{4}:conclusive", before):
+        return bool(re.fullmatch(r"minted:BC-\d{4}", after))
+    if re.fullmatch(r"qa_closed:QA-\d{4}:inconclusive", before):
+        return bool(re.fullmatch(r"qa_commissioned:QA-\d{4}", after)
+                    or re.fullmatch(r"minted:BC-\d{4}", after))
+    return False
+
+
+def _check_detector_materiality(lint, audit):
+    mappings = parse_detector_mappings(lint, audit)
+    if not mappings:
+        return
+    ledgers = (_all_recheck_ledgers(lint, audit, "code", False)
+               + _all_recheck_ledgers(lint, audit, "code", True))
+    by_id = {}
+    for path, row in ledgers:
+        by_id.setdefault(row.get("ID", ""), []).append((path, row))
+    final = load_register(
+        lint, audit / "code_error_register.md", ERROR_COLS, allow_extra=True)
+    final_by_id = ({dict(zip(final[0], row))["Error ID"]: dict(zip(final[0], row))
+                    for row in final[1]} if final else {})
+    summary = audit / "code_error_recheck_summary.md"
+    summary_text = read_text(lint, summary) or ""
+    lineage_rows = tables_by_cols(
+        lint, summary, summary_text, LINEAGE_COLS, "split lineage")
+    descendants = {}
+    for row in lineage_rows:
+        descendants.setdefault(row["Original Error ID"], set()).add(
+            row["Descendant Error ID"])
+    detector_ids = set()
+    for original in {row["Error ID"] for row in mappings}:
+        detector_ids.update(descendants.get(original, {original}))
+    for error_id in sorted(detector_ids):
+        final_row = final_by_id.get(error_id, {})
+        final_status = final_row.get("Status", "")
+        if final_status == "not_error" or final_status.startswith("duplicate_of:"):
+            continue
+        dispositions = by_id.get(error_id, [])
+        if len(dispositions) != 1:
+            continue
+        path, ledger = dispositions[0]
+        proposed = ledger.get("Proposed Severity", "")
+        if ledger.get("Verdict") in {"confirmation_needed", "blocked", "deferred"}:
+            match = re.search(
+                r"\[materiality_reassessment\]\s+severity=([1-4]);\s+basis=(\S.*)",
+                ledger.get("Proposed Note", ""))
+            if not match:
+                lint.fail(f"{path}: detector-minted {error_id} carry-forward verdict requires '[materiality_reassessment] severity=<1-4>; basis=<text>' in Proposed Note")
+            elif ledger.get("Verdict") != "confirmation_needed" \
+                    and not blank_cell(proposed) and proposed != match.group(1):
+                lint.fail(f"{path}: detector-minted {error_id} materiality severity disagrees with Proposed Severity")
+            elif final_row.get("Severity", "") != match.group(1):
+                lint.fail(f"{path}: detector-minted {error_id} materiality severity was not applied at b6b")
+        elif proposed not in {"1", "2", "3", "4"}:
+            lint.fail(f"{path}: active detector-minted {error_id} lacks an explicit severity ruling")
+
+
+def _reject_mixed_cells(lint, paths):
+    """Refuse a persisted merge aggregate without banning prose about MIXED."""
+    for path in paths:
+        text = read_text(lint, path)
+        if text is None:
+            continue
+        for headers, rows, _line in parse_tables(text):
+            for row in rows:
+                if any(cell.strip() == mechanism.MIXED for cell in row):
+                    lint.fail(f"{path}: MIXED cannot survive b6b")
+                    break
+
+
+def _check_duplicate_chains(lint, path, rows, cols, id_col):
+    """Require every duplicate to name one present, terminal canonical row."""
+    by_id = {dict(zip(cols, row))[id_col]: dict(zip(cols, row)) for row in rows}
+    for row_id, row in by_id.items():
+        match = re.fullmatch(r"duplicate_of:([CEO]-\d{4})", row.get("Status", ""))
+        if not match:
+            continue
+        target = match.group(1)
+        target_row = by_id.get(target)
+        if target == row_id or target_row is None:
+            lint.fail(f"{path}: duplicate {row_id} names absent/self target {target}")
+        elif str(target_row.get("Status", "")).startswith("duplicate_of:"):
+            lint.fail(f"{path}: duplicate chain {row_id} -> {target} is not resolved to a terminal row")
+
+
+def stage_b6b(lint, audit, stream, manifest):
+    parsed = parse_recheck_plan(lint, audit, stream, True)
+    if parsed is None:
+        return
+    plan, inventory, clusters = parsed
+    check_manifest_worker_shards(
+        lint, manifest, f"{stream}_b5s", plan, "Cluster ID", clusters)
+    snap = audit / "_run/snapshots" / SNAP_KEY[f"b6b-{stream}"]
+    final_by_all = {}
+    final_register_paths = []
+    final_code_register_path = None
+    for fname, cols, id_col in register_files(audit, stream):
+        # b7/b8 (and later bC) may legally evolve canon after b6b.  Prefer the
+        # first immutable pre-stage image that preserves the post-b6b ID set.
+        later_snapshots = ("bC", "b7", "b8")
+        final_path = next((
+            audit / "_run/snapshots" / stage / fname
+            for stage in later_snapshots
+            if (audit / "_run/snapshots" / stage / fname).is_file()
+        ), audit / fname)
+        final = load_register(lint, final_path, cols, allow_extra=True)
+        before = load_register(lint, snap / fname, cols)
+        if final is None or before is None:
+            continue
+        final_register_paths.append(final_path)
+        final_rows = [
+            [dict(zip(final[0], row)).get(column, "") for column in cols]
+            for row in final[1]
+        ]
+        final_ids = set(col(final_rows, cols, id_col))
+        before_ids = set(col(before[1], cols, id_col))
+        if final_ids != before_ids:
+            lint.fail(f"{final_path}: b6b cannot mint or delete register rows")
+        final_by_all.update({dict(zip(cols, row))[id_col]: dict(zip(cols, row))
+                             for row in final_rows})
+        if fname == "claims_register.md":
+            check_claims_rows(lint, final_path, final_rows, final=True)
+        elif fname == "output_register.md":
+            check_output_rows(lint, final_path, final_rows, final=True)
+        else:
+            check_error_rows(lint, final_path, final_rows, final=True)
+            final_code_register_path = final_path
+            for row in final_rows:
+                if dict(zip(cols, row))["Status"] == "candidate":
+                    lint.fail(f"{final_path}: candidate status cannot survive b6b")
+        # Every register: a duplicate_of must name a present, terminal row
+        # (the 241ce5e recheck-merge guarantee, restored at b6b).
+        _check_duplicate_chains(lint, final_path, final_rows, cols, id_col)
+    token_classifications = {}
+    residual_ids = set()
+    if stream == "code":
+        if final_code_register_path is not None:
+            check_detector_mapping_b6(
+                lint, audit, final_path=final_code_register_path)
+        error_rows = [row for row in final_by_all.values()
+                      if str(row.get("Error ID", "")).startswith("E-")]
+        if _u8_tokens_active(manifest, audit, "code_b6b", rows=error_rows):
+            token_classifications = _final_token_partition(
+                lint, audit, manifest, error_rows, "code_b6b")
+            residual_ids = {row["Error ID"] for row in _residual_rows(lint, audit)}
+    ledgers = _all_recheck_ledgers(lint, audit, stream, True)
+    by_id = {}
+    for path, row in ledgers:
+        by_id.setdefault(row.get("ID", ""), []).append((path, row))
+    inventory_ids = {row.get("ID", "") for row in inventory}
+    for item in sorted(inventory_ids):
+        dispositions = by_id.get(item, [])
+        if len(dispositions) != 1:
+            lint.fail(f"{plan}: supplementary ID {item} has {len(dispositions)} ledger rows; expected exactly one")
+            continue
+        path, ledger = dispositions[0]
+        final = final_by_all.get(item)
+        if final is None:
+            lint.fail(f"{plan}: supplementary ID {item} vanished before b6b")
+            continue
+        if stream == "code":
+            expected = expected_code_disposition(
+                ledger,
+                severe_authorized=(
+                    token_classifications.get(item) in {"live", "target_not_live"}
+                    or item in residual_ids
+                ),
+            )
+            if expected is None or (final.get("Status"), final.get("Severity")) != expected:
+                lint.fail(f"{path}: supplementary ID {item} final disposition disagrees with its ledger")
+        elif not _claim_disposition_allowed(ledger, final):
+            lint.fail(f"{path}: supplementary claim {item} final disposition disagrees with its ledger")
+    summary = _summary_path(audit, stream, True)
+    read_text(lint, summary)
+    lo_path, lo_rows, _dispositions = _late_observation_rows(lint, audit, stream)
+    _reconcile_recheck_footers(
+        lint, audit, stream, clusters, manifest, f"{stream}_b5s", summary,
+        late_rows=lo_rows)
+    footer_report = _summary_footer_report(read_text(lint, summary) or "")
+    cited_late_ids = {
+        disposition["lo_id"]
+        for disposition in parse_footer_dispositions(lint, summary, footer_report)
+        if disposition["action"] == "late_observation"
+    }
+    artifact_late_ids = {row["LO ID"] for row in lo_rows}
+    if cited_late_ids != artifact_late_ids:
+        lint.fail(
+            f"{lo_path}: late-observation rows do not exactly equal b5s footer dispositions; "
+            f"expected={sorted(cited_late_ids)}, actual={sorted(artifact_late_ids)}")
+    sources = [row["Source Shard"] for row in lo_rows]
+    check_unique(lint, lo_path, sources, "late-observation Source Shard")
+    if stream == "code":
+        _check_detector_materiality(lint, audit)
+        receipt_path = audit / "_run/code_b6b/dismissal_receipts.md"
+        witness_path = audit / "_run/code_b6b/witness_outcomes.md"
+        zero_surfaces = {
+            receipt_path: (
+                "# Supplementary dismissal receipts\n\n"
+                "No supplementary dismissal receipts were required.\n"),
+            witness_path: (
+                "# Supplementary witness outcomes\n\n"
+                "No supplementary mapped witness outcomes.\n"),
+        }
+        for evidence, expected in zero_surfaces.items():
+            text = read_text(lint, evidence)
+            zero_line = expected.splitlines()[-1]
+            if text is not None and zero_line in text and text != expected:
+                lint.fail(f"{evidence}: supplementary evidence must use the exact explicit-zero form")
+        receipt_text = read_text(lint, receipt_path) or ""
+        if "No supplementary dismissal receipts were required." not in receipt_text:
+            tables_by_cols(
+                lint, receipt_path, receipt_text, RECEIPT_COLS,
+                "supplementary dismissal receipts", required=True)
+        witness_text = read_text(lint, witness_path) or ""
+        if "No supplementary mapped witness outcomes." not in witness_text:
+            tables_by_cols(
+                lint, witness_path, witness_text, POST_WITNESS_COLS,
+                "supplementary witness outcomes", required=True)
+        _reject_mixed_cells(lint, [
+            *(path for path, _row in ledgers),
+            summary,
+            lo_path,
+            *zero_surfaces,
+            *final_register_paths,
+        ])
+
+
+def bc_old_value_hash(register, row_id, field, old_value):
+    """Hash the documented bC old-value preimage."""
+    preimage = f"{register}\0{row_id}\0{field}\0{old_value}".encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def _bc_plan(lint, audit):
+    path = audit / "plans/late_observation_corrections.md"
+    text = read_text(lint, path)
+    if text is None:
+        return path, [], []
+    matches = [(rows, line) for headers, rows, line in parse_tables(text)
+               if headers == BC_PLAN_COLS]
+    if len(matches) != 1:
+        lint.fail(f"{path}: expected exactly one bC plan table with columns {' | '.join(BC_PLAN_COLS)}")
+        rows = []
+    else:
+        rows = []
+        for index, raw in enumerate(matches[0][0], start=1):
+            if len(raw) != len(BC_PLAN_COLS):
+                lint.fail(f"{path}: malformed plan row {index}")
+                continue
+            row = dict(zip(BC_PLAN_COLS, raw))
+            if not re.fullmatch(r"BC-\d{4}", row["BC ID"]):
+                lint.fail(f"{path}: invalid BC ID {row['BC ID']!r}")
+            if not re.fullmatch(r"LO-[CE]-\d{4}", row["LO ID"]):
+                lint.fail(f"{path}: invalid LO ID {row['LO ID']!r}")
+            if row["Register"] not in {"claims", "output", "code_error"}:
+                lint.fail(f"{path}: invalid Register {row['Register']!r}")
+            if row["Operation"] not in {"new_row", "patch"}:
+                lint.fail(f"{path}: invalid Operation {row['Operation']!r}")
+            try:
+                payload = json.loads(row["Payload JSON"])
+            except json.JSONDecodeError as exc:
+                lint.fail(f"{path}: {row['BC ID']} Payload JSON is invalid: {exc}")
+                payload = None
+            if not isinstance(payload, dict):
+                lint.fail(f"{path}: {row['BC ID']} Payload JSON must be an object")
+            row["_payload"] = payload or {}
+            rows.append(row)
+    ranges = [parse_range(f"{a}–{b}") for a, b in BC_RANGE_RE.findall(text)]
+    return path, rows, [item for item in ranges if item]
+
+
+def _check_bc_declared_cells(lint, final_path, headers, before_by_id,
+                             final_by_id, expected_patches):
+    for row_id in set(before_by_id) & set(final_by_id):
+        for field in headers:
+            before_value = before_by_id[row_id][field]
+            final_value = final_by_id[row_id][field]
+            expected = expected_patches.get((row_id, field), before_value)
+            if final_value != expected:
+                lint.fail(f"{final_path}: undeclared bC cell change at {row_id}.{field}")
+
+
+def _bc_new_row_matches(payload, final_row, headers, rewrite_pairs):
+    """Compare a bC payload before or after the authorized b8 rewrite pass."""
+    if set(payload) != set(headers):
+        return False
+    by_base = dict(rewrite_pairs)
+    by_original = {original: base for base, original in rewrite_pairs}
+    for field in headers:
+        if field in by_base:
+            original = by_base[field]
+            observed = final_row.get(original, "")
+            if blank_cell(observed):
+                observed = final_row.get(field, "")
+            if payload.get(field) != observed:
+                return False
+        elif field in by_original and blank_cell(payload.get(field, "")):
+            if final_row.get(field, "") not in {payload.get(field, ""),
+                                                 payload.get(by_original[field], "")}:
+                return False
+        elif payload.get(field) != final_row.get(field):
+            return False
+    return True
+
+
+def stage_bC(lint, audit, manifest):
+    plan_path, plan_rows, ranges = _bc_plan(lint, audit)
+    check_identifier_exhaustion(lint, plan_path, ranges)
+    mode = manifest.get("mode") if isinstance(manifest, dict) else None
+    streams = ("code",) if mode == "code_errors_only" else ("claims", "code")
+    prior = []
+    for stream in streams:
+        prior.extend(_previous_ranges(lint, audit, stream))
+        supplementary = recheck_plan_path(audit, stream, True)
+        if supplementary.is_file():
+            prior.extend(_ranges_from_text(supplementary.read_text(encoding="utf-8")))
+    check_disjoint(lint, plan_path, prior + ranges)
+    # The artifacts are the immutable provenance home; register schemas remain frozen.
+    lo_states = {}
+    for stream in streams:
+        path = audit / f"late_observations_{stream}.md"
+        if not path.is_file():
+            continue
+        _path, rows, dispositions = _late_observation_rows(lint, audit, stream)
+        snapshot_path = audit / "_run/snapshots/bC" / path.name
+        _snapshot_path, old_rows, old_dispositions = _late_observation_rows(
+            lint, audit, stream, snapshot_path)
+        if old_rows != rows:
+            lint.fail(f"{path}: bC cannot add, delete, or edit late-observation evidence")
+        old_states = {row["LO ID"]: row["State"] for row in old_dispositions}
+        for disposition in dispositions:
+            old_state = old_states.get(disposition["LO ID"])
+            if old_state is None or disposition["Prior State"] != old_state \
+                    or not valid_lo_transition(old_state, disposition["State"]):
+                lint.fail(
+                    f"{path}: illegal disposition transition for {disposition['LO ID']}: "
+                    f"{old_state!r} -> {disposition['State']!r}")
+        known = {row["LO ID"] for row in rows}
+        for disposition in dispositions:
+            lo_states[disposition["LO ID"]] = disposition["State"]
+        for row in plan_rows:
+            if row["LO ID"].startswith("LO-C-") == (stream == "claims") \
+                    and row["LO ID"] not in known:
+                lint.fail(f"{plan_path}: plan names unknown late observation {row['LO ID']}")
+    bc_to_lo = {}
+    operation_keys = set()
+    for row in plan_rows:
+        previous = bc_to_lo.setdefault(row["BC ID"], row["LO ID"])
+        if previous != row["LO ID"]:
+            lint.fail(f"{plan_path}: {row['BC ID']} is reused for more than one LO ID")
+        if lo_states.get(row["LO ID"]) != f"minted:{row['BC ID']}":
+            lint.fail(f"{plan_path}: {row['LO ID']} disposition must be minted:{row['BC ID']}")
+        key = (row["Register"], row["Operation"], row["Row ID"],
+               row["_payload"].get("field", ""))
+        if key in operation_keys:
+            lint.fail(f"{plan_path}: duplicate correction operation {key}")
+        operation_keys.add(key)
+    register_contracts = {
+        "claims": ("claims_register.md", CLAIMS_COLS, "Claim ID"),
+        "output": ("output_register.md", OUTPUT_COLS, "Output ID"),
+        "code_error": ("code_error_register.md", ERROR_COLS, "Error ID"),
+    }
+    if mode == "code_errors_only" and any(
+            row["Register"] in {"claims", "output"} for row in plan_rows):
+        lint.fail(f"{plan_path}: code-errors-only bC cannot edit claims/output registers")
+    new_ids = set()
+    bc_new_code_rows = []
+    touched_by_bc = {}
+    for register, (filename, base_cols, id_col) in register_contracts.items():
+        if mode == "code_errors_only" and register != "code_error":
+            continue
+        before_path = audit / "_run/snapshots/bC" / filename
+        final_path = audit / filename
+        before = load_register(lint, before_path, base_cols, allow_extra=True)
+        final = load_register(lint, final_path, base_cols, allow_extra=True)
+        if before is None or final is None:
+            continue
+        before_headers, before_rows = before
+        final_headers, final_rows = final
+        if before_headers != final_headers:
+            lint.fail(f"{final_path}: bC cannot change register columns")
+            continue
+        before_by_id = {dict(zip(before_headers, row))[id_col]: dict(zip(before_headers, row))
+                        for row in before_rows}
+        final_by_id = {dict(zip(final_headers, row))[id_col]: dict(zip(final_headers, row))
+                       for row in final_rows}
+        if set(before_by_id) - set(final_by_id):
+            lint.fail(f"{final_path}: bC cannot delete rows")
+        register_plans = [row for row in plan_rows if row["Register"] == register]
+        rewrite_pairs = REWRITE_PAIRS.get(filename, [])
+        new_plans = {row["Row ID"]: row for row in register_plans
+                     if row["Operation"] == "new_row"}
+        actual_new = set(final_by_id) - set(before_by_id)
+        if actual_new != set(new_plans):
+            lint.fail(f"{final_path}: new-row delta disagrees with bC plan; expected={sorted(new_plans)}, actual={sorted(actual_new)}")
+        new_ids.update(actual_new)
+        if register == "code_error":
+            bc_new_code_rows.extend(final_by_id[row_id] for row_id in actual_new)
+        for row_id in actual_new:
+            row = new_plans[row_id]
+            if row["Old Value SHA256"] not in {"", "-", "—"}:
+                lint.fail(f"{plan_path}: new row {row_id} forbids an old-value hash")
+            if not _bc_new_row_matches(
+                    row["_payload"], final_by_id[row_id], final_headers,
+                    rewrite_pairs):
+                lint.fail(f"{plan_path}: new row {row_id} payload does not exactly equal the final register row")
+            if row_id != row["_payload"].get(id_col):
+                lint.fail(f"{plan_path}: new row {row_id} payload ID disagrees")
+            touched_by_bc.setdefault(row["BC ID"], set()).add(register)
+        expected_patches = {}
+        for row in register_plans:
+            if row["Operation"] != "patch":
+                continue
+            payload = row["_payload"]
+            field = payload.get("field")
+            if (register, field) not in {("claims", "Output IDs"), ("output", "Claim IDs")}:
+                lint.fail(f"{plan_path}: patch {row['BC ID']} may change only reciprocal C↔O link columns")
+                continue
+            if set(payload) != {"field", "new_value"}:
+                lint.fail(f"{plan_path}: patch {row['BC ID']} payload must contain only field/new_value")
+                continue
+            if row["Row ID"] not in before_by_id:
+                lint.fail(f"{plan_path}: patch target {row['Row ID']} is absent from the bC snapshot")
+                continue
+            old = before_by_id[row["Row ID"]].get(field, "")
+            wanted_hash = bc_old_value_hash(register, row["Row ID"], field, old)
+            if row["Old Value SHA256"] != wanted_hash:
+                lint.fail(f"{plan_path}: patch {row['BC ID']} old-value hash disagrees with the bC snapshot")
+            expected_patches[(row["Row ID"], field)] = payload["new_value"]
+            touched_by_bc.setdefault(row["BC ID"], set()).add(register)
+        _check_bc_declared_cells(
+            lint, final_path, final_headers, before_by_id, final_by_id,
+            expected_patches)
+        projected_final_rows = [
+            [dict(zip(final_headers, row)).get(column, "") for column in base_cols]
+            for row in final_rows
+        ]
+        if register == "claims":
+            check_claims_rows(lint, final_path, projected_final_rows, final=True)
+        elif register == "output":
+            check_output_rows(lint, final_path, projected_final_rows, final=True)
+        else:
+            check_error_rows(lint, final_path, projected_final_rows, final=True)
+    by_letter = {letter: {item for item in new_ids if item.startswith(letter + "-")}
+                 for letter in "CEO"}
+    for letter in "CEO":
+        spans = [span for span in ranges if span[0] == letter]
+        capacity = sum(end - start + 1 for _l, start, end in spans)
+        if capacity != len(by_letter[letter]):
+            lint.fail(f"{plan_path}: bC {letter} range capacity {capacity} does not equal new-row count {len(by_letter[letter])}")
+        for row_id in by_letter[letter]:
+            if not in_ranges(row_id, spans):
+                lint.fail(f"{plan_path}: bC row {row_id} falls outside its declared range")
+    for bc_id, registers in touched_by_bc.items():
+        if "output" in registers and "claims" not in registers:
+            lint.fail(f"{plan_path}: output correction {bc_id} requires a companion claims edit")
+    # Any non-exempt severe mint activates the bC token gate regardless of its
+    # status, so a mint left at a non-final status cannot dodge the check.
+    severe_mints = [
+        row for row in bc_new_code_rows
+        if row.get("Error Type") != "pii_or_disclosure_risk"
+        and row.get("Severity") in {"3", "4"}
+    ]
+    if severe_mints or _u8_tokens_active(manifest, audit, "bC"):
+        for row in severe_mints:
+            if row.get("Status") not in {"confirmed", "confirmation_needed"}:
+                lint.fail(
+                    f"{plan_path}: severe bC mint {row.get('Error ID')} must be a token-governed final status")
+        classifications = _token_receipt_gate(
+            lint, audit, manifest, bc_new_code_rows, "bC")
+        for eid, state in classifications.items():
+            if state == "target_not_live":
+                lint.fail(f"{plan_path}: severe bC mint {eid} cites a non-live target")
+    if mode != "code_errors_only":
+        claims = load_register(lint, audit / "claims_register.md", CLAIMS_COLS, allow_extra=True)
+        outputs = load_register(lint, audit / "output_register.md", OUTPUT_COLS, allow_extra=True)
+        if claims and outputs:
+            check_bidirectional(
+                lint, claims[1], claims[0], "Claim ID", "Output IDs",
+                outputs[1], outputs[0], "Output ID", "Claim IDs", "bC C<->O")
 
 
 def non_link_identical(lint, st_rows, st_cols, sn_rows, base_cols, idc, link_col, rewrite_pairs, label):
@@ -1815,10 +4567,6 @@ def overlapping_confirmed_pairs(claim_rows, error_rows, claim_cols=None, error_c
     return pairs
 
 
-# NOTE (U6/U7 open question): the "downstream-use severities must cite a search" rule is NOT
-# mechanized here. Detecting that a severity "rests on downstream use" requires interpreting free
-# text (Issue/Error Description), which is not cleanly lintable; it stays review guidance
-# (registers.md severity rubric), not a lint check.
 def escalated_mapped_links(claim_rows, error_rows, claim_cols=None, error_cols=None):
     """Links pairing a `mapped` claim with a `confirmed` code error (escalated mapped claims).
     The cross-linker only links a claim to an error that breaks what it asserts, so a
@@ -1880,7 +4628,7 @@ def check_pairs_listed(lint, summary, section, pairs, stage, reason):
             )
 
 
-def stage_b7(lint, audit):
+def stage_b7(lint, audit, manifest=None):
     snap = audit / "_run" / "snapshots" / "b7"
     staging = audit / "_staging"
     # Replay mode: load staging with allow_extra=True so a post-b8 re-run (staging carries the
@@ -1936,6 +4684,22 @@ def stage_b7(lint, audit):
             f"'## Status conflicts' — adjudicate against the b7 status-conflict rule "
             f"(registers.md, Cross-link consistency); overlap alone is not proof of conflict"
         )
+    b7_error_rows = list(severity_tokens._load_register_error_rows(
+        audit, prefer_staging=True).values())
+    if (_u8_tokens_active(manifest or {}, audit, FINAL_TOKEN_RECEIPT_HOMES,
+                          rows=b7_error_rows)
+            or "## Severity-token adjudications" in (summary or "")):
+        _rejected, severity_failures = severity_token_rulings.validate_b7(
+            audit.parent, audit, manifest or {})
+        for failure in severity_failures:
+            lint.fail(f"b7 severity-token sweep: {failure}")
+
+
+def stage_severity_token_rulings(lint, audit, manifest):
+    _decisions, failures = severity_token_rulings.validate_rulings(
+        audit.parent, audit, manifest, require_applied=True)
+    for failure in failures:
+        lint.fail(f"severity-token rulings: {failure}")
 
 
 REWRITE_PAIRS = {
@@ -1945,12 +4709,23 @@ REWRITE_PAIRS = {
         ("Why It Matters", "Why It Matters Original"),
     ],
 }
+FINAL_TOKEN_RECEIPT_HOMES = ("code_b6b", "bC")
 
 
 def stage_b8(lint, audit, manifest):
     snap = audit / "_run" / "snapshots" / "b8"
     staging = audit / "_staging"
     mode = (manifest or {}).get("mode", "replication")
+    stages = (manifest or {}).get("stages", {})
+    rulings_entry = stages.get("severity_token_rulings") if isinstance(stages, dict) else None
+    staging_error_rows = list(severity_tokens._load_register_error_rows(
+        audit, prefer_staging=True).values())
+    if (mode == "replication"
+            and _u8_tokens_active(manifest, audit, FINAL_TOKEN_RECEIPT_HOMES,
+                                  rows=staging_error_rows)
+            and (not isinstance(rulings_entry, dict)
+                 or rulings_entry.get("status") != "done")):
+        lint.fail("b8 refuses while severity_token_rulings is not done")
     files = ["code_error_register.md"] if mode == "code_errors_only" else ["claims_register.md", "code_error_register.md"]
     if mode != "code_errors_only":
         # the rewrite never touches the output register, but `listed` must be gone by now
@@ -2001,6 +4776,12 @@ def stage_b8(lint, audit, manifest):
                     lint.fail(f"{staging / f}: {i} '{orig_col}' does not preserve prior text")
                 if bool(row.get(new_col, "")) != bool(orig_val):
                     lint.fail(f"{staging / f}: {i} blankness pairing violated for '{new_col}'")
+        if f == "code_error_register.md":
+            st_dicts = [dict(zip(st_headers, row)) for row in st_rows]
+            if _u8_tokens_active(
+                    manifest, audit, FINAL_TOKEN_RECEIPT_HOMES, rows=st_dicts):
+                _final_token_partition(lint, audit, manifest, st_dicts,
+                                       FINAL_TOKEN_RECEIPT_HOMES)
     if mode != "code_errors_only":
         st_c = load_register(lint, staging / "claims_register.md", CLAIMS_COLS, allow_extra=True)
         st_e = load_register(lint, staging / "code_error_register.md", ERROR_COLS, allow_extra=True)
@@ -2066,9 +4847,58 @@ def stage_b9(lint, audit, manifest):
         return
     wb = load_workbook(wb_path, read_only=True)
     mode = (manifest or {}).get("mode", "replication")
-    expect = {"Overview", "Code Errors"} | ({"Paper Claims"} if mode == "replication" else set())
+    b9_error_rows = list(severity_tokens._load_register_error_rows(audit).values())
+    if _u8_tokens_active(
+            manifest, audit, FINAL_TOKEN_RECEIPT_HOMES, rows=b9_error_rows):
+        _final_token_partition(
+            lint, audit, manifest,
+            _token_register_rows(lint, audit / "code_error_register.md"),
+            FINAL_TOKEN_RECEIPT_HOMES,
+        )
+    expect = {
+        "Overview", "Code Errors", "Late observations (unverified)",
+        "Late observation coverage",
+    } | ({"Paper Claims"} if mode == "replication" else set())
+    if mode == "replication" and (manifest or {}).get("paper_source_set"):
+        expect.add("Handoff ledger")
     if set(wb.sheetnames) != expect:
         lint.fail(f"workbook sheets {wb.sheetnames} != expected {sorted(expect)}")
+    if "Handoff ledger" in expect and "Handoff ledger" in wb.sheetnames:
+        ledger_path = audit / "_run/handoff_ledger.json"
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            lint.fail(f"{ledger_path}: cannot verify exported handoff ledger ({exc})")
+            ledger = {"H": [], "X": []}
+        columns = [
+            "Obligation ID", "Kind", "Source Shard", "Anchor",
+            "Destination Worker", "Terminal State", "Covering Claim ID",
+            "Disposition",
+        ]
+        expected_rows = []
+        for entry in sorted(ledger.get("H", []) + ledger.get("X", []),
+                            key=lambda row: row.get("id", "")):
+            disposition = entry.get("disposition") or {}
+            anchor = entry.get("anchor", "")
+            if isinstance(anchor, dict):
+                end = anchor.get("end_line", anchor.get("start_line", ""))
+                lines = (str(anchor.get("start_line", ""))
+                         if end == anchor.get("start_line")
+                         else f"{anchor.get('start_line', '')}-{end}")
+                anchor = f"{anchor.get('source_path', '')}:{lines}"
+            expected_rows.append([
+                str(entry.get("id", "")), str(entry.get("kind", "")),
+                str(entry.get("source_shard", "")), str(anchor),
+                str(entry.get("destination_worker", "")), str(entry.get("state", "")),
+                str(entry.get("covering_c_id") or ""),
+                str(disposition.get("reason", "")),
+            ])
+        data = list(wb["Handoff ledger"].values)
+        actual_headers = [str(value) if value is not None else "" for value in data[0]] if data else []
+        actual_rows = [[str(value) if value is not None else "" for value in row]
+                       for row in data[1:]] if data else []
+        if actual_headers != columns or actual_rows != expected_rows:
+            lint.fail("Handoff ledger: sheet does not exactly match handoff_ledger.json")
     # U8 (d): the frozen b8 staging registers must still be present and non-empty.
     check_staging_frozen(lint, audit, mode)
     checks = [("Code Errors", "code_error_register.md", ERROR_COLS, "Error ID", ["Error Description", "Why It Matters"])]
@@ -2122,6 +4952,74 @@ def stage_b9(lint, audit, manifest):
                     lint.fail(f"{sheet}: {r[id_j]} Potential Issue '{pi}' disagrees with "
                               f"Severity ('{sev}'): must be '{expected}' "
                               f"(Potential Issue = TRUE iff Severity non-empty)")
+    expected_lo = []
+    streams = ("claims", "code") if mode == "replication" else ("code",)
+    for stream in streams:
+        artifact = audit / f"late_observations_{stream}.md"
+        b6b_state = manifest.get("stages", {}).get(
+            f"{stream}_b6b", {}).get("status")
+        if b6b_state == "blocked" and not artifact.is_file():
+            # Blocked collection is represented on the coverage surface; it
+            # is never silently converted into a zero-observation artifact.
+            continue
+        # Pending dispositions are legal at b9: the export publishes them on
+        # the explicitly unverified sheet.  The completion-report gate lives
+        # on `certify_stage.py close-run`, after the Phase-4 first batch.
+        _path, rows, _dispositions = _late_observation_rows(lint, audit, stream)
+        expected_lo.extend([[stream] + [row[column] for column in LO_COLS]
+                            for row in rows])
+    expected_lo.sort(key=lambda row: row[1])
+    lo_sheet = "Late observations (unverified)"
+    if lo_sheet in wb.sheetnames:
+        data = list(wb[lo_sheet].values)
+        headers = [str(value) if value is not None else "" for value in data[0]] if data else []
+        actual = [[str(value) if value is not None else "" for value in row]
+                  for row in data[1:]] if data else []
+        if headers != ["Stream"] + LO_COLS:
+            lint.fail(f"{lo_sheet}: wrong headers {headers}")
+        if actual != expected_lo:
+            lint.fail(f"{lo_sheet}: rows do not exactly equal stable LO aggregation")
+    coverage_path = audit / "_run/late_observation_coverage.md"
+    coverage_text = read_text(lint, coverage_path) or ""
+    coverage_rows = tables_by_cols(
+        lint, coverage_path, coverage_text,
+        ["Stream", "Required", "b6b State", "Collection State", "Artifact Head",
+         "Blocker Evidence IDs"], "late observation coverage", required=True)
+    expected_coverage = []
+    for stream in ("claims", "code"):
+        required = mode == "replication" or stream == "code"
+        entry = manifest.get("stages", {}).get(f"{stream}_b6b", {}) if required else {}
+        state = entry.get("status", "not present") if required else "not applicable"
+        artifact = audit / f"late_observations_{stream}.md"
+        if not required:
+            collection = "not required"
+        elif state == "blocked":
+            collection = "degraded"
+        elif state == "done" and artifact.is_file() and artifact.stat().st_size:
+            collection = "collected"
+        else:
+            collection = "incomplete"
+        expected_coverage.append({
+            "Stream": stream, "Required": "yes" if required else "no",
+            "b6b State": state, "Collection State": collection,
+            "Artifact Head": "not recorded", "Blocker Evidence IDs": "none recorded",
+        })
+    if coverage_rows != expected_coverage:
+        lint.fail(f"{coverage_path}: coverage cells do not derive exactly from manifest state")
+    coverage_sheet = "Late observation coverage"
+    if coverage_sheet in wb.sheetnames:
+        data = list(wb[coverage_sheet].values)
+        headers = [str(value) if value is not None else "" for value in data[0]] if data else []
+        actual = [[str(value) if value is not None else "" for value in row]
+                  for row in data[1:]] if data else []
+        expected_headers = [
+            "Stream", "Required", "b6b State", "Collection State", "Artifact Head",
+            "Blocker Evidence IDs",
+        ]
+        expected_values = [[row[column] for column in expected_headers]
+                           for row in expected_coverage]
+        if headers != expected_headers or actual != expected_values:
+            lint.fail(f"{coverage_sheet}: sheet does not match derived coverage artifact")
 
 
 # --------------------------------------------------------------- main
@@ -2130,8 +5028,10 @@ STAGES = (
     ["b0"]
     + [f"b{n}-{s}" for n in range(1, 4) for s in ("claims", "code")]
     + [f"b3b-{s}" for s in ("claims", "code")]
-    + [f"b{n}-{s}" for n in range(4, 7) for s in ("claims", "code")]
-    + ["b7", "b8", "b9"]
+    + [f"b{n}-{s}" for n in range(4, 6) for s in ("claims", "code")]
+    + [f"{stage}-{stream}" for stage in ("b6a", "b5s", "b6b")
+       for stream in ("claims", "code")]
+    + ["bC", "b7", "severity_token_rulings", "b8", "b9"]
 )
 
 
@@ -2157,11 +5057,11 @@ def main() -> int:
     if stage == "b0":
         stage_b0(lint, audit, manifest)
     elif n == "b1":
-        stage_b1(lint, audit, stream)
+        stage_b1(lint, audit, stream, manifest)
     elif n == "b2":
         stage_b2(lint, audit, stream, args.shard)
     elif n == "b3":
-        stage_b3(lint, audit, stream)
+        stage_b3(lint, audit, stream, manifest)
     elif n == "b3b":
         if args.shard is not None:
             stage_b3b_shard(lint, audit, stream, args.shard)
@@ -2171,10 +5071,18 @@ def main() -> int:
         stage_b4(lint, audit, stream, manifest)
     elif n == "b5":
         stage_b5(lint, audit, stream, args.shard, manifest)
-    elif n == "b6":
-        stage_b6(lint, audit, stream, manifest)
+    elif n == "b6a":
+        stage_b6a(lint, audit, stream, manifest)
+    elif n == "b5s":
+        stage_b5(lint, audit, stream, args.shard, manifest, supplementary=True)
+    elif n == "b6b":
+        stage_b6b(lint, audit, stream, manifest)
+    elif stage == "bC":
+        stage_bC(lint, audit, manifest)
     elif stage == "b7":
-        stage_b7(lint, audit)
+        stage_b7(lint, audit, manifest)
+    elif stage == "severity_token_rulings":
+        stage_severity_token_rulings(lint, audit, manifest)
     elif stage == "b8":
         stage_b8(lint, audit, manifest)
     elif stage == "b9":

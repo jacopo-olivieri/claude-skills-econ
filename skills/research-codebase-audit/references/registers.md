@@ -36,6 +36,7 @@ sections for that role.
 | merge_first_pass | merge-first-pass.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`) |
 | merge_recheck | merge-recheck.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Cross-link consistency (b7); Recheck vocabulary |
 | conventions | consolidate-conventions.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Standing self-consistency checks; Code-error register — `audit/code_error_register.md`; Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`) |
+| conventions_scan | conventions-scan-worker.md | Untrusted content; Secret handling; Standing self-consistency checks; Empirical verification (establish behavior; do not infer it); Cheap-check completion (mapped-closure discipline) |
 | cross_link | cross-linker.md | Untrusted content; Secret handling; ID conventions (global, all registers); Severity rubric (shared by claims and code errors); Claims register — `audit/claims_register.md`; Code-error register — `audit/code_error_register.md`; Row lifecycle: never delete, dedup on location+mechanism; Cross-link consistency (b7) |
 | rewrite | rewriter.md | Untrusted content; Secret handling; Severity rubric (shared by claims and code errors); Issue Description structure (three-part); Claims register — `audit/claims_register.md`; Output register — `audit/output_register.md`; Code-error register — `audit/code_error_register.md`; Cross-link consistency (b7); Rewrite-pass columns |
 
@@ -73,8 +74,9 @@ so the note directs the authors to rotate/revoke the credential, not merely dele
 
 ## ID conventions (global, all registers)
 
-- Formats: claims `C-\d{4}`, outputs `O-\d{4}`, code errors `E-\d{4}`; CODEMAP scripts/datasets/
-  boundaries `S-\d{4}` / `D-\d{4}` / `B-\d{4}`.
+- Formats: claims `C-\d{4}`, outputs `O-\d{4}`, code errors `E-\d{4}`, claim handoffs
+  `H-\d{4}`, cross-reference obligations `X-\d{4}`; CODEMAP scripts/datasets/boundaries
+  `S-\d{4}` / `D-\d{4}` / `B-\d{4}`.
 - **All ID ranges are global and non-overlapping across the whole run.** Planners allocate each
   worker a disjoint subrange per ID type (e.g. worker S2 gets `C-0200–C-0299`, `O-0120–O-0149`).
   There are no local or temporary IDs, and no renumbering at merge — the ID a worker assigns is
@@ -87,6 +89,75 @@ so the note directs the authors to rotate/revoke the credential, not merely dele
   for its merge coordinator (e.g. `C-0900–C-0949`), used *only* to mint IDs for declared row
   splits at recheck merge. Recheck **workers** never mint IDs.
 - IDs are never reused, including IDs of rows later demoted to `not_error` or `duplicate_of`.
+
+### Claim anchor ownership and handoffs
+
+The b1 claims plan carries exact columns `Worker ID | Paper Scope | Paper File | Line
+Intervals | Likely Code Scope | Shard File | Claim ID Range | Output ID Range | H ID Range |
+Review Focus`. Its intervals exactly partition every line of every `paper_source_set` file.
+The worker owning the line where an assertion's quote starts records that assertion, even when
+it points to another worker's figure/table; a caption owns only its own text. A sentence
+straddling a boundary belongs to its quote-start line.
+
+A spotter never files a foreign-span claim row. It writes one clause-tight row under
+`### Handoffs` with columns `H ID | Anchor | Quote | Asserted Substance | Referenced Objects`.
+`Anchor` is `path:line` or `path:start-end` (at most five lines). The normalized quote must
+resolve exactly once in the audit twin. Use exact `No handoffs.` for zero rows. Every first-pass
+claims shard also carries `### Cross-reference coverage` with exact columns `X ID | Outcome |
+C-ID / Reason | Evidence | Covering Range | Covering Quote`, exactly one row per mechanically
+assigned X-ID, or exact `No assigned cross-references.`.
+
+`covered` names a C-row and carries that row's exact Paper Quote plus the `path:line-range`
+where that quote resolves (the anchor lives on the coverage row — `Paper Context` stays the
+prose locator above); the resolved covering interval must contain the X assertion interval. `disposition` uses one
+of `bare_pointer`, `duplicate_of_covered`, `non_checkable`, or `out_of_audit_scope`, serializing
+required `field: value` evidence pairs separated by `;`, and uses `—` for covering range/quote.
+A raw disposition is never final.
+
+Required evidence fields are: `bare_pointer` → `sentence`, `no_checkable_predicate`;
+`duplicate_of_covered` → `covering_obligation`, `covering_c_id`; `non_checkable` → `sentence`,
+`why_no_artifact`; `out_of_audit_scope` → `points_to`. Duplicate pointers must reach a
+final-passable covered obligation, agree on C-ID, and contain no cycle.
+
+At b3, `build_handoff_ledger.py --stage claims_b3` exact-set reconciles filed H rows and
+inventory X entries, derives destinations from b1 intervals, verifies containment, writes
+`audit/_run/handoff_ledger.json`, freezes the claims_b3-era ledger under snapshots, and adds
+counts plus SHA-256 to the merge report. H states are `satisfied` or `forwarded`; X states are
+`covered`, `disposition`, or `blocked_fallback`. Certification re-derives the immutable copy.
+
+At b3b, `Assigned Handoff IDs` is `—` or comma-separated H IDs and exactly partitions every
+`forwarded` H entry. The resolver shard's `### Handoffs` table has columns `H ID | Anchor |
+Quote | Asserted Substance | Referenced Objects | Resolution | C-ID / Reason | Evidence |
+Covering Range | Covering Quote`; use `No assigned handoffs.` for zero work. Filing cells are
+copied verbatim. `resolved` names a containing C-row; `disposition` uses the vocabulary above.
+`build_handoff_ledger.py --stage claims_b3b` freezes the new stage-era ledger.
+
+Final-passable H states are `satisfied`, `resolved`, `disposition_accepted`; final-passable X
+states are `covered`, `resolved`, `disposition_accepted`.
+
+### Claims adjudication tables
+
+`claims_adjudication.py --build-worklist --stage claims_adjudication` emits one
+item per non-blocked mapping and raw disposition. The verdict artifact has exact
+columns `Obligation ID | Work Kind | Verdict | Reason | Minted C-ID | Paper
+Context | Paper Quote | Used in Text | Claim Type | Claim Text | Code/Data
+Source | Output IDs | Status | Severity | Issue Description | Blocked Check |
+Related Error IDs | Covering Range`. Mapping verdicts are
+`capture_confirmed` or `reject_and_resolve`; disposition verdicts are
+`disposition_accepted` or `reject_and_resolve`. A reject-and-resolve row fills
+every claim cell, mints only inside the plan's 50-ID adjudication range, and
+carries a resolver-valid containing range. Other verdicts use `—` in every mint
+cell. Every row has a non-empty Reason. Empty work uses exact `No adjudication
+verdicts.`
+
+After bC, the lineage builder emits only changed, absent, branched, or dead
+carriers from the frozen `snapshots/claims_adjudication_lineage/` ledger and
+claims register. Its verdict columns are `Obligation ID | Verdict | Reason`; verdicts
+are `equivalence_confirmed` or `equivalence_refused`. Byte-identical unbranched
+`duplicate_of:` chains carry mechanically and receive no row. Claims splits
+have no machine lineage table, so an absent ledger carrier always becomes work.
+Empty work uses exact `No lineage verdicts.` A refused equivalence or tombstone
+dead-end refuses close-run.
 
 ## Severity rubric (shared by claims and code errors)
 
@@ -111,13 +182,20 @@ reported number is wrong: severity 2's "does not change results" means no report
 changes, and severity 3's "changes a reported number" includes the levels and stated units of
 any quantity the paper reports.
 
-**Downstream-use severities must cite the search that establishes the use.** When a severity
-rests on the finding being *used downstream* — a code error matters because its output feeds a
-reported result, or a claim matters because the quantity is consumed elsewhere — the row must
-cite the specific script, table, or figure where that downstream use occurs, in either direction
-(claim→code or code→claim). An uncited "used downstream" justification cannot lift a severity
-above the finding's on-its-face level; do the search and cite it, or rate the finding on its own
-terms.
+**Severe code rows require a verified terminal token.** Every non-`pii_or_disclosure_risk`
+code row at Severity 3–4 with Status `confirmed` or `confirmation_needed` carries exactly one
+literal token in `Why It Matters`: `output:O-####` or `claim:C-####` in full mode, and
+`artifact:RA-<12 lowercase hex>` in code-errors-only mode. Duplicate literals, multiple tokens,
+cross-mode token kinds, `uses:` prose, and `build-abort:` do not satisfy this rule. Additional
+affected outputs belong in prose, not additional tokens. The b8 rewrite copies the original
+carrier to `Why It Matters Original`; all later gates read that preserved cell.
+
+The token is earned by a typed lineage probe and a conductor-issued receipt, not by prose. The
+b6a/b6b and final lints require a mechanically live token and its composite-key receipt. The
+only special routing is an otherwise valid, receipted C-/O-token whose target later became
+non-live: it crosses b6 unchanged as `target_not_live`, then b7 must reject it for an operator
+ruling. Status `confirmation_needed` is not an escape. Unsupported severity is capped at 2 or,
+in full mode only, takes the late-severity-residual exit defined below.
 
 **Issue-flagging rule** (two register-specific, lintable forms):
 
@@ -153,8 +231,8 @@ ordinary worker observation, not one of these.
    the ladder permits it.
    A mismatch is a `readme_or_package_mismatch` (or the more specific
    `version_or_dependency_error` / `stale_or_wrong_path`). Mechanical helper: the conductor runs
-   `scripts/check_manifests.py` at b4, which parses each recognized manifest and emits candidate
-   findings (see `pipeline-code-errors.md`, b4).
+   `scripts/check_manifests.py` at b3d, which parses each recognized manifest and emits candidate
+   findings (see `pipeline-code-errors.md`, b3d).
 2. **Shared and definition/use conventions agree.** The package asserts one definition for each convention it uses in
    more than one place. Gather every site that defines a shared convention — fiscal-year or
    sample-window boundary, date-parse mask, missing-value sentinel, unit/scale factor, path
@@ -165,9 +243,8 @@ ordinary worker observation, not one of these.
    b3c consolidation pass gathers every multi-site convention the merged claims register states
    into `audit/_run/conventions.md` — for an enumerated member list, a single claims-register row
    naming the member set already qualifies, because the second side of the comparison is supplied
-   by the code-side re-materialization sites the b4 grep locates — and the code-stream recheck
-   (b4) greps the codebase for each listed convention's definition sites and flags any that
-   disagree.
+   by the code-side re-materialization sites the b3d conventions scan locates — and the b3d
+   mapping step records each convention's divergent or reviewed-not-divergent disposition.
    The same duty applies **within one file**: the package asserts that a derived control variable
    is used only for the cases its own definition covers. When a derived flag, indicator, category,
    sentinel, or eligibility variable's code, adjacent comment, label, or header states the cases
@@ -176,7 +253,7 @@ ordinary worker observation, not one of these.
    effective predicate. An extra consumer predicate that narrows the covered set is the error —
    acceptable only when it is an independently defined eligibility restriction or when a companion
    consumer covers the excluded cases. This half of the check is worker-side reading within a file,
-   not a cross-file greppable convention, so it is not consolidated at b3c or grepped at b4:
+   not a cross-file convention, so it is not consolidated at b3c or re-scanned at b3d:
    comments and labels are claims to check, not proof — do not treat a stale comment as the
    specification, and establish the coverage from the code itself.
 3. **Cross-language hand-offs connect.** The package asserts its pipeline steps connect. At each
@@ -244,6 +321,24 @@ review-ladder levels where the review mode allows a probe within budget, a first
 may execute a worker-retyped synthetic reproduction of a fragment — never a repository script,
 never a documented setup command, never the audited package's data. Everything else about
 first-pass execution stays forbidden, and standing check (1) remains static at first pass.
+
+## Reported Artifact Token Inventory — `audit/CODEMAP.md`
+
+Code-errors-only CODEMAPs contain `## Reported Artifact Token Inventory` with exactly:
+
+`Reported Artifact ID | Terminal Kind | Path/Pattern | Declaration Anchor | Writer Site | Availability`
+
+The exact zero form is `No qualifying reported artifacts.` Full mode omits the section or keeps
+that exact empty form; it never carries an RA row. `Terminal Kind` is one of `table`, `figure`,
+`reported_dataset`, `author_export`; `Availability` is `shipped` or
+`generated_unshipped`. Intermediate/runtime/analysis datasets, caches, logs, checkpoints, and
+internal handoffs are ineligible. The declaration anchor resolves to the paper, README, or a
+CODEMAP-declared master deliverable; the writer site resolves to the exact write/export site.
+
+`Reported Artifact ID` is `RA-` plus the first 12 lowercase hex characters of SHA-256 over
+UTF-8/LF `terminal-kind\nnormalized-path-or-pattern\ndeclaration-anchor\nwriter-site\n`.
+The b0 lint recomputes it and rejects duplicate identities, duplicate IDs, hash-prefix
+collisions, material-inventory mismatches, and availability that disagrees with current intake.
 
 ## Claims register — `audit/claims_register.md`
 
@@ -637,6 +732,29 @@ justification for the gap to the pair's line in the summary. Lint enforces listi
 ends: b7 and b8 fail on any linked pair with differing filled severities that is absent from
 the section.
 
+**Severity-token sweep and rulings (full mode).** The b7 summary also contains
+`## Severity-token adjudications` and exactly
+`Token Key | Cited Target | Verdict | Evidence`, one row per token-bearing severe Error ID;
+Token Key is `E-#### <literal token>`, Verdict is `upheld` or `rejected`, and exact zero is
+`none`. A claim token must use the existing reciprocal claim↔error columns; the downstream-claim
+carve-out does not apply. b7 recomputes every target. A non-live token must be `rejected`—an
+`upheld` value is a deterministic certification failure.
+
+The full-mode-only `severity_token_rulings` stage freezes the sorted LF-joined rejected Token
+Key lines; `b7_certification_sha256` is SHA-256 of exactly those UTF-8 bytes. Its authority file
+`audit/_run/severity_token_rulings.json` has schema `severity_token_rulings/v1`, `cycle: main`,
+that digest, and one exact ruling per rejected Error ID with fields `error_id`, `token`,
+`b7_verdict`, `ruling`, `resulting_status`, `resulting_severity`, `rationale`, and
+`decision_identity`. `uphold` retains the pre-stage Status/Severity 3–4 and requires a currently
+live target; `cap` retains Status and sets Severity 1–2; `hold` sets
+`confirmation_needed`/Severity 1–2. With zero rejected keys, the exact extra fields are
+`skip_reason: zero_rejected_severity_tokens` and `rulings: []`.
+
+The certifier freezes the pre-stage register and ruling artifact, applies only Status/Severity,
+and verifies all other fields—including rejected token prose—unchanged. Missing coverage blocks
+the rulings stage, b8, and close-run. On the single post-bC b7 rerun, cap/hold keys may disappear,
+but any newly rejected key is a hard failure; the rulings stage never reruns.
+
 ## Recheck vocabulary
 
 Recheck workers judge existing rows only — **no new IDs at recheck**. Every assigned ID gets
@@ -655,8 +773,63 @@ exactly one ledger row.
 
 ### Verdicts — code-error recheck
 
-`confirmed_error` · `not_error` · `confirmation_needed` · `blocked` · `deferred`
+`confirmed_error` · `not_error` · `duplicate` · `confirmation_needed` · `blocked` · `deferred`
 (`deferred` = deliberately not pursued under the ladder/off-limits list.)
+
+Code-error shards use one 17-column ledger table — never a split pair:
+
+| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note | Proposed Status | Proposed Severity | Accepted Error Type | Accepted Mechanism | Outcome Witness IDs | Duplicate Target | Proposed Field Patches | Verification Record IDs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+`Accepted Error Type` uses the closed code-error taxonomy. `Accepted Mechanism` is a one-line
+causal account. Separate field patches with ` || ` and write each as `Column := value`; only
+`Code Location`, `Code/Data Source`, `Error Description`, and `Why It Matters` are patchable.
+
+For mechanically mapped rows, use this complete matrix:
+
+| Verdict | Proposed Status | Proposed Severity | Required / forbidden |
+| --- | --- | --- | --- |
+| `confirmed_error` | `confirmed` | 1–4 | accepted type and mechanism; every witness; no duplicate target |
+| `not_error` | `not_error` | `—` | a verification record for every mapped channel/source/witness; no duplicate target |
+| `duplicate` | `duplicate_of:<mapped ID>` | `—` | mapped target, matching accepted type/mechanism, every transferred witness |
+| `confirmation_needed` | `confirmation_needed` | 1–4 | blocker-shaped note; no duplicate target; detector-minted rows also record the materiality ruling below |
+| `blocked` | `blocked` | carried forward | documented attempted-check blocker; no witness outcomes |
+| `deferred` | `blocked` | carried forward | off-limits citation; no witness outcomes |
+
+For a detector-minted row, the carry-forward verdicts `confirmation_needed`, `blocked`, and
+`deferred` still record a current materiality ruling in
+`Proposed Note` as exactly `[materiality_reassessment] severity=<1-4>; basis=<one-line text>`.
+The b6b lint applies that ruling at the merge; a provisional detector severity cannot ship. For
+`blocked`/`deferred` a non-empty `Proposed Severity` must equal the recorded materiality
+severity; for `confirmation_needed` the two may differ (uncertainty caps the applied ruling) —
+the register still carries the materiality severity.
+
+`duplicate_of:` derivation exists only for mechanically mapped targets. A mapped row
+suspected of duplicating an **unmapped** register row rests `confirmed` (or
+`confirmation_needed`) and records the suspected duplication as a free-text note in
+`Proposed Register Change` for operator review.
+
+Under `### Witness outcomes`, emit exactly the pre-boundary columns `Channel`, `Source ID`,
+`Witness ID`, `Verdict`, `Mech Class`, `Mech Object`, `Mech Relation`, `Mech Expected`,
+`Mech Actual`, `Proposed Severity`, and `Duplicate Target`.
+`Mech Relation` uses the existing closed list for its register class: code errors and claims use
+`never_fires`, `overwrites`, `wrong_target`, `stale_reference`, `omits`, `adds`, `wrong_value`,
+`mismatches`, `matches`, or `unresolved`; outputs use `maps_to`, `matches`, or `unresolved`.
+Emit rows only for `confirmed_error`, `not_error`, and `duplicate`. Percent-escape reserved cell
+characters with `mechanism_schema.encode_cell`; never write canonical mechanism bytes or
+`MIXED`. Under `### Verification records`, use the MF or DU/CV channel-typed schema defined in
+the worker contract. A DU/CV dismissal names a runnable probe stored beside the shard.
+
+Manifest adjudication severity guidance:
+
+| Evidence | Disposition |
+| --- | --- |
+| Invalid for the implied consumer with no usable alternative | Apply the ordinary rubric; usually severity ≥ 2 |
+| A usable alternative is positively verified | Keep the issue at severity 1 |
+| The real authoritative tool demonstrably accepts the input | The verdict is `not_error`, recorded through the conductor-issued receipt gate |
+
+An `unknown` consumer uses the ordinary rubric. Bound usability checks by the existing per-check
+compute budget.
 
 ### Evidence levels (tied to the review ladder)
 
@@ -701,10 +874,173 @@ Code errors:
 | Verdict | Status becomes | Severity |
 | --- | --- | --- |
 | `confirmed_error` | `confirmed` | per rubric (recalibrate) |
-| `not_error` | `not_error` | cleared |
-| `confirmation_needed` | `confirmation_needed` | kept |
+| `not_error` | `not_error` only when the boundary assembler has qualifying receipts for every mapped witness; unmapped rows retain the ordinary path | cleared |
+| `duplicate` | derived `duplicate_of:<mapped ID>` after all guarded-duplicate legs pass | cleared |
+| `confirmation_needed` | `confirmation_needed` | proposed 1–4, capped at 2 until the later severity-token stage |
 | `blocked` | `blocked` | kept |
 | `deferred` | `blocked` (note: deferred under ladder/off-limits) | kept |
+
+### Severity-token evidence and receipts
+
+At code-b5 dispatch in full mode, the conductor snapshots the latest lint-green
+`claims_register.md` and `output_register.md` under
+`audit/_run/snapshots/code_b5_dispatch/`. The code recheck plan records the exact line
+`Severity-token dispatch input head: claims:<sha256>;output:<sha256>`. Dispatch follows a green
+claims-b3 merge; if that input is unavailable, affected rows take a legal cap/residual exit.
+
+Each severe-token proof is one exact typed table row in its recheck shard (or, at bC, appended
+to `plans/late_observation_corrections.md`):
+
+`Record Type | Error ID | Token | Obligation Digest | Mechanism | Witness IDs | Error Location | Flawed Identifier | Cited Target | Lineage JSON | Probe Path | Probe Output SHA256 | Verdict | Derived From Receipt ID`
+
+`Record Type` is `token_verification`, `Verdict` is `verified`, and the mechanism is the
+canonical decoded five-field mechanism under `EMPTY_PROJECTION`. The obligation digest is
+SHA-256 over the documented `severity-token-obligation/v1` canonical JSON binding Error ID,
+literal token, decoded mechanism, sorted exact witness set, error location, and flawed
+identifier. `Lineage JSON` is an ordered array of exact `{anchor,carries}` objects. Every
+`path:line` hop resolves and textually contains what it carries; the first hop is the error
+location/flawed identifier and the endpoint is the output producer, claim source location, or
+the RA writer plus declaration anchors. The persisted shard-local probe must rerun green with
+the recorded output digest.
+
+Only `verify_dismissals.py --tokens` issues receipts. Homes are
+`audit/_run/code_b6a/token_receipts.md`, `audit/_run/code_b6b/token_receipts.md`, and
+`audit/_run/bC/token_receipts.md`. Serialization is UTF-8/LF: first line
+`Schema: token-receipts/v1`, then exactly
+`Receipt ID | Error ID | Token | Obligation Digest | Probe Path | Probe Output SHA256 | Verdict`,
+sorted by Receipt ID; zero is exactly `No token receipts.` in place of the table. Receipt ID is
+`TR-` plus the first 12 lowercase hex characters of SHA-256 over UTF-8
+`token-receipt/v1\0<Error ID>\0<literal token>\0<obligation digest>`. The lints rerun the probe,
+recompute IDs and exact receipt sets, and reject worker-authored or forged coverage.
+Gate activation is derived from register contents: the moment any non-exempt severity-3/4
+row at a final status exists, the b6a/b6b/b8/b9/bC lints, the boundary assembler, and
+close-run require the token artifacts — a missing receipts file is a failure, never a
+silent fallback to the pre-token behavior.
+
+### Late-severity residuals (full mode only)
+
+`audit/_run/late_severity_residuals.md` is b6b-certified with exact columns:
+
+`Error ID | Target Kind | Target ID | Dispatch Input Head | Target Introduction Head | Supplementary Outcome | Supplementary Evidence IDs`
+
+Header-only is the zero-row form. Residual rows cover only currently severe
+`confirmation_needed` rows, never `confirmed`, RA, split-only, or `target_not_live` rows.
+`Target Kind` is `claim` or `output`; outcomes are `exhausted_attempt`,
+`exhausted_post_plan`, or `unavailable_blocked`. The target must be terminal, absent from the
+digest-pinned dispatch inputs, introduced by the named certified snapshot, and either attempted
+by the exact b5s obligation, first introduced after that opportunity, or blocked by the
+certified b5s blocker evidence. `exhausted_post_plan` is refused when the introduction stage
+was provably an input to the b6a plan derivation (any stage at or before `code_b6a` in the
+canonical order, the wall-clock-parallel claims recheck wave excepted). At b6b and final gates every currently eligible severe row is
+covered exactly once by receipt XOR residual. This closure is one-way: receipts retained after
+a later cap/hold remain legal.
+
+## Supplementary-wave contract
+
+There is exactly one supplementary cycle: b6a → b5s → b6b. It reuses the b5 ledger/footer
+validator and the b6 merge roles; only these paths select the supplementary inputs:
+
+| Surface | Claims | Code errors |
+| --- | --- | --- |
+| Plan | `audit/plans/claims_supplementary_recheck_plan.md` | `audit/plans/code_error_supplementary_recheck_plan.md` |
+| Shard directory | `audit/_recheck_supplementary/` | `audit/_code_error_recheck_supplementary/` |
+| b6b summary | `audit/claims_supplementary_recheck_summary.md` | `audit/code_error_supplementary_recheck_summary.md` |
+| Late observations | `audit/late_observations_claims.md` | `audit/late_observations_code.md` |
+
+The b6a code evidence homes are `audit/_run/code_b6a/dismissal_receipts.md` and
+`audit/_run/code_b6a/witness_outcomes.md`; b6b uses
+`audit/_run/code_b6b/dismissal_receipts.md` and
+`audit/_run/code_b6b/witness_outcomes.md`. The receipt verifier and boundary assembler select
+the supplementary shards and b6b homes with `--supplementary`, projecting detector mappings
+through b6a split lineage. When no mapped split descendant needs evidence, the b6b witness
+artifact has the exact zero-work text
+`# Supplementary witness outcomes` followed by `No supplementary mapped witness outcomes.`;
+b6b still mints no rows. The dismissal artifact analogously uses
+`# Supplementary dismissal receipts` followed by
+`No supplementary dismissal receipts were required.` Stage snapshots always use
+`audit/_run/snapshots/<stage-key>/`.
+
+The claims supplementary plan retains the b4 inventory table
+`ID | Reason | Likely Evidence`. The code plan instead uses the sanctioned token-obligation
+schema `Error ID | Reasons | Parent Error ID | Obligation Digest | Witness IDs | Required Products`.
+`Reasons` is the canonical sorted subset of `discovery`, `late_token`, `split_token`; one worker
+assignment satisfies the union for an Error ID. That union is exactly accepted code discoveries,
+terminal targets minted after main dispatch while b5s can still run, and every severe b6a split
+descendant without its own post-split proof. Both plans retain the cluster table
+`Cluster ID | Cluster Name | Assigned IDs | Shard File` and verdict-vocabulary pointer.
+Each accepted fresh discovery range is one line
+`Declared supplementary discovery range: C-####–C-####` (or O/E). Range capacity equals the
+accepted discovery count; split descendants remain in their previously declared coordinator
+range. The plan inventory exactly covers new C/E rows; output discoveries are never inventory.
+When inventory is empty, include the exact line `No supplementary recheck inventory.` with an
+empty schema table/cluster table and dispatch no shard. Code b5s may take this path only when
+the full discovery/late/split union is empty.
+
+Splits exist only at b6a. Every severe descendant, including the branch retaining the parent
+ID, gets a receipt under its post-split obligation digest; a parent receipt never inherits.
+A reused probe is rerun and may name `Derived From Receipt ID`. Any descendant still uncovered
+at b6b is capped to Severity 1–2 by the merge coordinator before atomic promotion; b6b mints no
+rows, and its read-only lint refuses parent-only, wrong-digest, or uncovered severe state.
+
+Every b6a summary carries exact lines `Splits declared: <n>`, `Merges declared: <n>`, and
+`Discoveries declared: C=<n>; O=<n>; E=<n>`. Main b5 and supplementary b5s shards both end in
+the ordinary typed footer. In recheck context, `candidate` keeps its defect meaning but its
+`Register IDs` cell is empty because workers cannot mint rows. Main b5 dispositions at b6a use
+`audit/path.md#OBS-#### | candidate:<IDs>` or `dismissed:<reason>`. At b6b, candidate footer
+entries use `late_observation:<LO-ID>` or `dismissed:<reason>`; b6b never uses a candidate
+register disposition.
+
+An output discovery takes exactly one branch. Structural output-only discovery is `orphan` and
+has no mapping row. Otherwise the b6a summary has one row under
+`Output ID | Claim ID | Claim Verdict | Output Status`, with this closed mapping:
+
+| Claim verdict | Output status |
+| --- | --- |
+| `substantiated` / `substantiated_but_reframe` | `inconsistent` |
+| `row_note_only` / `not_substantiated` | `mapped` |
+| `confirmation_needed` / `blocked` | `unclear` |
+
+`listed` is transient pre-merge vocabulary and is illegal at b6a and later.
+
+## Late observations and bC corrections
+
+Each late-observation artifact contains `LO ID | Source Shard | Anchor | Observation`, with
+sequential stream IDs `LO-C-####` / `LO-E-####`. `Source Shard` is exactly
+`audit/path/to/shard.md#OBS-####`. With no rows, write exactly `No late observations.`. Under
+`## Dispositions`, use `LO ID | Prior State | State` (or exact `No dispositions.` for an empty
+artifact). `Prior State` records the state replaced by this ordinary Phase-4 edit; each row is
+locally linted against the monotone matrix, and bC additionally requires it to equal the frozen
+pre-stage state.
+States are `pending`, `acknowledged_unverified`, `qa_commissioned:QA-####`,
+`qa_closed:QA-####:conclusive`, `qa_closed:QA-####:inconclusive`, or `minted:BC-####`.
+The allowed transitions are: pending → acknowledged/commissioned/minted; commissioned → closed
+with the same QA ID and an explicit qualifier; acknowledged or conclusive closure → minted;
+inconclusive closure → a new commissioned state or minted; minted is immutable. b9 exports
+pending rows as-is on the explicitly unverified sheet; the completion-report gate is
+`certify_stage.py close-run`, which refuses to close the run until the first Phase-4
+disposition batch has replaced every pending state. Before bC, copy each
+present late-observation artifact to
+`audit/_run/snapshots/bC/late_observations_<stream>.md`; bC requires unchanged observation rows
+and validates each disposition transition against that frozen prior state.
+
+The bC plan is `audit/plans/late_observation_corrections.md`, with columns
+`BC ID | LO ID | Register | Operation | Row ID | Payload JSON | Old Value SHA256` and range lines
+`Declared bC range: C-####–C-####` (or O/E). `Register` is `claims`, `output`, or `code_error`;
+`Operation` is `new_row` or `patch`. A new-row payload is a JSON object exactly matching every
+column/value in the final row and uses `—` for the old hash. A patch payload is exactly
+`{"field":"Output IDs","new_value":"…"}` for claims or
+`{"field":"Claim IDs","new_value":"…"}` for outputs. Its old-value hash is lowercase SHA-256
+of the UTF-8 preimage `register + NUL + row_id + NUL + field + NUL + old_value`. The lint joins
+register row → plan row → LO disposition; registers gain no LO-provenance column. A BC ID refers
+to one LO ID, an output correction includes a claims edit under the same BC ID, and no field
+outside reciprocal C↔O links is patchable.
+
+A bC `new_row` code-error mint at Severity 3–4 is legal only when its payload already contains
+exactly one mode-qualifying token, the typed `token_verification` table is appended to this bC
+plan, and the production verifier has written its matching live-target receipt to
+`audit/_run/bC/token_receipts.md`. A non-live citation refuses the mint. Otherwise the new row
+must be capped to Severity 1–2. In full mode the ordinary post-bC b7 replay must uphold every
+bC severe mint; no bC-qualified rulings stage exists.
 
 ## Shard format (worker outputs under `audit/_work/`, `audit/_code_errors/`, `audit/_recheck/`, `audit/_code_error_recheck/`)
 
@@ -714,19 +1050,26 @@ Code errors:
   table. Cross-link columns (`Related Error IDs`, `Related Claim IDs`) stay empty until the
   cross-link stage; claims↔outputs links are filled by the worker and must resolve within the
   worker's own shard or assigned ranges.
-- Every first-pass shard — both streams — ends with a footer (lint b2 requires it):
+- Every first-pass and second-read shard — both streams — ends with a footer (lint b2/b3b
+  requires it):
   - **Coverage note** — claims shards: a per-section checklist confirming every table, figure,
     footnote, equation, and quantitative sentence in scope has a register row or an explicit
     skip note (with reason). Code shards: a table `| Script | Outcome |` with outcome `clean`,
     `findings: <E-IDs>`, or `blocked: <reason>` for every script in scope.
-  - **Coordinator notes** — highest-risk findings, likely duplicates, blocked checks, ID-range
-    overflow if any, cross-shard handoffs.
-- **Blocked-shard marker**: a shard is blocked iff its coordinator notes contain a line
-  starting `BLOCKED:` followed by the reason. This is the mechanical signal the conductor
-  reads (e.g. on ID-range overflow); the lint does not check for it.
-- Recheck shards contain the row-level ledger
-  `| ID | Current Status | Current Severity | Evidence Checked | Evidence Level | Verdict | Proposed Register Change | Pipeline/Output Impact | Proposed Note |`
-  plus files inspected, commands run, and a cluster summary.
+  - **Typed observations** — exactly one table
+    `| Entry ID | Kind | Register IDs | Observation | Reason |`. Entry IDs start at
+    `OBS-0001` in each shard and increase sequentially without gaps. The complete Kind
+    vocabulary is `candidate` and `not_rowed_observation`. A `candidate` names the row ID(s)
+    that embody the observation and leaves Reason empty. A `not_rowed_observation` names no
+    register ID and requires a one-line reason; it is limited to genuine non-defects such as
+    scope questions, tooling friction, or ID-range exhaustion. Every suspected defect is a
+    register row, however uncertain; confidence belongs in Status/evidence, not prose.
+- **Blocked-shard marker**: a shard is blocked when the conductor records it blocked with
+  `certify_stage.py set-shard`; ID-range exhaustion is represented by a typed
+  `not_rowed_observation` whose reason states the exhaustion and triggers that conductor action.
+- Recheck shards contain the single row-level ledger specified above, plus files inspected,
+  commands run, a cluster summary, and the typed footer. The same contract applies under the two
+  supplementary shard directories.
 
 ### Shard write-up rules (consulted at write-up, not while reading)
 
@@ -744,18 +1087,28 @@ catches after the fact does not need to occupy a worker's attention while readin
    violations.
 3. **IDs from the assigned range only** — an out-of-range ID fails the shard lint. On
    exhaustion, apply the Overflow rule (ID conventions): stop adding rows and put
-   `BLOCKED: ID range exhausted` in coordinator notes (the blocked-shard marker above —
-   conductor-read, not lint-checked).
+   an `OBS-####` `not_rowed_observation` with reason `ID range exhausted`, then have the
+   conductor mark the shard blocked.
 4. **Active rows complete** — a `candidate` or `confirmed` code-error row fills
    `Code/Data Source`, `Code Location`, `Error Description`, and `Why It Matters`; the lint
    fails an active row with any of these empty.
 5. **Cross-link columns stay blank** — `Related Claim IDs` / `Related Error IDs` are filled
    only at the cross-link stage; the b2 lint fails a non-empty cell.
 6. **Repo-relative paths** in every path column; the lint fails absolute paths.
-7. **Two-part footer** — coverage table (code shards: `| Script | Outcome |`, one row per
-   script in scope), then coordinator notes (the footer bullets above); the b2 lint requires
-   both parts, and the b3 merge lint fails any inventory script with no coverage row in any
-   shard.
+7. **Two-part footer** — coverage table/note (code shards: exact table
+   `| Script | Outcome |`, one row per script in scope, where Outcome is exactly `clean`,
+   `findings: <IDs>`, or `blocked: <reason>`), then the exact typed-observations table above.
+   The b2/b3b shard lint requires both parts. At b3/b3b the merge report carries a top-level
+   `footer_dispositions` list with one line per typed entry, serialized exactly as
+   `audit/path/to/shard.md#OBS-0001 | candidate:E-0123` or
+   `audit/path/to/shard.md#OBS-0001 | dismissed:<one-line reason>`. The merge lint proves a
+   bijection on shard path + Entry ID and fails missing, duplicate, or stray dispositions. A
+   `candidate` footer entry must take the candidate disposition with the same IDs and cannot be
+   dismissed; a `not_rowed_observation` may be promoted or explicitly dismissed.
+   The b3 merge additionally fails any inventory or hygiene file without exactly one coverage
+   outcome unless its owning shard is manifest-blocked, in which case it must appear in the
+   report's top-level `unreviewed_files` list. The reserved package-wide hygiene-lens key is
+   `@hygiene:data-and-log-lens`, exactly once in the hygiene shard.
 
 ## Rewrite-pass columns
 

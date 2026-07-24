@@ -18,8 +18,10 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -135,6 +137,29 @@ SHEET_GUIDE = [
         "A register of potential coding errors found in the scripts. Each row is a single "
         "error: its type, location, the author-facing description, and why it matters.",
     ),
+    (
+        "Handoff ledger",
+        "Terminal state of every cross-span claim obligation, including any explicitly accepted blocked fallback.",
+    ),
+    (
+        "Late observations (unverified)",
+        "Observations raised during the single supplementary wave. These are explicitly unverified and never mutate the registers without an approved bC correction plan.",
+    ),
+    (
+        "Late observation coverage",
+        "Per-stream collection coverage derived from certified b6b stage states. A blocked b6b is degraded coverage, never proof of zero observations.",
+    ),
+]
+
+LO_COLS = ["LO ID", "Source Shard", "Anchor", "Observation"]
+LO_SHEET_COLS = ["Stream"] + LO_COLS
+LO_COVERAGE_COLS = [
+    "Stream", "Required", "b6b State", "Collection State", "Artifact Head",
+    "Blocker Evidence IDs",
+]
+HANDOFF_LEDGER_COLS = [
+    "Obligation ID", "Kind", "Source Shard", "Anchor", "Destination Worker",
+    "Terminal State", "Covering Claim ID", "Disposition",
 ]
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -282,6 +307,91 @@ def write_overview(wb, sheets_present, status_usage, warnings):
         table([("", "None — review preconditions were met.")])
 
 
+def _md_table(columns, rows):
+    lines = ["| " + " | ".join(columns) + " |",
+             "| " + " | ".join(["---"] * len(columns)) + " |"]
+    lines.extend("| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |"
+                 for row in rows)
+    return "\n".join(lines) + "\n"
+
+
+def _write_atomic(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def late_observation_rows(audit, mode):
+    rows = []
+    streams = ("claims", "code") if mode == "replication" else ("code",)
+    for stream in streams:
+        path = audit / f"late_observations_{stream}.md"
+        if not path.is_file():
+            continue
+        headers, parsed = parse_md_table(path.read_text(encoding="utf-8"))
+        if headers == LO_COLS:
+            rows.extend([[stream] + row for row in parsed if len(row) == len(LO_COLS)])
+    return sorted(rows, key=lambda row: row[1])
+
+
+def derive_late_observation_coverage(audit, manifest, mode):
+    rows = []
+    for stream in ("claims", "code"):
+        required = mode == "replication" or stream == "code"
+        key = f"{stream}_b6b"
+        entry = manifest.get("stages", {}).get(key, {}) if required else {}
+        state = entry.get("status", "not present") if required else "not applicable"
+        artifact = audit / f"late_observations_{stream}.md"
+        if not required:
+            collection = "not required"
+        elif state == "blocked":
+            collection = "degraded"
+        elif state == "done" and artifact.is_file() and artifact.stat().st_size:
+            collection = "collected"
+        else:
+            collection = "incomplete"
+        rows.append([
+            stream, "yes" if required else "no", state, collection,
+            "not recorded", "none recorded",
+        ])
+    path = audit / "_run/late_observation_coverage.md"
+    _write_atomic(path, "# Late observation coverage\n\n" + _md_table(LO_COVERAGE_COLS, rows))
+    return rows
+
+
+def handoff_ledger_rows(audit):
+    path = audit / "_run/handoff_ledger.json"
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read handoff ledger {path}: {exc}") from exc
+    rows = []
+    for entry in sorted(ledger.get("H", []) + ledger.get("X", []),
+                        key=lambda row: row.get("id", "")):
+        disposition = entry.get("disposition") or {}
+        anchor = entry.get("anchor", "")
+        if isinstance(anchor, dict):
+            end = anchor.get("end_line", anchor.get("start_line", ""))
+            lines = (str(anchor.get("start_line", "")) if end == anchor.get("start_line")
+                     else f"{anchor.get('start_line', '')}-{end}")
+            anchor = f"{anchor.get('source_path', '')}:{lines}"
+        rows.append([
+            entry.get("id", ""), entry.get("kind", ""),
+            entry.get("source_shard", ""), anchor,
+            entry.get("destination_worker", ""), entry.get("state", ""),
+            entry.get("covering_c_id") or "", disposition.get("reason", ""),
+        ])
+    return rows
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -296,6 +406,7 @@ def main() -> int:
     audit = args.audit_dir
     manifest_path = args.manifest or audit / "_run" / "manifest.json"
     warnings = []
+    manifest = {}
     if manifest_path.is_file():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -312,7 +423,9 @@ def main() -> int:
 
     wb = Workbook()
     wb.remove(wb.active)
-    sheets_present, status_usage = ["Code Errors"], {}
+    sheets_present, status_usage = [
+        "Code Errors", "Late observations (unverified)", "Late observation coverage"
+    ], {}
 
     if args.mode == "replication":
         claims_md = (audit / "claims_register.md").read_text(encoding="utf-8")
@@ -324,15 +437,29 @@ def main() -> int:
         sheets_present.insert(0, "Paper Claims")
         status_usage["claims"] = sorted({r[ch.index("Status")] for r in cr if r[ch.index("Status")]})
         status_usage["claims_cols"] = ch
+        if manifest.get("paper_source_set"):
+            sheets_present.append("Handoff ledger")
 
     eh, er = drop_and_augment(e_headers, e_rows)
     status_usage["errors"] = sorted({r[eh.index("Status")] for r in er if r[eh.index("Status")]})
     status_usage["errors_cols"] = eh
+    lo_rows = late_observation_rows(audit, args.mode)
+    coverage_rows = derive_late_observation_coverage(
+        audit, manifest, args.mode)
 
     write_overview(wb, sheets_present, status_usage, warnings)
     if args.mode == "replication":
         write_data_sheet(wb, "Paper Claims", ch, cr)
+        if manifest.get("paper_source_set"):
+            try:
+                handoff_rows = handoff_ledger_rows(audit)
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            write_data_sheet(wb, "Handoff ledger", HANDOFF_LEDGER_COLS, handoff_rows)
     write_data_sheet(wb, "Code Errors", eh, er)
+    write_data_sheet(wb, "Late observations (unverified)", LO_SHEET_COLS, lo_rows)
+    write_data_sheet(wb, "Late observation coverage", LO_COVERAGE_COLS, coverage_rows)
 
     out = args.output or audit / "code_review.xlsx"
     Path(out).parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ from typing import NamedTuple
 MAPPING_COLS = ["Bundle ID", "Error ID", "Mapping Kind"]
 MAPPING_KINDS = {"new_candidate", "existing_row"}
 ARTIFACT_COLS = [
-    "Bundle ID", "Identity Tuple", "Variable", "Producer Shape",
+    "Bundle ID", "Witness ID", "Identity Tuple", "Variable", "Producer Shape",
     "Definition Site", "Producer Statement", "Consumer Site",
     "Consumer Statement", "Full Guard", "Code/Comment Context",
     "Obligation Question",

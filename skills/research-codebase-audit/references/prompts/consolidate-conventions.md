@@ -20,8 +20,9 @@ We are auditing an academic paper and its replication package. The first-pass cl
 complete: `{CLAIMS_REGISTER}` now records, across its rows, the conventions the package uses in
 more than one place. {REVIEW_MODE_SENTENCE}
 
-Your job is to consolidate those conventions into one small list so the code-stream recheck can
-grep the codebase for sites that violate each. You produce a **list, not a verdict** — the
+Your job is to consolidate those conventions into one small list so the code-stream b3d
+conventions-scan worker can inspect the codebase for sites that violate each. You produce a
+**list, not a verdict** — the
 verdicts come later from the code side.
 
 ## TASK
@@ -52,7 +53,7 @@ single-row exception for `enumerated_member_list` — see RULES):
   sites). A convention that appears in a single place is out of scope for this artifact — skip it.
   **Exception:** for `enumerated_member_list`, a single register row naming the member set
   qualifies the convention for consolidation. The second side of the comparison is supplied by the
-  code-side re-materialization sites, which the code stream locates at the b4 grep, not at
+  code-side re-materialization sites, which the code stream locates in the b3d scan, not at
   consolidation — so do not skip a member list for being single-site.
 - `Convention`: a short name for the thing being fixed (e.g. "fiscal-year boundary",
   "flood-return-period layer", "household ID key").
